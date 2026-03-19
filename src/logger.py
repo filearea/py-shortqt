@@ -105,9 +105,17 @@ class TradeLogger:
     
     def update_signal_result(self, result: str, pnl: float, duration: float):
         """更新信号结果（平仓时调用）"""
-        self.signals_file.seek(0)
-        lines = self.signals_file.readlines()
+        # 保存并关闭当前文件
+        self.signals_file.flush()
+        filepath = self.signals_file.name
+        self.signals_file.close()
+        
+        # 读取文件
+        with open(filepath, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
         if len(lines) > 1:
+            # 更新最后一行
             last_line = lines[-1].strip()
             parts = last_line.split(',')
             if len(parts) >= 12:
@@ -115,10 +123,13 @@ class TradeLogger:
                 parts[13] = f"{pnl:.2f}"
                 parts[14] = f"{duration:.1f}"
                 lines[-1] = ','.join(parts) + '\n'
-                self.signals_file.close()
-                self.signals_file = open(self.signals_file.name, 'w', encoding='utf-8')
-                self.signals_file.writelines(lines)
-                self.signals_file.flush()
+                
+                # 重写文件
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+        
+        # 重新以追加模式打开
+        self.signals_file = open(filepath, 'a', encoding='utf-8')
     
     def record_snapshot(self, price: Decimal, orderbook: dict):
         """记录市场快照（每秒）"""
