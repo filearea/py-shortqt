@@ -130,14 +130,20 @@ class TradeLogger:
         """记录交易动作"""
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         
+        price = details.get('price')
+        size = details.get('size')
+        pnl = details.get('pnl')
+        change = details.get('change')
+        balance = details.get('balance')
+        
         actions = {
-            "ORDER_PLACED": f"[挂单] 方向={details.get('side')} 价格={details.get('price'):.2f} 数量={details.get('size'):.3f} ETH",
-            "ORDER_FILLED": f"[成交] 挂单成交 价格={details.get('price'):.2f} 数量={details.get('size'):.3f} ETH",
-            "TP_FILLED": f"[止盈] 价格={details.get('price'):.2f} 数量={details.get('size'):.3f} ETH PnL={details.get('pnl'):+.2f} USDT",
-            "SL_FILLED": f"[止损] 价格={details.get('price'):.2f} 数量={details.get('size'):.3f} ETH PnL={details.get('pnl'):+.2f} USDT",
-            "EARLY_FILLED": f"[提前平仓] 价格={details.get('price'):.2f} 数量={details.get('size'):.3f} ETH PnL={details.get('pnl'):+.2f} USDT",
-            "BALANCE_CHANGE": f"[余额] 变化={details.get('change'):+.2f} USDT 余额={details.get('balance'):.2f} USDT",
-            "ORDER_CANCELLED": f"[撤单] 价格={details.get('price'):.2f}",
+            "ORDER_PLACED": f"[挂单] 方向={details.get('side')} 价格={float(price):.2f} 数量={float(size):.3f} ETH",
+            "ORDER_FILLED": f"[成交] 挂单成交 价格={float(price):.2f} 数量={float(size):.3f} ETH",
+            "TP_FILLED": f"[止盈] 价格={float(price):.2f} 数量={float(size):.3f} ETH PnL={float(pnl):+.2f} USDT",
+            "SL_FILLED": f"[止损] 价格={float(price):.2f} 数量={float(size):.3f} ETH PnL={float(pnl):+.2f} USDT",
+            "EARLY_FILLED": f"[提前平仓] 价格={float(price):.2f} 数量={float(size):.3f} ETH PnL={float(pnl):+.2f} USDT",
+            "BALANCE_CHANGE": f"[余额] 变化={float(change):+.2f} USDT 余额={float(balance):.2f} USDT",
+            "ORDER_CANCELLED": f"[撤单] 价格={float(price):.2f}",
             "REJECTED": f"[拒绝] 原因={details.get('reason')}",
         }
         
