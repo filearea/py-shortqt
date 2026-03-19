@@ -1,0 +1,11 @@
+{
+    "accounts": [
+        {
+            "name": "主账号",
+            "api_key": "YOUR_API_KEY_HERE",
+            "api_secret": "YOUR_API_SECRET_HERE",
+            "testnet": true
+        }
+    ],
+    "note": "请将此文件重命名为 accounts.json 并填入真实的 API Key"
+}
