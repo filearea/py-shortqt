@@ -75,9 +75,9 @@ class TradeState:
         if self.pending_order is None or latest_price is None:
             return False
         
-        # 先复制一份，防止重复触发
-        order = self.pending_order.copy()
-        self.pending_order = None  # 立即清空，防止重复成交
+        # 立即清空，防止重复触发
+        order = self.pending_order
+        self.pending_order = None
         
         filled = False
         if order['side'] == 'LONG':
@@ -88,22 +88,27 @@ class TradeState:
                 filled = True
         
         if filled:
-            # 恢复订单用于处理
-            self.pending_order = order
             if order.get('close_type') == 'EARLY':
+                self.pending_order = order  # 临时恢复用于处理
                 self._on_early_close_filled()
             else:
+                self.pending_order = order  # 临时恢复用于处理
                 self._on_order_filled()
             return True
-        else:
-            # 没成交，恢复挂单
-            self.pending_order = order
+        
         return False
     
     def _on_order_filled(self):
         """开仓挂单成交"""
+        if self.pending_order is None:
+            return  # 防止重复调用
+        
         order = self.pending_order
         entry_price = order['price']
+        
+        # 检查是否已经成交过（防止重复）
+        if self.position is not None:
+            return
         
         if order['side'] == 'LONG':
             tp_price = entry_price + self.take_profit_points
@@ -130,6 +135,8 @@ class TradeState:
             'time': datetime.now(), 'action': '✓成交',
             'details': f"挂单成交 @ {entry_price:.2f}"
         })
+        if len(self.action_log) > 20:
+            self.action_log = self.action_log[-20:]
         
         self.logger.log_action("ORDER_FILLED", {
             'price': entry_price,
@@ -141,6 +148,9 @@ class TradeState:
     
     def _on_early_close_filled(self):
         """提前平仓挂单成交"""
+        if self.pending_order is None:
+            return  # 防止重复调用
+        
         order = self.pending_order
         close_price = order['price']
         
@@ -172,6 +182,8 @@ class TradeState:
             'time': datetime.now(), 'action': '✓提前平仓成交',
             'details': f"PnL: {pnl:+.2f} USDT"
         })
+        if len(self.action_log) > 20:
+            self.action_log = self.action_log[-20:]
         
         self.logger.log_action("EARLY_FILLED", {
             'price': close_price,
@@ -236,6 +248,8 @@ class TradeState:
             'time': datetime.now(), 'action': f"✓{reason}",
             'details': f"PnL: {pnl:+.2f} USDT"
         })
+        if len(self.action_log) > 20:
+            self.action_log = self.action_log[-20:]
         
         self.logger.log_action(f"{reason}_FILLED", {
             'price': close_price,
