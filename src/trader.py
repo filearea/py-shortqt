@@ -45,9 +45,7 @@ class TradeState:
     
     def place_pending_order(self, order: dict):
         """下 Maker 挂单"""
-        print(f"[DEBUG] place_pending_order: order={order}")
         self.pending_order = order
-        print(f"[DEBUG] pending_order 已设置：{self.pending_order}")
         
         self.action_log.append({
             'time': datetime.now(), 'action': '挂单',
@@ -68,7 +66,6 @@ class TradeState:
     
     def cancel_pending_order(self):
         """撤销挂单"""
-        print(f"[DEBUG] cancel_pending_order: pending_order={self.pending_order}")
         if self.pending_order:
             price = self.pending_order['price']
             self.action_log.append({
@@ -79,9 +76,7 @@ class TradeState:
                 self.action_log = self.action_log[-20:]
             self.logger.log_action("ORDER_CANCELLED", {'price': price})
             self.pending_order = None
-            print(f"[DEBUG] 撤单成功 @ {price:.2f}")
             return True
-        print(f"[DEBUG] 没有可撤销的挂单")
         return False
     
     def check_pending_order_filled(self, latest_price: Decimal) -> bool:
@@ -113,20 +108,15 @@ class TradeState:
     
     def _on_order_filled(self, order=None):
         """开仓挂单成交"""
-        print(f"[DEBUG] _on_order_filled 调用")
-        
         if order is None:
             order = self.pending_order
         
         if order is None:
-            print(f"[DEBUG] order 为空，跳过")
             return
         
         entry_price = order['price']
         
-        # 检查是否已经成交过（防止重复）
         if self.position is not None:
-            print(f"[DEBUG] position 已存在，跳过")
             return
         
         if order['side'] == 'LONG':
@@ -168,19 +158,15 @@ class TradeState:
     
     def _on_early_close_filled(self, order=None):
         """提前平仓挂单成交"""
-        print(f"[DEBUG] _on_early_close_filled 调用")
-        
         if order is None:
             order = self.pending_order
         
         if order is None:
-            print(f"[DEBUG] order 为空，跳过")
             return
         
         close_price = order['price']
         
         if self.position is None:
-            print(f"[DEBUG] position 为空，跳过")
             return
         
         pos = self.position
