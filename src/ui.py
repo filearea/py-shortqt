@@ -58,13 +58,20 @@ class TradingUI:
             price_arrow = " [green]↑[/green]" if self.state.last_price_change > 0 else " [red]↓[/red]"
         
         status = "就绪 - ↑做多 ↓做空 ←撤单 →平仓 Q 退出"
-        if self.state.pending_order:
+        # 检查是否有挂单
+        has_pending = hasattr(self.state, 'pending_order') and self.state.pending_order is not None
+        if has_pending:
             if self.state.pending_order.get('close_type') == 'EARLY':
                 status = f"[yellow]平仓挂单中[/yellow] @ {self.state.pending_order['price']:.2f} (等待成交)"
             else:
-                status = f"[yellow]开仓挂单中[/yellow] - {self.state.pending_order['side']} @ {self.state.pending_order['price']:.2f} (←撤单)"
+                side_text = '多' if self.state.pending_order['side'] == 'LONG' else '空'
+                status = f"[yellow]开仓挂单中[/yellow] - {side_text} @ {self.state.pending_order['price']:.2f} (←撤单)"
         elif self.state.position:
             status = f"[green]持仓中[/green] (→提前平仓)"
+        
+        # 调试：打印挂单状态
+        # if has_pending:
+        #     print(f"[UI DEBUG] 挂单中：{self.state.pending_order}")
         
         return Panel(
             f"[bold cyan]ETHUSDC[/bold cyan]  |  价格：[yellow]{price_text}{price_arrow}[/yellow]  |  更新：[green]{self.state.updates_per_second:.1f} Hz[/green]  |  {status}",
@@ -135,7 +142,7 @@ class TradingUI:
                 c = "green" if pnl >= 0 else "red"
                 acc_text.append(f"\n[{c}]浮动：{pnl:+.2f} USDT[/{c}]")
         
-        elif self.state.pending_order:
+        elif hasattr(self.state, 'pending_order') and self.state.pending_order:
             order = self.state.pending_order
             side = "做多" if order['side'] == 'LONG' else "做空"
             color = 'green' if order['side'] == 'LONG' else 'red'
@@ -147,6 +154,11 @@ class TradingUI:
                 acc_text.append(f"\n[dim]按 ← 撤单[/dim]")
         
         else:
+            # 调试：检查是否真的有 pending_order
+            has_pending = hasattr(self.state, 'pending_order')
+            pending_val = self.state.pending_order if has_pending else None
+            # print(f"[UI DEBUG] 账户显示：has_pending={has_pending}, pending_val={pending_val}")
+            
             acc_text.append("[dim]无持仓[/dim]\n")
             acc_text.append(f"\n止盈：+{self.take_profit} 点\n")
             acc_text.append(f"止损：-{self.stop_loss} 点")

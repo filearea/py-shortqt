@@ -93,10 +93,14 @@ class TradingBot:
                 self.logger.record_price(price)
                 
                 # 检查挂单成交
-                if self.state.pending_order:
+                has_pending = hasattr(self.state, 'pending_order') and self.state.pending_order is not None
+                if has_pending:
+                    print(f"[DEBUG] 检查成交：pending_order={self.state.pending_order}, price={price}")
                     filled = self.state.check_pending_order_filled(price)
                     if filled:
                         print(f"[DEBUG] ✓ 成交！")
+                    else:
+                        print(f"[DEBUG] ✗ 未成交")
                 
                 # 检查止盈止损
                 if self.state.position:

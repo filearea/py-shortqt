@@ -45,7 +45,10 @@ class TradeState:
     
     def place_pending_order(self, order: dict):
         """下 Maker 挂单"""
+        print(f"[DEBUG] place_pending_order: order={order}")
         self.pending_order = order
+        print(f"[DEBUG] pending_order 已设置：{self.pending_order}")
+        
         self.action_log.append({
             'time': datetime.now(), 'action': '挂单',
             'details': f"{'多' if order['side'] == 'LONG' else '空'} @ {order['price']:.2f} ({order['size']:.3f} ETH)"
@@ -64,6 +67,7 @@ class TradeState:
     
     def cancel_pending_order(self):
         """撤销挂单"""
+        print(f"[DEBUG] cancel_pending_order: pending_order={self.pending_order}")
         if self.pending_order:
             price = self.pending_order['price']
             self.action_log.append({
@@ -76,6 +80,7 @@ class TradeState:
             self.pending_order = None
             print(f"[DEBUG] 撤单成功 @ {price:.2f}")
             return True
+        print(f"[DEBUG] 没有可撤销的挂单")
         return False
     
     def check_pending_order_filled(self, latest_price: Decimal) -> bool:
@@ -85,17 +90,26 @@ class TradeState:
         
         # 先检查是否已经处理过（防止重复）
         if hasattr(self, '_processing_order') and self._processing_order:
+            print(f"[DEBUG] 正在处理中，跳过")
             return False
         
         order = self.pending_order
+        print(f"[DEBUG] 检查成交：side={order['side']}, order_price={order['price']}, latest_price={latest_price}")
+        
         filled = False
         
         if order['side'] == 'LONG':
             if latest_price <= order['price']:
                 filled = True
+                print(f"[DEBUG] 多单成交：{latest_price} <= {order['price']}")
+            else:
+                print(f"[DEBUG] 多单未成交：{latest_price} > {order['price']}")
         else:
             if latest_price >= order['price']:
                 filled = True
+                print(f"[DEBUG] 空单成交：{latest_price} >= {order['price']}")
+            else:
+                print(f"[DEBUG] 空单未成交：{latest_price} < {order['price']}")
         
         if filled:
             # 标记正在处理，防止重入
