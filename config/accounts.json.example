@@ -1,0 +1,23 @@
+{
+    "accounts": [
+        {
+            "name": "主账号",
+            "api_key": "YOUR_BINANCE_API_KEY_HERE",
+            "api_secret": "YOUR_BINANCE_API_SECRET_HERE",
+            "testnet": true,
+            "note": "测试网络，不产生真实交易"
+        },
+        {
+            "name": "实盘账号",
+            "api_key": "YOUR_REAL_API_KEY_HERE",
+            "api_secret": "YOUR_REAL_API_SECRET_HERE",
+            "testnet": false,
+            "note": "真实交易账户，请谨慎使用"
+        }
+    ],
+    "settings": {
+        "default_account": "主账号",
+        "risk_warning": "⚠️ 实盘交易有风险，请谨慎操作",
+        "ip_whitelist_reminder": "请确保已在币安 API 设置中添加本机外网 IP 到白名单"
+    }
+}

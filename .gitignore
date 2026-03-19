@@ -60,6 +60,10 @@ Thumbs.db
 api_keys.txt
 secrets/
 config.local.py
+config/accounts.json
+*.json
+!config/accounts.example.json
+!config/accounts.json.example
 
 # 测试
 .pytest_cache/
