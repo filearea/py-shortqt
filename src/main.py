@@ -117,40 +117,53 @@ class TradingBot:
     async def place_order(self, side: str):
         """下 Maker 挂单"""
         try:
+            print(f"\n[DEBUG] ========== 开始下单 {side} ==========")
+            
             if self.state.position is not None:
-                print(f"\n[DEBUG] 拒绝：已有持仓")
+                print(f"[DEBUG] 拒绝：已有持仓")
                 return
+            print(f"[DEBUG] 检查持仓：无 ✓")
+            
             if self.state.pending_order is not None:
-                print(f"\n[DEBUG] 拒绝：已有挂单")
+                print(f"[DEBUG] 拒绝：已有挂单")
                 return
+            print(f"[DEBUG] 检查挂单：无 ✓")
+            
             if self.state.last_price is None:
-                print(f"\n[DEBUG] 拒绝：等待行情")
+                print(f"[DEBUG] 拒绝：等待行情")
                 return
+            print(f"[DEBUG] 最新价：{self.state.last_price} ✓")
             
             # Maker 挂单：基于买一价/卖一价
             bid1 = self.state.orderbook['bids'][0][0] if self.state.orderbook.get('bids') else None
             ask1 = self.state.orderbook['asks'][0][0] if self.state.orderbook.get('asks') else None
             
-            print(f"\n[DEBUG] 按{'多' if side == 'LONG' else '空'} | 买一={bid1} | 卖一={ask1}")
+            print(f"[DEBUG] 买一={bid1} | 卖一={ask1}")
             
             if side == 'LONG':
                 if bid1 is None:
                     print(f"[DEBUG] 买一价为空，无法开多")
                     return
                 order_price = bid1
+                print(f"[DEBUG] 做多挂单价：{order_price}")
             else:
                 if ask1 is None:
                     print(f"[DEBUG] 卖一价为空，无法开空")
                     return
                 order_price = ask1
+                print(f"[DEBUG] 做空挂单价：{order_price}")
             
             position, size = self.state.can_open_position(side, order_price)
+            print(f"[DEBUG] can_open_position 返回：position={position is not None}, size={size}")
+            
             if position is None:
-                print(f"[DEBUG] 无法开仓：position={position}, size={size}")
+                print(f"[DEBUG] 无法开仓")
                 return
             
-            print(f"[DEBUG] 开仓成功：{side} @ {order_price}, size={size}")
+            print(f"[DEBUG] 调用 place_pending_order...")
             self.state.place_pending_order(position)
+            print(f"[DEBUG] 挂单成功！pending_order={self.state.pending_order}")
+            print(f"[DEBUG] =========={side} 下单完成==========")
         except Exception as e:
             print(f"\n[DEBUG] place_order 错误：{e}")
             import traceback
