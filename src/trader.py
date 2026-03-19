@@ -59,7 +59,8 @@ class TradeState:
         self.logger.log_action("ORDER_PLACED", {
             'side': 'LONG' if order['side'] == 'LONG' else 'SHORT',
             'price': order['price'],
-            'size': order['size']
+            'size': order['size'],
+            'balance': self.balance
         })
         
         # 记录开仓信号特征
@@ -88,32 +89,17 @@ class TradeState:
         if self.pending_order is None or latest_price is None:
             return False
         
-        # 先检查是否已经处理过（防止重复）
-        if hasattr(self, '_processing_order') and self._processing_order:
-            print(f"[DEBUG] 正在处理中，跳过")
-            return False
-        
         order = self.pending_order
-        print(f"[DEBUG] 检查成交：side={order['side']}, order_price={order['price']}, latest_price={latest_price}")
-        
         filled = False
         
         if order['side'] == 'LONG':
             if latest_price <= order['price']:
                 filled = True
-                print(f"[DEBUG] 多单成交：{latest_price} <= {order['price']}")
-            else:
-                print(f"[DEBUG] 多单未成交：{latest_price} > {order['price']}")
         else:
             if latest_price >= order['price']:
                 filled = True
-                print(f"[DEBUG] 空单成交：{latest_price} >= {order['price']}")
-            else:
-                print(f"[DEBUG] 空单未成交：{latest_price} < {order['price']}")
         
         if filled:
-            # 标记正在处理，防止重入
-            self._processing_order = True
             self.pending_order = None  # 立即清空
             
             if order.get('close_type') == 'EARLY':
@@ -121,7 +107,6 @@ class TradeState:
             else:
                 self._on_order_filled(order)
             
-            self._processing_order = False
             return True
         
         return False
@@ -174,7 +159,8 @@ class TradeState:
         
         self.logger.log_action("ORDER_FILLED", {
             'price': entry_price,
-            'size': order['size']
+            'size': order['size'],
+            'balance': self.balance
         })
         
         self.pending_order = None
@@ -227,11 +213,12 @@ class TradeState:
         self.logger.log_action("EARLY_FILLED", {
             'price': close_price,
             'size': size,
-            'pnl': pnl
+            'pnl': pnl,
+            'balance': self.balance + pnl
         })
         self.logger.log_action("BALANCE_CHANGE", {
             'change': pnl,
-            'balance': self.balance
+            'balance': self.balance + pnl
         })
         
         # 更新信号结果
@@ -293,11 +280,12 @@ class TradeState:
         self.logger.log_action(f"{reason}_FILLED", {
             'price': close_price,
             'size': size,
-            'pnl': pnl
+            'pnl': pnl,
+            'balance': self.balance + pnl  # 平仓后的余额
         })
         self.logger.log_action("BALANCE_CHANGE", {
             'change': pnl,
-            'balance': self.balance
+            'balance': self.balance + pnl
         })
         
         # 更新信号结果
