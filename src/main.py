@@ -15,6 +15,11 @@ if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
     os.environ['PYTHONUTF8'] = '1'
 
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 # 导入项目模块
 from config.settings import (
     BINANCE_WS_URL, SYMBOL, LEVERAGE, INITIAL_BALANCE,
@@ -191,30 +196,44 @@ class TradingBot:
         
         if sys.platform == 'win32':
             import msvcrt
-            with Live(self.ui.render(), refresh_per_second=TUI_REFRESH_RATE, screen=False) as live:
-                while self.running:
-                    live.update(self.ui.render())
-                    if msvcrt.kbhit():
-                        key = msvcrt.getch()
-                        if key == b'\xe0' or key == b'\x00':
-                            key = msvcrt.getch()
-                            if key == b'H':  # ↑
-                                await self.place_order('LONG')
-                            elif key == b'P':  # ↓
-                                await self.place_order('SHORT')
-                            elif key == b'M':  # →
-                                await self.close_position_early()
-                            elif key == b'K':  # ←
-                                await self.cancel_order()
-                        elif key.upper() == b'W':
-                            await self.place_order('LONG')
-                        elif key.upper() == b'S':
-                            await self.place_order('SHORT')
-                        elif key.lower() == b'q':
-                            await self.cancel_order()
-                        elif key.upper() == b'Q':
-                            self.running = False
-                    await asyncio.sleep(0.02)
+            try:
+                with Live(self.ui.render(), refresh_per_second=TUI_REFRESH_RATE, screen=False) as live:
+                    while self.running:
+                        try:
+                            live.update(self.ui.render())
+                        except Exception as e:
+                            print(f"界面刷新错误：{e}")
+                            break
+                        
+                        if msvcrt.kbhit():
+                            try:
+                                key = msvcrt.getch()
+                                if key == b'\xe0' or key == b'\x00':  # 方向键前缀
+                                    key = msvcrt.getch()
+                                    if key == b'H':  # ↑
+                                        await self.place_order('LONG')
+                                    elif key == b'P':  # ↓
+                                        await self.place_order('SHORT')
+                                    elif key == b'M':  # →
+                                        await self.close_position_early()
+                                    elif key == b'K':  # ←
+                                        await self.cancel_order()
+                                elif key.upper() == b'W':
+                                    await self.place_order('LONG')
+                                elif key.upper() == b'S':
+                                    await self.place_order('SHORT')
+                                elif key.lower() == b'q':
+                                    await self.cancel_order()
+                                elif key.upper() == b'Q':
+                                    self.running = False
+                            except Exception as e:
+                                print(f"按键处理错误：{e}")
+                        
+                        await asyncio.sleep(0.05)
+            except KeyboardInterrupt:
+                print("\n用户中断")
+            except Exception as e:
+                print(f"运行错误：{e}")
         
         self.running = False
         self.listener.running = False
