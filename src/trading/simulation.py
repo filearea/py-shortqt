@@ -27,20 +27,16 @@ class SimulationTrader:
     async def _run_manual(self):
         """手动快捷键模式"""
         print("\n手动快捷键模式")
-        print("  ↑/W - 做多")
-        print("  ↓/S - 做空")
-        print("  ←   - 撤单")
-        print("  →   - 提前平仓")
-        print("  Q   - 退出")
+        print("=" * 70)
         print()
-        
-        # TODO: 实现手动交易逻辑
-        print("[提示] 此功能使用原有 v1.0.1 的手动交易逻辑")
-        
-        # 临时调用旧版主程序
-        from src.main import TradingBot
-        bot = TradingBot()
-        await bot.run()
+        print("⚠️  注意：此功能需要切换到 master 分支使用")
+        print()
+        print("运行以下命令使用 v1.0.1 手动交易功能：")
+        print("  git checkout master")
+        print("  python src/main.py")
+        print()
+        print("返回主菜单...")
+        print()
     
     async def _run_quant(self):
         """量化信号模式"""
