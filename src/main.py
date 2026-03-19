@@ -271,7 +271,7 @@ class TradingBot:
         print("\n" + "=" * 70)
         print("交易结束")
         print(f"最终余额：{self.state.balance:.2f} USDT")
-        print(f"总盈亏：{self.state.balance - INITIAL_BALANCE:+.2f} USDT")
+        print(f"总盈亏：{float(self.state.balance) - INITIAL_BALANCE:+.2f} USDT")
         print(f"完成交易：{len([t for t in self.state.trades if t['type'] in ['TP', 'SL', 'EARLY']])} 笔")
         print("=" * 70)
 

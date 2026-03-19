@@ -24,9 +24,13 @@ class TradeState:
         self.open_time = None
         self.trades = []
         self.last_price = None
+        self.last_price_change = None
         self.orderbook = {'bids': [], 'asks': []}
         self.action_log = []
         self.market_log_count = 0
+        self.update_count = 0
+        self.last_update_time = None
+        self.updates_per_second = 0.0
     
     def can_open_position(self, side: str, price: Decimal) -> tuple:
         """计算可开仓数量"""
