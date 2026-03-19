@@ -171,29 +171,52 @@ class TradingBot:
     
     async def cancel_order(self):
         """撤单"""
-        self.state.cancel_pending_order()
+        print(f"\n[DEBUG] 尝试撤单...")
+        result = self.state.cancel_pending_order()
+        if result:
+            print(f"[DEBUG] 撤单成功")
+        else:
+            print(f"[DEBUG] 没有可撤销的挂单")
     
     async def close_position_early(self):
         """提前平仓"""
-        if self.state.position is None:
-            return
-        
-        pos = self.state.position
-        bid1 = self.state.orderbook['bids'][0][0] if self.state.orderbook.get('bids') else None
-        ask1 = self.state.orderbook['asks'][0][0] if self.state.orderbook.get('asks') else None
-        
-        # 多单持仓 → 挂卖单 @ 卖一价（Maker）
-        # 空单持仓 → 挂买单 @ 买一价（Maker）
-        if pos['side'] == 'LONG':
-            if ask1 is None:
+        try:
+            print(f"\n[DEBUG] ========== 提前平仓 ==========")
+            
+            if self.state.position is None:
+                print(f"[DEBUG] 没有持仓，无法平仓")
                 return
-            close_price = ask1
-        else:
-            if bid1 is None:
-                return
-            close_price = bid1
-        
-        self.state.close_position_early(pos['side'], close_price)
+            
+            pos = self.state.position
+            print(f"[DEBUG] 当前持仓：{pos['side']} @ {pos['entry_price']}")
+            
+            bid1 = self.state.orderbook['bids'][0][0] if self.state.orderbook.get('bids') else None
+            ask1 = self.state.orderbook['asks'][0][0] if self.state.orderbook.get('asks') else None
+            
+            print(f"[DEBUG] 买一={bid1} | 卖一={ask1}")
+            
+            # 多单持仓 → 挂卖单 @ 卖一价（Maker）
+            # 空单持仓 → 挂买单 @ 买一价（Maker）
+            if pos['side'] == 'LONG':
+                if ask1 is None:
+                    print(f"[DEBUG] 卖一价为空")
+                    return
+                close_price = ask1
+                print(f"[DEBUG] 多单平仓：挂卖单 @ {close_price}")
+            else:
+                if bid1 is None:
+                    print(f"[DEBUG] 买一价为空")
+                    return
+                close_price = bid1
+                print(f"[DEBUG] 空单平仓：挂买单 @ {close_price}")
+            
+            self.state.close_position_early(pos['side'], close_price)
+            print(f"[DEBUG] 提前平仓挂单成功")
+            print(f"[DEBUG] ==========")
+        except Exception as e:
+            print(f"[DEBUG] close_position_early 错误：{e}")
+            import traceback
+            traceback.print_exc()
     
     async def run(self):
         """运行主循环"""

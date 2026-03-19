@@ -31,6 +31,7 @@ class TradeState:
         self.update_count = 0
         self.last_update_time = None
         self.updates_per_second = 0.0
+        self._processing_order = False  # 防止重入标志
     
     def can_open_position(self, side: str, price: Decimal) -> tuple:
         """计算可开仓数量"""
@@ -69,8 +70,11 @@ class TradeState:
                 'time': datetime.now(), 'action': '✗撤单',
                 'details': f"@ {price:.2f}"
             })
+            if len(self.action_log) > 20:
+                self.action_log = self.action_log[-20:]
             self.logger.log_action("ORDER_CANCELLED", {'price': price})
             self.pending_order = None
+            print(f"[DEBUG] 撤单成功 @ {price:.2f}")
             return True
         return False
     
@@ -79,11 +83,13 @@ class TradeState:
         if self.pending_order is None or latest_price is None:
             return False
         
-        # 立即清空，防止重复触发
-        order = self.pending_order
-        self.pending_order = None
+        # 先检查是否已经处理过（防止重复）
+        if hasattr(self, '_processing_order') and self._processing_order:
+            return False
         
+        order = self.pending_order
         filled = False
+        
         if order['side'] == 'LONG':
             if latest_price <= order['price']:
                 filled = True
@@ -92,19 +98,26 @@ class TradeState:
                 filled = True
         
         if filled:
+            # 标记正在处理，防止重入
+            self._processing_order = True
+            self.pending_order = None  # 立即清空
+            
             if order.get('close_type') == 'EARLY':
-                self.pending_order = order  # 临时恢复用于处理
                 self._on_early_close_filled()
             else:
-                self.pending_order = order  # 临时恢复用于处理
                 self._on_order_filled()
+            
+            self._processing_order = False
             return True
         
         return False
     
     def _on_order_filled(self):
         """开仓挂单成交"""
+        print(f"[DEBUG] _on_order_filled 调用")
+        
         if self.pending_order is None:
+            print(f"[DEBUG] pending_order 为空，跳过")
             return  # 防止重复调用
         
         order = self.pending_order
@@ -112,6 +125,7 @@ class TradeState:
         
         # 检查是否已经成交过（防止重复）
         if self.position is not None:
+            print(f"[DEBUG] position 已存在，跳过")
             return
         
         if order['side'] == 'LONG':
@@ -152,13 +166,17 @@ class TradeState:
     
     def _on_early_close_filled(self):
         """提前平仓挂单成交"""
+        print(f"[DEBUG] _on_early_close_filled 调用")
+        
         if self.pending_order is None:
+            print(f"[DEBUG] pending_order 为空，跳过")
             return  # 防止重复调用
         
         order = self.pending_order
         close_price = order['price']
         
         if self.position is None:
+            print(f"[DEBUG] position 为空，跳过")
             self.pending_order = None
             return
         
