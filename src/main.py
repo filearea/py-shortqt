@@ -28,7 +28,7 @@ from config.settings import (
 from src.logger import TradeLogger
 from src.trader import TradeState
 from src.websocket import BinanceListener
-from src.ui import TradingUI
+from src.ui.legacy import TradingUI
 
 try:
     import websockets

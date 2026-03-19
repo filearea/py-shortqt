@@ -28,15 +28,13 @@ class SimulationTrader:
         """手动快捷键模式"""
         print("\n手动快捷键模式")
         print("=" * 70)
-        print()
-        print("⚠️  注意：此功能需要切换到 master 分支使用")
-        print()
-        print("运行以下命令使用 v1.0.1 手动交易功能：")
-        print("  git checkout master")
-        print("  python src/main.py")
-        print()
-        print("返回主菜单...")
-        print()
+        
+        # 使用 v1.0.1 的交易逻辑
+        from src.ui.legacy import TradingUI
+        from src.main import TradingBot
+        
+        bot = TradingBot()
+        await bot.run()
     
     async def _run_quant(self):
         """量化信号模式"""
