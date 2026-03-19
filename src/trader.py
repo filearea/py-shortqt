@@ -75,20 +75,29 @@ class TradeState:
         if self.pending_order is None or latest_price is None:
             return False
         
+        # 先复制一份，防止重复触发
+        order = self.pending_order.copy()
+        self.pending_order = None  # 立即清空，防止重复成交
+        
         filled = False
-        if self.pending_order['side'] == 'LONG':
-            if latest_price <= self.pending_order['price']:
+        if order['side'] == 'LONG':
+            if latest_price <= order['price']:
                 filled = True
         else:
-            if latest_price >= self.pending_order['price']:
+            if latest_price >= order['price']:
                 filled = True
         
         if filled:
-            if self.pending_order.get('close_type') == 'EARLY':
+            # 恢复订单用于处理
+            self.pending_order = order
+            if order.get('close_type') == 'EARLY':
                 self._on_early_close_filled()
             else:
                 self._on_order_filled()
             return True
+        else:
+            # 没成交，恢复挂单
+            self.pending_order = order
         return False
     
     def _on_order_filled(self):

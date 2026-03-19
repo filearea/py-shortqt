@@ -74,72 +74,87 @@ class TradingBot:
         import time
         now = time.time()
         
-        if event_type == 'ticker':
-            price = data['price']
-            if self.state.last_price and price != self.state.last_price:
-                self.state.last_price_change = price - self.state.last_price
-            self.state.last_price = price
+        try:
+            if event_type == 'ticker':
+                price = data['price']
+                if self.state.last_price and price != self.state.last_price:
+                    self.state.last_price_change = price - self.state.last_price
+                self.state.last_price = price
+                
+                # 更新频率
+                self.state.update_count = getattr(self.state, 'update_count', 0) + 1
+                if hasattr(self.state, 'last_update_time') and self.state.last_update_time:
+                    elapsed = now - self.state.last_update_time
+                    if elapsed > 0:
+                        self.state.updates_per_second = 1.0 / elapsed
+                self.state.last_update_time = now
+                
+                # 记录价格
+                self.logger.record_price(price)
+                
+                # 检查挂单成交
+                if self.state.pending_order:
+                    filled = self.state.check_pending_order_filled(price)
+                    if filled:
+                        print(f"[DEBUG] ✓ 成交！")
+                
+                # 检查止盈止损
+                if self.state.position:
+                    result = self.state.check_tp_sl(price)
+                    if result:
+                        print(f"[DEBUG] ✓ {result['type']}!")
+                
+                # 记录市场快照
+                self.logger.record_snapshot(price, self.state.orderbook)
             
-            # 更新频率
-            self.state.update_count = getattr(self.state, 'update_count', 0) + 1
-            if hasattr(self.state, 'last_update_time') and self.state.last_update_time:
-                elapsed = now - self.state.last_update_time
-                if elapsed > 0:
-                    self.state.updates_per_second = 1.0 / elapsed
-            self.state.last_update_time = now
-            
-            # 记录价格
-            self.logger.record_price(price)
-            
-            # 检查挂单成交
-            if self.state.pending_order:
-                self.state.check_pending_order_filled(price)
-            
-            # 检查止盈止损
-            if self.state.position:
-                self.state.check_tp_sl(price)
-            
-            # 记录市场快照
-            self.logger.record_snapshot(price, self.state.orderbook)
-        
-        elif event_type == 'depth':
-            self.state.orderbook = data
+            elif event_type == 'depth':
+                self.state.orderbook = data
+        except Exception as e:
+            print(f"\n[DEBUG] on_market_data 错误：{e}")
+            import traceback
+            traceback.print_exc()
     
     async def place_order(self, side: str):
         """下 Maker 挂单"""
-        if self.state.position is not None:
-            self.state.action_log.append({'time': None, 'action': '✗拒绝', 'details': '已有持仓'})
-            self.logger.log_action("REJECTED", {'reason': '已有持仓'})
-            return
-        if self.state.pending_order is not None:
-            self.state.action_log.append({'time': None, 'action': '✗拒绝', 'details': '已有挂单'})
-            self.logger.log_action("REJECTED", {'reason': '已有挂单'})
-            return
-        if self.state.last_price is None:
-            self.state.action_log.append({'time': None, 'action': '✗拒绝', 'details': '等待行情'})
-            self.logger.log_action("REJECTED", {'reason': '等待行情'})
-            return
-        
-        # Maker 挂单：基于买一价/卖一价
-        bid1 = self.state.orderbook['bids'][0][0] if self.state.orderbook.get('bids') else None
-        ask1 = self.state.orderbook['asks'][0][0] if self.state.orderbook.get('asks') else None
-        
-        if side == 'LONG':
-            if bid1 is None:
+        try:
+            if self.state.position is not None:
+                print(f"\n[DEBUG] 拒绝：已有持仓")
                 return
-            order_price = bid1
-        else:
-            if ask1 is None:
+            if self.state.pending_order is not None:
+                print(f"\n[DEBUG] 拒绝：已有挂单")
                 return
-            order_price = ask1
-        
-        position, size = self.state.can_open_position(side, order_price)
-        if position is None:
-            self.state.action_log.append({'time': None, 'action': '✗拒绝', 'details': '无法开仓'})
-            self.logger.log_action("REJECTED", {'reason': '无法开仓'})
-            return
-        
-        self.state.place_pending_order(position)
+            if self.state.last_price is None:
+                print(f"\n[DEBUG] 拒绝：等待行情")
+                return
+            
+            # Maker 挂单：基于买一价/卖一价
+            bid1 = self.state.orderbook['bids'][0][0] if self.state.orderbook.get('bids') else None
+            ask1 = self.state.orderbook['asks'][0][0] if self.state.orderbook.get('asks') else None
+            
+            print(f"\n[DEBUG] 按{'多' if side == 'LONG' else '空'} | 买一={bid1} | 卖一={ask1}")
+            
+            if side == 'LONG':
+                if bid1 is None:
+                    print(f"[DEBUG] 买一价为空，无法开多")
+                    return
+                order_price = bid1
+            else:
+                if ask1 is None:
+                    print(f"[DEBUG] 卖一价为空，无法开空")
+                    return
+                order_price = ask1
+            
+            position, size = self.state.can_open_position(side, order_price)
+            if position is None:
+                print(f"[DEBUG] 无法开仓：position={position}, size={size}")
+                return
+            
+            print(f"[DEBUG] 开仓成功：{side} @ {order_price}, size={size}")
+            self.state.place_pending_order(position)
+        except Exception as e:
+            print(f"\n[DEBUG] place_order 错误：{e}")
+            import traceback
+            traceback.print_exc()
     
     async def cancel_order(self):
         """撤单"""
