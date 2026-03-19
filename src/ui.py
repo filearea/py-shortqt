@@ -112,7 +112,8 @@ class TradingUI:
     def _render_account(self) -> Text:
         """渲染账户信息"""
         acc_text = Text()
-        acc_text.append(f"余额：[green]{self.state.balance:.2f} USDT[/green]\n\n")
+        balance_val = float(self.state.balance) if hasattr(self.state.balance, '__float__') else self.state.balance
+        acc_text.append(f"余额：[green]{balance_val:.2f} USDT[/green]\n\n")
         acc_text.append(f"杠杆：{self.leverage}x\n\n")
         
         if self.state.position:

@@ -105,10 +105,12 @@ async def test_4_order_fill():
 async def test_5_take_profit():
     """测试 5: 止盈"""
     print("\n[测试 5] 止盈...")
+    print(f"  止盈前余额：{state.balance}")
     # 价格下跌到止盈价
     result = state.check_tp_sl(Decimal("2179.10"))  # 开仓价 2180.10 - 1 = 2179.10
     if result and result['type'] == 'TP':
         print(f"  ✓ 止盈成功 PnL={result['pnl']:.2f}")
+        print(f"  止盈后余额：{state.balance}")
         assert state.position is None
         assert state.balance > Decimal("10.0")  # 应该盈利
     else:
