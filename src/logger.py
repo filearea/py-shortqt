@@ -10,6 +10,15 @@ from decimal import Decimal
 import time
 
 
+def safe_float(val, default=0.0):
+    """安全转换为 float"""
+    if val is None:
+        return default
+    if isinstance(val, Decimal):
+        return float(val)
+    return float(val)
+
+
 class TradeLogger:
     """交易日志系统"""
     
@@ -130,6 +139,14 @@ class TradeLogger:
         """记录交易动作"""
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         
+        def safe_float(val, default=0.0):
+            """安全转换为 float"""
+            if val is None:
+                return default
+            if isinstance(val, Decimal):
+                return float(val)
+            return float(val)
+        
         price = details.get('price')
         size = details.get('size')
         pnl = details.get('pnl')
@@ -137,13 +154,13 @@ class TradeLogger:
         balance = details.get('balance')
         
         actions = {
-            "ORDER_PLACED": f"[挂单] 方向={details.get('side')} 价格={float(price):.2f} 数量={float(size):.3f} ETH",
-            "ORDER_FILLED": f"[成交] 挂单成交 价格={float(price):.2f} 数量={float(size):.3f} ETH",
-            "TP_FILLED": f"[止盈] 价格={float(price):.2f} 数量={float(size):.3f} ETH PnL={float(pnl):+.2f} USDT",
-            "SL_FILLED": f"[止损] 价格={float(price):.2f} 数量={float(size):.3f} ETH PnL={float(pnl):+.2f} USDT",
-            "EARLY_FILLED": f"[提前平仓] 价格={float(price):.2f} 数量={float(size):.3f} ETH PnL={float(pnl):+.2f} USDT",
-            "BALANCE_CHANGE": f"[余额] 变化={float(change):+.2f} USDT 余额={float(balance):.2f} USDT",
-            "ORDER_CANCELLED": f"[撤单] 价格={float(price):.2f}",
+            "ORDER_PLACED": f"[挂单] 方向={details.get('side')} 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH",
+            "ORDER_FILLED": f"[成交] 挂单成交 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH",
+            "TP_FILLED": f"[止盈] 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH PnL={safe_float(pnl):+.2f} USDT",
+            "SL_FILLED": f"[止损] 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH PnL={safe_float(pnl):+.2f} USDT",
+            "EARLY_FILLED": f"[提前平仓] 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH PnL={safe_float(pnl):+.2f} USDT",
+            "BALANCE_CHANGE": f"[余额] 变化={safe_float(change):+.2f} USDT 余额={safe_float(balance):.2f} USDT",
+            "ORDER_CANCELLED": f"[撤单] 价格={safe_float(price):.2f}",
             "REJECTED": f"[拒绝] 原因={details.get('reason')}",
         }
         
