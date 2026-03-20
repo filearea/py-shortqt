@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 日志系统 - 记录市场数据、交易动作、信号特征
+日志位置：项目根目录/logs/
 """
 
 import sys
@@ -8,6 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from decimal import Decimal
 import time
+import json
 
 
 def safe_float(val, default=0.0):
@@ -20,27 +22,33 @@ def safe_float(val, default=0.0):
 
 
 class TradeLogger:
-    """交易日志系统"""
+    """交易日志系统 - 记录交易数据"""
     
-    def __init__(self, log_dir: Path):
+    def __init__(self, log_dir: Path = None):
+        # 使用项目根目录的 logs 文件夹
+        if log_dir is None:
+            project_root = Path(__file__).parent.parent
+            log_dir = project_root / "logs"
+        
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_dir = log_dir / self.run_id
         self.log_dir.mkdir(parents=True, exist_ok=True)
         
-        # 日志文件
-        self.market_log = open(self.log_dir / "market_data.log", "w", encoding='utf-8')
-        self.trade_log = open(self.log_dir / "trade_actions.log", "w", encoding='utf-8')
-        self.signals_file = open(self.log_dir / "signals.csv", "w", encoding='utf-8')
-        self.snapshots_file = open(self.log_dir / "snapshots.csv", "w", encoding='utf-8')
+        # 交易日志文件
+        self.trade_log = open(self.log_dir / "trades.log", "w", encoding='utf-8')
+        self.orders_log = open(self.log_dir / "orders.log", "w", encoding='utf-8')
+        self.positions_log = open(self.log_dir / "positions.log", "w", encoding='utf-8')
+        self.pnl_log = open(self.log_dir / "pnl.log", "w", encoding='utf-8')
         
-        # CSV 头
-        self.signals_file.write("timestamp,side,entry_price,price_5s_change,price_10s_change,price_30s_change,orderbook_imbalance,spread,bid_depth_3,ask_depth_3,bid_depth_10,ask_depth_10,result,pnl,duration_sec\n")
-        self.snapshots_file.write("timestamp,price,bid1,bid1_qty,ask1,ask1_qty,spread,imbalance,bid_depth_3,ask_depth_3\n")
+        # 信号特征 CSV
+        self.signals_file = open(self.log_dir / "signals.csv", "w", encoding='utf-8')
+        self.signals_file.write("timestamp,side,entry_price,price_5s_change,price_10s_change,price_30s_change,orderbook_imbalance,spread,bid_depth_3,ask_depth_3,result,pnl,duration_sec\n")
         
         # 价格历史（用于计算变化率）
         self.price_history = []
+        self.current_signal = None
         
-        print(f"✓ 日志目录：{self.log_dir}")
+        print(f"✓ 交易日志目录：{self.log_dir}")
     
     def record_price(self, price: Decimal):
         """记录价格历史"""
@@ -78,132 +86,104 @@ class TradeLogger:
             return 0.0
         return (bid_vol - ask_vol) / total
     
-    def calc_depth(self, orderbook: dict, levels: int) -> tuple:
-        """计算前 N 档买卖盘深度"""
-        bids = orderbook.get('bids', [])[:levels]
-        asks = orderbook.get('asks', [])[:levels]
-        bid_depth = sum(q for _, q in bids)
-        ask_depth = sum(q for _, q in asks)
-        return bid_depth, ask_depth
-    
     def record_signal(self, side: str, entry_price: Decimal, orderbook: dict):
         """记录开仓信号特征"""
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         price_5s = self.calc_price_change(5)
         price_10s = self.calc_price_change(10)
         price_30s = self.calc_price_change(30)
         imbalance = self.calc_orderbook_imbalance(orderbook)
-        bid1 = orderbook['bids'][0][0] if orderbook.get('bids') else entry_price
-        ask1 = orderbook['asks'][0][0] if orderbook.get('asks') else entry_price
-        spread = float(ask1 - bid1)
-        bid_depth_3, ask_depth_3 = self.calc_depth(orderbook, 3)
-        bid_depth_10, ask_depth_10 = self.calc_depth(orderbook, 10)
         
-        line = f"{ts},{side},{float(entry_price):.2f},{price_5s:.4f},{price_10s:.4f},{price_30s:.4f},{imbalance:.4f},{spread:.4f},{bid_depth_3:.3f},{ask_depth_3:.3f},{bid_depth_10:.3f},{ask_depth_10:.3f},,,,,\n"
-        self.signals_file.write(line)
-        self.signals_file.flush()
-    
-    def update_signal_result(self, result: str, pnl: float, duration: float):
-        """更新信号结果（平仓时调用）"""
-        # 保存并关闭当前文件
-        self.signals_file.flush()
-        filepath = self.signals_file.name
-        self.signals_file.close()
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        spread = float(asks[0][0] - bids[0][0]) if bids and asks else 0
+        bid_depth_3 = sum(q for _, q in bids[:3])
+        ask_depth_3 = sum(q for _, q in asks[:3])
         
-        # 读取文件
-        with open(filepath, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        
-        if len(lines) > 1:
-            # 更新最后一行
-            last_line = lines[-1].strip()
-            parts = last_line.split(',')
-            if len(parts) >= 12:
-                parts[12] = result
-                parts[13] = f"{pnl:.2f}"
-                parts[14] = f"{duration:.1f}"
-                lines[-1] = ','.join(parts) + '\n'
-                
-                # 重写文件
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.writelines(lines)
-        
-        # 重新以追加模式打开
-        self.signals_file = open(filepath, 'a', encoding='utf-8')
-    
-    def record_snapshot(self, price: Decimal, orderbook: dict):
-        """记录市场快照（每秒）"""
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        bid1 = orderbook['bids'][0][0] if orderbook.get('bids') else Decimal(0)
-        bid1_qty = orderbook['bids'][0][1] if orderbook.get('bids') else Decimal(0)
-        ask1 = orderbook['asks'][0][0] if orderbook.get('asks') else Decimal(0)
-        ask1_qty = orderbook['asks'][0][1] if orderbook.get('asks') else Decimal(0)
-        spread = float(ask1 - bid1)
-        imbalance = self.calc_orderbook_imbalance(orderbook)
-        bid_depth_3, ask_depth_3 = self.calc_depth(orderbook, 3)
-        
-        line = f"{ts},{float(price):.2f},{float(bid1):.2f},{float(bid1_qty):.3f},{float(ask1):.2f},{float(ask1_qty):.3f},{spread:.4f},{imbalance:.4f},{bid_depth_3:.3f},{ask_depth_3:.3f}\n"
-        self.snapshots_file.write(line)
-        self.snapshots_file.flush()
-    
-    def log_action(self, action_type: str, details: dict):
-        """记录交易动作"""
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        
-        def safe_float(val, default=0.0):
-            """安全转换为 float"""
-            if val is None:
-                return default
-            if isinstance(val, Decimal):
-                return float(val)
-            return float(val)
-        
-        price = details.get('price')
-        size = details.get('size')
-        pnl = details.get('pnl')
-        change = details.get('change')
-        balance = details.get('balance')
-        
-        actions = {
-            "ORDER_PLACED": f"[挂单] 方向={details.get('side')} 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH",
-            "ORDER_FILLED": f"[成交] 挂单成交 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH",
-            "TP_FILLED": f"[止盈] 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH PnL={safe_float(pnl):+.2f} USDT",
-            "SL_FILLED": f"[止损] 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH PnL={safe_float(pnl):+.2f} USDT",
-            "EARLY_FILLED": f"[提前平仓] 价格={safe_float(price):.2f} 数量={safe_float(size):.3f} ETH PnL={safe_float(pnl):+.2f} USDT",
-            "BALANCE_CHANGE": f"[余额] 变化={safe_float(change):+.2f} USDT 余额={safe_float(balance):.2f} USDT",
-            "ORDER_CANCELLED": f"[撤单] 价格={safe_float(price):.2f}",
-            "REJECTED": f"[拒绝] 原因={details.get('reason')}",
+        self.current_signal = {
+            'timestamp': timestamp,
+            'side': side,
+            'entry_price': float(entry_price),
+            'price_5s_change': price_5s,
+            'price_10s_change': price_10s,
+            'price_30s_change': price_30s,
+            'orderbook_imbalance': imbalance,
+            'spread': spread,
+            'bid_depth_3': bid_depth_3,
+            'ask_depth_3': ask_depth_3
         }
-        
-        msg = actions.get(action_type, f"[{action_type}] {details}")
-        self.trade_log.write(f"{ts} {msg}\n")
+    
+    def update_signal_result(self, result_type: str, pnl: float, duration_sec: float):
+        """更新信号结果（止盈/止损后）"""
+        if self.current_signal:
+            self.current_signal['result'] = result_type
+            self.current_signal['pnl'] = pnl
+            self.current_signal['duration_sec'] = duration_sec
+            
+            # 写入 CSV
+            line = f"{self.current_signal['timestamp']},{self.current_signal['side']},{self.current_signal['entry_price']:.2f}," \
+                   f"{self.current_signal['price_5s_change']:.4f},{self.current_signal['price_10s_change']:.4f}," \
+                   f"{self.current_signal['price_30s_change']:.4f},{self.current_signal['orderbook_imbalance']:.4f}," \
+                   f"{self.current_signal['spread']:.2f},{self.current_signal['bid_depth_3']:.3f}," \
+                   f"{self.current_signal['ask_depth_3']:.3f},{self.current_signal['result']},{self.current_signal['pnl']:.6f}," \
+                   f"{self.current_signal['duration_sec']:.2f}\n"
+            self.signals_file.write(line)
+            self.signals_file.flush()
+            self.current_signal = None
+    
+    def log_trade(self, action: str, details: dict):
+        """记录交易动作"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        log_entry = {
+            'timestamp': timestamp,
+            'action': action,
+            **details
+        }
+        self.trade_log.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
         self.trade_log.flush()
     
-    def log_market_data(self, price: Decimal, orderbook: dict):
-        """记录市场数据"""
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        bid1 = orderbook['bids'][0] if orderbook.get('bids') else (None, None)
-        ask1 = orderbook['asks'][0] if orderbook.get('asks') else (None, None)
-        
-        bid1_price = f"{bid1[0]:.2f}" if bid1 and bid1[0] else "N/A"
-        bid1_qty = f"{bid1[1]:.3f}" if bid1 and bid1[1] else "N/A"
-        ask1_price = f"{ask1[0]:.2f}" if ask1 and ask1[0] else "N/A"
-        ask1_qty = f"{ask1[1]:.3f}" if ask1 and ask1[1] else "N/A"
-        
-        line = f"{ts} | {price:>10.2f} | {bid1_price:>10} | {bid1_qty:>10} | {ask1_price:>10} | {ask1_qty:>10}\n"
-        self.market_log.write(line)
-        self.market_log.flush()
+    def log_order(self, order_type: str, order_data: dict):
+        """记录订单信息"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        log_entry = {
+            'timestamp': timestamp,
+            'order_type': order_type,
+            **order_data
+        }
+        self.orders_log.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        self.orders_log.flush()
+    
+    def log_position(self, side: str, entry_price: float, size: float, current_pnl: float = 0):
+        """记录持仓信息"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        log_entry = {
+            'timestamp': timestamp,
+            'side': side,
+            'entry_price': entry_price,
+            'size': size,
+            'current_pnl': current_pnl
+        }
+        self.positions_log.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        self.positions_log.flush()
+    
+    def log_pnl(self, action: str, pnl: float, details: dict = None):
+        """记录 PnL"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        log_entry = {
+            'timestamp': timestamp,
+            'action': action,
+            'pnl': pnl,
+            'details': details or {}
+        }
+        self.pnl_log.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        self.pnl_log.flush()
     
     def close(self):
-        """关闭日志文件"""
-        self.market_log.close()
+        """关闭所有日志文件"""
         self.trade_log.close()
+        self.orders_log.close()
+        self.positions_log.close()
+        self.pnl_log.close()
         self.signals_file.close()
-        self.snapshots_file.close()
-        
-        signals_count = len(open(self.log_dir / 'signals.csv').readlines()) - 1
-        snapshots_count = len(open(self.log_dir / 'snapshots.csv').readlines()) - 1
-        
-        print(f"✓ 日志已保存：{self.log_dir}")
-        print(f"✓ 信号记录：{signals_count} 条")
-        print(f"✓ 市场快照：{snapshots_count} 条")
+        print(f"✓ 日志已保存至：{self.log_dir}")

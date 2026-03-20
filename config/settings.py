@@ -2,13 +2,22 @@
 
 # 币安配置
 BINANCE_WS_URL = "wss://fstream.binance.com/ws"
-SYMBOL = "ethusdc"
+BINANCE_API_URL = "https://fapi.binance.com"
+SYMBOL = "ETHUSDC"
 
 # 交易参数
-LEVERAGE = 75  # 杠杆倍数
-INITIAL_BALANCE = 10  # 初始保证金 (USDT)
+LEVERAGE_LIMIT = 100  # API 设置的杠杆上限
+ACTUAL_LEVERAGE = 25  # 实际仓位计算用的杠杆（测试环境）
+INITIAL_BALANCE = 35  # 初始保证金 (USDT) - 实盘从账户读取，此参数用于模拟
 TAKE_PROFIT_POINTS = 1  # 止盈点数
 STOP_LOSS_POINTS = 3  # 止损点数
+
+# 实盘配置
+USE_LIVE_TRADING = True  # True=实盘，False=模拟
+TESTNET = False  # 是否使用测试网
+
+# 订单超时配置
+ORDER_TIMEOUT_SECONDS = 2.0  # 挂单超时时间（秒）
 
 # 日志配置
 LOG_BASE_DIR = "logs"

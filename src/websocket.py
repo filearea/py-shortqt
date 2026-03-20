@@ -28,6 +28,8 @@ class BinanceListener:
     async def connect(self):
         """连接 WebSocket"""
         self.running = True
+        print(f"[WebSocket] 尝试连接：{self.ws_url}")
+        
         while self.running:
             try:
                 async with websockets.connect(self.ws_url) as ws:

@@ -1,0 +1,294 @@
+# -*- coding: utf-8 -*-
+"""
+币安 Futures API 客户端
+封装 REST API 调用
+"""
+
+import requests
+from decimal import Decimal
+from pathlib import Path
+import json
+
+from .signature import build_signed_params, get_timestamp
+
+
+class BinanceClient:
+    """币安 Futures API 客户端"""
+    
+    def __init__(self, api_key: str, api_secret: str, testnet: bool = False):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        
+        # API 端点
+        if testnet:
+            self.base_url = "https://demo-fapi.binance.com"  # 新测试网
+        else:
+            self.base_url = "https://fapi.binance.com"
+        
+        self.session = requests.Session()
+        self.session.headers.update({
+            'X-MBX-APIKEY': self.api_key,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        })
+    
+    def _get(self, path: str, params: dict = None, signed: bool = False) -> dict:
+        """GET 请求"""
+        url = f"{self.base_url}{path}"
+        
+        if signed:
+            params = build_signed_params(params or {}, self.api_secret)
+            # 签名后，把参数字符串直接拼接到 URL（避免 requests 再次编码）
+            query_string = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
+            url = f"{url}?{query_string}"
+            response = self.session.get(url)
+        else:
+            response = self.session.get(url, params=params)
+        
+        return self._handle_response(response)
+    
+    def _post(self, path: str, params: dict = None, signed: bool = False) -> dict:
+        """POST 请求"""
+        url = f"{self.base_url}{path}"
+        
+        if signed:
+            params = build_signed_params(params or {}, self.api_secret)
+            # 签名后，把参数字符串直接作为 data 发送（避免 requests 再次编码）
+            data = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
+            response = self.session.post(url, data=data)
+        else:
+            response = self.session.post(url, data=params)
+        
+        return self._handle_response(response)
+    
+    def _delete(self, path: str, params: dict = None, signed: bool = False) -> dict:
+        """DELETE 请求"""
+        url = f"{self.base_url}{path}"
+        
+        if signed:
+            params = build_signed_params(params or {}, self.api_secret)
+            # 签名后，把参数字符串直接拼接到 URL
+            query_string = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
+            url = f"{url}?{query_string}"
+            response = self.session.delete(url)
+        else:
+            response = self.session.delete(url, params=params)
+        
+        return self._handle_response(response)
+    
+    def _handle_response(self, response: requests.Response) -> dict:
+        """处理响应"""
+        if response.status_code == 200:
+            return response.json()
+        else:
+            error = response.json() if response.text else {'code': response.status_code}
+            raise BinanceAPIError(error.get('code', -1), error.get('msg', 'Unknown error'))
+    
+    # ==================== 公共接口（无需签名）====================
+    
+    def get_server_time(self) -> int:
+        """获取服务器时间"""
+        data = self._get('/fapi/v1/time')
+        return data['serverTime']
+    
+    def get_exchange_info(self, symbol: str = None) -> dict:
+        """获取交易规则"""
+        params = {'symbol': symbol} if symbol else {}
+        return self._get('/fapi/v1/exchangeInfo', params)
+    
+    # ==================== 账户接口（需要签名）====================
+    
+    def get_balance(self) -> list:
+        """获取账户余额"""
+        return self._get('/fapi/v2/balance', signed=True)
+    
+    def get_position(self, symbol: str = None) -> list:
+        """获取持仓信息"""
+        params = {'symbol': symbol} if symbol else {}
+        return self._get('/fapi/v2/positionRisk', params, signed=True)
+    
+    def get_open_orders(self, symbol: str = None) -> list:
+        """获取当前挂单"""
+        params = {'symbol': symbol} if symbol else {}
+        return self._get('/fapi/v1/openOrders', params, signed=True)
+    
+    def get_account(self) -> dict:
+        """获取账户信息"""
+        return self._get('/fapi/v2/account', signed=True)
+    
+    # ==================== 交易接口（需要签名）====================
+    
+    def set_leverage(self, symbol: str, leverage: int) -> dict:
+        """设置杠杆倍数"""
+        return self._post('/fapi/v1/leverage', {
+            'symbol': symbol,
+            'leverage': leverage
+        }, signed=True)
+    
+    def place_algo_order(self, symbol: str, side: str, type: str, 
+                    price: str = None, quantity: str = None,
+                    timeInForce: str = 'GTC', 
+                    triggerPrice: str = None,
+                    workingType: str = None,
+                    priceMatch: str = None,
+                    positionSide: str = None,
+                    newOrderRespType: str = 'RESULT') -> dict:
+        """
+        Algo Order API 下单（用于条件单：STOP, STOP_MARKET, TAKE_PROFIT 等）
+        接口：/fapi/v1/algoOrder
+        
+        Args:
+            price: 限价（与 priceMatch 互斥）
+            priceMatch: 'QUEUE'/'QUEUE_5'/'OPPONENT'/'OPPONENT_5'（与 price 互斥）
+        """
+        params = {
+            'symbol': symbol,
+            'side': side,
+            'type': type,
+            'quantity': quantity,
+            'newOrderRespType': newOrderRespType,
+            'algoType': 'CONDITIONAL'  # Algo Order API 必需参数，固定为 CONDITIONAL
+        }
+        
+        if price:
+            params['price'] = price
+        
+        if timeInForce:
+            params['timeInForce'] = timeInForce
+        
+        if triggerPrice:
+            params['triggerPrice'] = triggerPrice
+        
+        if workingType:
+            params['workingType'] = workingType
+        
+        if priceMatch:
+            params['priceMatch'] = priceMatch
+        
+        if positionSide:
+            params['positionSide'] = positionSide
+        
+        print(f"[API DEBUG] Algo 下单：{symbol} {side} {type} @ {price or priceMatch}, params={params}")
+        
+        return self._post('/fapi/v1/algoOrder', params, signed=True)
+    
+    def cancel_all_open_orders(self, symbol: str) -> dict:
+        """
+        撤销全部订单（普通订单 + 条件单）
+        接口：/fapi/v1/algoOpenOrders
+        """
+        params = {
+            'symbol': symbol
+        }
+        return self._delete('/fapi/v1/algoOpenOrders', params, signed=True)
+    
+    def cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+        """
+        撤销条件单（Algo Order API）
+        接口：/fapi/v1/algoOrder
+        """
+        params = {
+            'symbol': symbol,
+            'algoId': algo_id
+        }
+        return self._delete('/fapi/v1/algoOrder', params, signed=True)
+    
+    def cancel_all_orders(self, symbol: str) -> dict:
+        """撤销所有挂单"""
+        return self._delete('/fapi/v1/allOpenOrders', {
+            'symbol': symbol
+        }, signed=True)
+    
+    def place_order(self, symbol: str, side: str, type: str, 
+                    price: str = None, quantity: str = None,
+                    timeInForce: str = 'GTC', 
+                    stopPrice: str = None,
+                    workingType: str = None,
+                    priceMatch: str = None,
+                    positionSide: str = None,
+                    newOrderRespType: str = 'RESULT') -> dict:
+        """
+        下单（双向持仓模式）
+        
+        Args:
+            symbol: 交易对，如 'ETHUSDC'
+            side: 'BUY' 或 'SELL'
+            type: 订单类型
+            price: 限价单价格（与 priceMatch 互斥）
+            quantity: 下单数量
+            timeInForce: 'GTC'
+            stopPrice: 触发价（条件单需要）
+            priceMatch: 'QUEUE'/'QUEUE_5'/'OPPONENT'/'OPPONENT_5'（与 price 互斥）
+            positionSide: 'LONG' 或 'SHORT'
+        
+        Returns:
+            订单信息
+        
+        注意：双向持仓模式不接受 reduceOnly 参数
+        """
+        params = {
+            'symbol': symbol,
+            'side': side,
+            'type': type,
+            'quantity': quantity,
+            'newOrderRespType': newOrderRespType
+        }
+        
+        if price:
+            params['price'] = price
+        
+        if timeInForce:
+            params['timeInForce'] = timeInForce
+        
+        if stopPrice:
+            params['stopPrice'] = stopPrice
+        
+        if workingType:
+            params['workingType'] = workingType
+        
+        if priceMatch:
+            params['priceMatch'] = priceMatch
+        
+        if positionSide:
+            params['positionSide'] = positionSide
+        
+        print(f"[API DEBUG] 下单：{symbol} {side} {type} @ {price or priceMatch}, params={params}")
+        
+        return self._post('/fapi/v1/order', params, signed=True)
+    
+    def cancel_order(self, symbol: str, order_id: int) -> dict:
+        """撤单"""
+        return self._delete('/fapi/v1/order', {
+            'symbol': symbol,
+            'orderId': order_id
+        }, signed=True)
+    
+    def cancel_all_orders(self, symbol: str) -> dict:
+        """撤销所有挂单"""
+        return self._delete('/fapi/v1/allOpenOrders', {
+            'symbol': symbol
+        }, signed=True)
+    
+    # ==================== 用户数据流====================
+    
+    def get_listen_key(self) -> str:
+        """获取用户数据流 listenKey"""
+        data = self._post('/fapi/v1/listenKey')
+        return data['listenKey']
+    
+    def keep_alive_listen_key(self, listen_key: str) -> dict:
+        """保活 listenKey"""
+        return self._put('/fapi/v1/listenKey', {'listenKey': listen_key})
+    
+    def _put(self, path: str, params: dict = None) -> dict:
+        """PUT 请求（用于 listenKey 保活）"""
+        url = f"{self.base_url}{path}"
+        response = self.session.put(url, params=params)
+        return self._handle_response(response)
+
+
+class BinanceAPIError(Exception):
+    """币安 API 错误"""
+    def __init__(self, code: int, msg: str):
+        self.code = code
+        self.msg = msg
+        super().__init__(f"[{code}] {msg}")
