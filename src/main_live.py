@@ -213,6 +213,8 @@ class LiveTradingBot:
                             
                             # 在设置界面中
                             if self.in_settings:
+                                self.sys_logger.debug(f"设置界面按键：{repr(key)} {key_char}")
+                                
                                 if key == b'\xe0' or key == b'\x00':
                                     key = msvcrt.getch()
                                     if key == b'H':  # ↑
@@ -242,11 +244,14 @@ class LiveTradingBot:
                                     # S 保存并退出
                                     success, errors = self.settings_ui.save_config()
                                     if success:
-                                        self.trader._add_action("✓ 配置已保存并退出", "")
+                                        msg = "✓ 配置已保存并退出"
+                                        self.trader._add_action(msg, "")
+                                        self.sys_logger.info(f"设置操作：{msg}")
                                         self.in_settings = False
                                     else:
                                         for err in errors:
                                             self.trader._add_action("⚠️ 配置错误", err)
+                                            self.sys_logger.error(f"设置错误：{err}")
                                 else:
                                     # 其他按键交给设置界面处理
                                     result = self.settings_ui.handle_key(key_char)

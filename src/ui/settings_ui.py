@@ -87,13 +87,18 @@ class SettingsUI:
                 lines.extend(self._render_backup_tab_lines())
             
             # 日志区域（如果有 trader）
-            if self.trader and hasattr(self.trader, 'action_log') and self.trader.action_log:
-                lines.append("")
-                lines.append("─" * 50)
-                lines.append("[bold]最近操作[/bold]")
-                for action in reversed(self.trader.action_log[-3:]):
-                    time_str = action['time'].strftime('%H:%M:%S') if hasattr(action['time'], 'strftime') else ''
-                    lines.append(f"  [{time_str}] {action['action']}: {action['details']}")
+            if self.trader and hasattr(self.trader, 'action_log'):
+                actions = self.trader.action_log
+                if actions:
+                    lines.append("")
+                    lines.append("─" * 50)
+                    lines.append("[bold]最近操作[/bold]")
+                    for action in reversed(actions[-5:]):
+                        time_str = action['time'].strftime('%H:%M:%S.%f')[:-3] if hasattr(action['time'], 'strftime') else ''
+                        lines.append(f"  [{time_str}] {action['action']}: {action['details']}")
+                else:
+                    lines.append("")
+                    lines.append("[dim]暂无操作记录[/dim]")
             
             lines.append("")
             lines.append(self._render_footer_lines())
