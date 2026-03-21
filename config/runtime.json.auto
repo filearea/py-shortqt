@@ -1,23 +1,23 @@
 {
     "take_profit": {
-        "mode": "percentage",
-        "points": 1.01,
+        "mode": "fixed",
+        "points": 1.55,
         "percent": 2.0
     },
     "stop_loss": {
-        "trigger_mode": "percentage",
-        "trigger_points": 15.0,
+        "trigger_mode": "fixed",
+        "trigger_points": 6.0,
         "trigger_percent": 0.5,
-        "limit_mode": "custom",
+        "limit_mode": "queue",
         "limit_offset": 25.0
     },
     "stop_market": {
-        "max_loss_percent": 10
+        "max_loss_percent": 50.0
     },
     "leverage": {
-        "api": 10,
-        "actual": 10
+        "api": 100,
+        "actual": 75
     },
     "order_timeout_seconds": 2.0,
-    "last_modified": "2026-03-21T15:40:13.968245"
+    "last_modified": "2026-03-21T16:46:30.548810"
 }

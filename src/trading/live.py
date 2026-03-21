@@ -465,7 +465,7 @@ class LiveTrader:
             # 2. 从 config_manager 获取止盈止损配置
             if self.config_manager:
                 tp_price = self.config_manager.get_take_profit_price(entry_price)
-                sl_trigger, sl_algo_params = self.config_manager.get_stop_loss_params(entry_price, side, size)
+                sl_trigger, sl_algo_params = self.config_manager.get_stop_loss_params(self.symbol, entry_price, side, size)
                 sm_price = self.config_manager.get_stop_market_price(
                     entry_price, side, size, self.available_balance, liquidation_price or Decimal('0')
                 )

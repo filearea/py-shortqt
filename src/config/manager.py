@@ -159,7 +159,7 @@ class ConfigManager:
             percent = Decimal(str(tp.get('percent', 0.36)))
             return entry_price * (Decimal('1') + percent / Decimal('100'))
     
-    def get_stop_loss_params(self, entry_price: Decimal, side: str, size: Decimal) -> tuple[Decimal, dict]:
+    def get_stop_loss_params(self, symbol: str, entry_price: Decimal, side: str, size: Decimal) -> tuple[Decimal, dict]:
         """
         计算止损单参数
         返回：(触发价，Algo API 参数)
@@ -183,6 +183,9 @@ class ConfigManager:
         
         # 2. 构建 Algo API 参数
         algo_params = {
+            'symbol': symbol,  # 交易对
+            'side': 'SELL' if side == 'LONG' else 'BUY',  # 止损方向
+            'type': 'STOP',  # STOP 类型
             'triggerPrice': str(trigger_price),
             'quantity': str(size),
             'workingType': 'CONTRACT_PRICE',
