@@ -127,7 +127,7 @@ class LiveTrader:
                 commission = Decimal(order_data.get('fc', '0'))
                 commission_asset = order_data.get('fs', 'USDC')
                 
-                print(f"[开仓成交] 建立持仓，下止盈止损单...")
+                print(f"[开仓成交] 挂单完全成交，等待 2 秒后下止盈止损单...")
                 print(f"  成交价：{entry_price}, 成交量：{filled_qty}")
                 print(f"  手续费：{commission} {commission_asset}")
                 self._add_action("开仓成交", f"{side} @ {entry_price} x {filled_qty} | 手续费 {commission} {commission_asset}")
@@ -139,8 +139,8 @@ class LiveTrader:
                     'time': datetime.now()
                 }
                 self.pending_order = None
-                # 下止盈止损单（异步任务）
-                asyncio.create_task(self._safe_place_tp_sl_orders())
+                # 等待 2 秒让仓位完全建立，强平价更新
+                asyncio.create_task(self._delayed_place_tp_sl_orders(2))
             
             elif order_status == 'CANCELED':
                 self._add_action("开仓撤销", "开仓挂单已撤销")
@@ -429,6 +429,13 @@ class LiveTrader:
             import traceback
             traceback.print_exc()
             self._add_action("止盈止损异常", str(e))
+    
+    async def _delayed_place_tp_sl_orders(self, delay_seconds: int = 2):
+        """延迟放置止盈止损单（等待仓位完全建立，强平价更新）"""
+        print(f"  等待 {delay_seconds} 秒，让仓位完全建立...")
+        await asyncio.sleep(delay_seconds)
+        print(f"  等待完成，开始下止盈止损单...")
+        await self._safe_place_tp_sl_orders()
     
     async def place_tp_sl_orders(self):
         """开仓成功后，放置止盈止损单（使用 config_manager 配置）"""
