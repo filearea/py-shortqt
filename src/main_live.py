@@ -61,9 +61,6 @@ class LiveTradingBot:
         # 初始化配置管理器
         self.config_manager = ConfigManager(project_root / "config" / "runtime.json")
         
-        # 同步配置到 settings_ui
-        self.settings_ui.config_manager = self.config_manager
-        
         # 获取杠杆配置
         api_lev, actual_lev = self.config_manager.get_leverage_config()
         
