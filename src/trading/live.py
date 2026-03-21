@@ -604,6 +604,8 @@ class LiveTrader:
             
             # 3. 止损单（使用 config_manager 配置）
             print(f"[3/3] 下止损单...")
+            sl_order = None  # 初始化变量
+            
             if self.config_manager and sl_algo_params:
                 # 从配置读取止损参数
                 print(f"  止损参数：{sl_algo_params}")
@@ -627,36 +629,48 @@ class LiveTrader:
                     sl_trigger = entry_price + Decimal('3')
                     sl_side = 'BUY'
                 
-                sl_order = self.api.place_algo_order(
-                    symbol=self.symbol,
-                    side=sl_side,
-                    type='STOP',
-                    triggerPrice=str(sl_trigger),
-                    priceMatch='QUEUE',
-                    quantity=str(size),
-                    timeInForce='GTC',
-                    workingType='CONTRACT_PRICE',
-                    positionSide=side
-                )
-                actual_price = Decimal(sl_order.get('price', '0'))
-                sl_trigger_display = sl_trigger
+                try:
+                    sl_order = self.api.place_algo_order(
+                        symbol=self.symbol,
+                        side=sl_side,
+                        type='STOP',
+                        triggerPrice=str(sl_trigger),
+                        priceMatch='QUEUE',
+                        quantity=str(size),
+                        timeInForce='GTC',
+                        workingType='CONTRACT_PRICE',
+                        positionSide=side
+                    )
+                    actual_price = Decimal(sl_order.get('price', '0'))
+                    sl_trigger_display = sl_trigger
+                    print(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}")
+                except Exception as e:
+                    print(f"  ✗ 止损单失败：{e}")
+                    import traceback
+                    traceback.print_exc()
+                    sl_trigger_display = sl_trigger
+                    actual_price = Decimal('0')
             
-            # 确定止损单方向
-            if self.config_manager and sl_algo_params:
-                sl_side = sl_algo_params.get('side', 'SELL' if side == 'LONG' else 'BUY')
+            # 只有止损单成功才记录
+            if sl_order:
+                # 确定止损单方向
+                if self.config_manager and sl_algo_params:
+                    sl_side = sl_algo_params.get('side', 'SELL' if side == 'LONG' else 'BUY')
+                else:
+                    sl_side = 'SELL' if side == 'LONG' else 'BUY'
+                
+                self.sl_order = {
+                    'algoId': sl_order['algoId'],
+                    'side': sl_side,
+                    'trigger': sl_trigger,
+                    'price': actual_price,
+                    'type': 'STOP'
+                }
+                
+                self._add_action("止损单已下", f"触发={sl_trigger_display}, 限价={actual_price:.2f}")
+                print(f"✓ 止损单已下：触发={sl_trigger_display}, 限价={actual_price:.2f}, algoId={sl_order['algoId']}")
             else:
-                sl_side = 'SELL' if side == 'LONG' else 'BUY'
-            
-            self.sl_order = {
-                'algoId': sl_order['algoId'],
-                'side': sl_side,
-                'trigger': sl_trigger,
-                'price': actual_price,
-                'type': 'STOP'
-            }
-            
-            self._add_action("止损单已下", f"触发={sl_trigger_display}, 限价={actual_price:.2f}")
-            print(f"✓ 止损单已下：触发={sl_trigger_display}, 限价={actual_price:.2f}, algoId={sl_order['algoId']}")
+                print(f"✗ 止损单失败，跳过记录")
             
             # 4. 保底止损（使用 config_manager 配置）
             print(f"[4/3] 下保底止损...")
