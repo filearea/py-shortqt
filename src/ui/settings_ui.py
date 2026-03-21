@@ -83,18 +83,29 @@ class SettingsUI:
         config = self.config_manager.get_config()
         lines = []
         
-        # 渲染每个字段
+        # 获取可见字段列表
         visible_fields = []
         for i, field in enumerate(self.tabs[0]['fields']):
-            # 检查可见性
             if 'visible_cond' in field:
                 if not field['visible_cond'](config):
                     continue
-            
             visible_fields.append((i, field))
-            
+        
+        if not visible_fields:
+            lines.append("无可用配置项")
+            return lines
+        
+        # 确保 current_field 在有效范围内
+        max_field = len(visible_fields) - 1
+        if self.current_field > max_field:
+            self.current_field = max_field
+        if self.current_field < 0:
+            self.current_field = 0
+        
+        # 渲染每个可见字段
+        for visible_idx, (original_idx, field) in enumerate(visible_fields):
             # 渲染字段
-            prefix = "→ " if i == self.current_field else "  "
+            prefix = "→ " if visible_idx == self.current_field else "  "
             value = self._get_nested_value(config, field['key'])
             
             if field['type'] == 'select':
@@ -308,22 +319,25 @@ class SettingsUI:
         max_field = len(visible_fields) - 1
         if self.current_field > max_field:
             self.current_field = max_field
+        if self.current_field < 0:
+            self.current_field = 0
         
         if key == 'up':
-            # 上一个字段
+            # 上一个字段（基于可见字段索引）
             self.current_field = max(0, self.current_field - 1)
             self.editing = False
             self.input_buffer = ""
         
         elif key == 'down':
-            # 下一个字段
+            # 下一个字段（基于可见字段索引）
             self.current_field = min(max_field, self.current_field + 1)
             self.editing = False
             self.input_buffer = ""
         
         elif key == 'left':
-            # 减少数值
-            field_idx, field = visible_fields[self.current_field]
+            # 减少数值（基于可见字段索引）
+            visible_idx = self.current_field
+            field_idx, field = visible_fields[visible_idx]
             if field['type'] in ['decimal', 'int']:
                 current = self._get_nested_value(config, field['key'])
                 if current is not None:
@@ -339,8 +353,9 @@ class SettingsUI:
                     self.modified = True
         
         elif key == 'right':
-            # 增加数值
-            field_idx, field = visible_fields[self.current_field]
+            # 增加数值（基于可见字段索引）
+            visible_idx = self.current_field
+            field_idx, field = visible_fields[visible_idx]
             if field['type'] in ['decimal', 'int']:
                 current = self._get_nested_value(config, field['key'])
                 if current is not None:
@@ -356,8 +371,9 @@ class SettingsUI:
                     self.modified = True
         
         elif key == 'enter':
-            # 确认/切换选项
-            field_idx, field = visible_fields[self.current_field]
+            # 确认/切换选项（基于可见字段索引）
+            visible_idx = self.current_field
+            field_idx, field = visible_fields[visible_idx]
             if field['type'] == 'select':
                 # 切换选项
                 options = field['options']
@@ -373,8 +389,9 @@ class SettingsUI:
                 self.input_buffer = ""
         
         elif key.isdigit() or key == '.':
-            # 数字输入
-            field_idx, field = visible_fields[self.current_field]
+            # 数字输入（基于可见字段索引）
+            visible_idx = self.current_field
+            field_idx, field = visible_fields[visible_idx]
             if field['type'] in ['decimal', 'int']:
                 if not self.editing:
                     self.editing = True
@@ -382,11 +399,15 @@ class SettingsUI:
                 self.input_buffer += key
         
         elif key == 'd':
-            # 重置默认
+            # 重置默认（基于可见字段索引）
+            visible_idx = self.current_field
+            field_idx, field = visible_fields[visible_idx]
             return 'reset_confirm'
         
         elif key == 'b':
-            # 备份
+            # 备份（基于可见字段索引）
+            visible_idx = self.current_field
+            field_idx, field = visible_fields[visible_idx]
             self.config_manager.backup_config()
             return 'backed_up'
         
