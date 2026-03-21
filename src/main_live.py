@@ -169,7 +169,7 @@ class LiveTradingBot:
             return
         
         print("=" * 70)
-        print("操作：↑/W 做多  |  ↓/A 做空  |  ←撤单  |  →/D 平仓  |  S 设置  |  Q 退出")
+        print("操作：↑做多  |  ↓做空  |  ←撤单  |  →平仓  |  S 设置  |  Q 退出")
         print("=" * 70)
         
         # 3. 主循环
@@ -235,7 +235,7 @@ class LiveTradingBot:
                                         pass
                                 continue
                             
-                            # 主交易界面
+                            # 主交易界面 - 只用方向键
                             if key == b'\xe0' or key == b'\x00':
                                 key = msvcrt.getch()
                                 if key == b'H':  # ↑
@@ -246,18 +246,10 @@ class LiveTradingBot:
                                     await self.close_position_early()
                                 elif key == b'K':  # ←
                                     await self.cancel_order()
-                            elif key.lower() == b'w':
-                                await self.place_order('LONG')
-                            elif key.lower() == b'a':
-                                await self.place_order('SHORT')  # A 键开空
                             elif key.lower() == b's':
                                 # 进入设置界面
                                 if not self.try_enter_settings():
                                     pass  # 已在 try_enter_settings 中记录日志
-                            elif key.lower() == b'd':
-                                await self.close_position_early()  # D 键提前平仓
-                            elif key.lower() == b'q':
-                                await self.cancel_order()
                             elif key.upper() == b'Q':
                                 self.running = False
                         except Exception as e:
