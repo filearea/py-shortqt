@@ -431,7 +431,7 @@ class LiveTrader:
             self._add_action("止盈止损异常", str(e))
     
     async def place_tp_sl_orders(self):
-        """开仓成功后，放置止盈止损单"""
+        """开仓成功后，放置止盈止损单（使用 config_manager 配置）"""
         if not self.position:
             print("✗ 止盈止损失败：无持仓")
             return
@@ -462,15 +462,25 @@ class LiveTrader:
             else:
                 print(f"✓ 强平价有效：{liquidation_price}")
             
-            # 2. 止盈单（LIMIT 限价单，保证 Maker）
-            # 多单止盈：开仓价 +1 点；空单止盈：开仓价 -1 点
-            # 如果目标价会被立即成交（Taker），则改用 QUEUE（同向价 1）
+            # 2. 从 config_manager 获取止盈止损配置
+            if self.config_manager:
+                tp_price = self.config_manager.get_take_profit_price(entry_price)
+                sl_trigger, sl_algo_params = self.config_manager.get_stop_loss_params(entry_price, side, size)
+                sm_price = self.config_manager.get_stop_market_price(
+                    entry_price, side, size, self.available_balance, liquidation_price or Decimal('0')
+                )
+                print(f"  配置止盈：{tp_price}, 止损触发：{sl_trigger}, 保底：{sm_price}")
+            else:
+                # 兼容模式：使用硬编码值
+                tp_price = entry_price + Decimal('1')
+                sl_trigger = entry_price - Decimal('3')
+                sm_price = liquidation_price + Decimal('1') if liquidation_price else Decimal('0')
+            
+            # 3. 止盈单（LIMIT 限价单，保证 Maker）
             print(f"[2/3] 下止盈单...")
             if side == 'LONG':
-                tp_price = entry_price + Decimal('1')
                 tp_side = 'SELL'
             else:
-                tp_price = entry_price - Decimal('1')
                 tp_side = 'BUY'
             
             # 检查是否会变成 Taker
@@ -522,29 +532,41 @@ class LiveTrader:
                 'type': 'LIMIT'
             }
             
-            # 3. 止损单（STOP 条件限价单，用 Algo Order API + QUEUE 保证 Maker）
+            # 3. 止损单（使用 config_manager 配置）
             print(f"[3/3] 下止损单...")
-            if side == 'LONG':
-                sl_trigger = entry_price - Decimal('3')
-                sl_side = 'SELL'
+            if self.config_manager:
+                # 从配置读取止损参数
+                sl_order = self.api.place_algo_order(**sl_algo_params)
+                actual_price = Decimal(sl_order.get('price', '0'))
+                sl_trigger_display = sl_algo_params.get('triggerPrice', sl_trigger)
             else:
-                sl_trigger = entry_price + Decimal('3')
-                sl_side = 'BUY'
+                # 兼容模式：硬编码
+                if side == 'LONG':
+                    sl_trigger = entry_price - Decimal('3')
+                    sl_side = 'SELL'
+                else:
+                    sl_trigger = entry_price + Decimal('3')
+                    sl_side = 'BUY'
+                
+                sl_order = self.api.place_algo_order(
+                    symbol=self.symbol,
+                    side=sl_side,
+                    type='STOP',
+                    triggerPrice=str(sl_trigger),
+                    priceMatch='QUEUE',
+                    quantity=str(size),
+                    timeInForce='GTC',
+                    workingType='CONTRACT_PRICE',
+                    positionSide=side
+                )
+                actual_price = Decimal(sl_order.get('price', '0'))
+                sl_trigger_display = sl_trigger
             
-            sl_order = self.api.place_algo_order(
-                symbol=self.symbol,
-                side=sl_side,
-                type='STOP',
-                triggerPrice=str(sl_trigger),
-                priceMatch='QUEUE',  # 同向价 1，保证 Maker
-                quantity=str(size),
-                timeInForce='GTC',
-                workingType='CONTRACT_PRICE',
-                positionSide=side
-            )
-            
-            # 获取实际挂单价格
-            actual_price = Decimal(sl_order.get('price', '0'))
+            # 确定止损单方向
+            if self.config_manager and sl_algo_params:
+                sl_side = sl_algo_params.get('side', 'SELL' if side == 'LONG' else 'BUY')
+            else:
+                sl_side = 'SELL' if side == 'LONG' else 'BUY'
             
             self.sl_order = {
                 'algoId': sl_order['algoId'],
@@ -554,27 +576,35 @@ class LiveTrader:
                 'type': 'STOP'
             }
             
-            self._add_action("止损单已下", f"触发={sl_trigger}, QUEUE @ {actual_price:.2f}")
-            print(f"✓ 止损单已下：触发={sl_trigger}, QUEUE @ {actual_price:.2f}, algoId={sl_order['algoId']}")
+            self._add_action("止损单已下", f"触发={sl_trigger_display}, 限价={actual_price:.2f}")
+            print(f"✓ 止损单已下：触发={sl_trigger_display}, 限价={actual_price:.2f}, algoId={sl_order['algoId']}")
             
-            # 4. 保底止损（STOP_MARKET 条件市价单，用 Algo Order API）
+            # 4. 保底止损（使用 config_manager 配置）
             if liquidation_price and liquidation_price != Decimal('0'):
                 print(f"[4/3] 下保底止损...")
-                # 强平价保留 2 位小数（避免精度超限）
                 liquidation_price = liquidation_price.quantize(Decimal('0.01'))
                 
+                if self.config_manager:
+                    sm_price = self.config_manager.get_stop_market_price(
+                        entry_price, side, size, self.available_balance, liquidation_price
+                    )
+                else:
+                    # 兼容模式：硬编码
+                    if side == 'LONG':
+                        sm_price = liquidation_price + Decimal('1')
+                    else:
+                        sm_price = liquidation_price - Decimal('1')
+                
                 if side == 'LONG':
-                    stop_price = liquidation_price + Decimal('1')
                     sm_side = 'SELL'
                 else:
-                    stop_price = liquidation_price - Decimal('1')
                     sm_side = 'BUY'
                 
                 stop_order = self.api.place_algo_order(
                     symbol=self.symbol,
                     side=sm_side,
                     type='STOP_MARKET',
-                    triggerPrice=str(stop_price),
+                    triggerPrice=str(sm_price),
                     quantity=str(size),
                     workingType='MARK_PRICE',
                     positionSide=side
@@ -583,13 +613,13 @@ class LiveTrader:
                 self.stop_market_order = {
                     'algoId': stop_order['algoId'],
                     'side': sm_side,
-                    'trigger': stop_price,
+                    'trigger': sm_price,
                     'liquidation': liquidation_price,
                     'type': 'STOP_MARKET'
                 }
                 
-                self._add_action("保底止损已下", f"强平价={liquidation_price}, 触发={stop_price}")
-                print(f"✓ 保底止损已下：强平价={liquidation_price}, 触发={stop_price}, algoId={stop_order['algoId']}")
+                self._add_action("保底止损已下", f"强平价={liquidation_price}, 触发={sm_price}")
+                print(f"✓ 保底止损已下：强平价={liquidation_price}, 触发={sm_price}, algoId={stop_order['algoId']}")
             else:
                 print("✗ 保底止损：强平价无效")
             
