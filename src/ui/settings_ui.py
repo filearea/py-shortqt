@@ -169,10 +169,16 @@ class SettingsUI:
         # 实时计算预览
         lines.append("")
         lines.append("─" * 50)
-        lines.append("[bold]实时计算预览（开仓价 2150，多单，保证金 35U）[/bold]")
         
-        entry_price = Decimal('2150.00')
-        balance = Decimal('35.00')
+        # 获取进入设置时的最新价格和保证金
+        if self.trader:
+            entry_price = self.trader.last_price or Decimal('2150.00')
+            balance = self.trader.available_balance or Decimal('35.00')
+        else:
+            entry_price = Decimal('2150.00')
+            balance = Decimal('35.00')
+        
+        lines.append(f"[bold]实时计算预览（开仓价 {entry_price:.2f}，多单，保证金 {balance:.2f}U）[/bold]")
         
         # 获取实际杠杆，计算仓位
         leverage_config = self.config_manager.get('leverage', {})
@@ -182,15 +188,29 @@ class SettingsUI:
         notional = balance * actual_leverage
         size = notional / entry_price
         
+        # 计算止盈止损价格
         tp_price = self.config_manager.get_take_profit_price(entry_price)
         sl_trigger, _ = self.config_manager.get_stop_loss_params(entry_price, 'LONG', size)
         sm_price = self.config_manager.get_stop_market_price(
             entry_price, 'LONG', size, balance, Decimal('2060.00')
         )
         
-        lines.append(f"  仓位：{size:.3f} ETH (名义价值：{notional:.2f}U)")
-        lines.append(f"  止盈：{tp_price:.2f}  止损触发：{sl_trigger:.2f}  保底：{sm_price:.2f}")
+        # 计算预估 PnL
+        tp_pnl = (tp_price - entry_price) * size  # 止盈 PnL
+        sl_pnl = (sl_trigger - entry_price) * size  # 止损触发时的亏损
+        max_loss_usd = balance * Decimal(str(self.config_manager.get('stop_market.max_loss_percent', 30))) / Decimal('100')  # 保底最大损失
         
+        # 计算百分比
+        tp_pnl_pct = (tp_pnl / balance * Decimal('100')) if balance > 0 else Decimal('0')
+        sl_pnl_pct = (sl_pnl / balance * Decimal('100')) if balance > 0 else Decimal('0')
+        max_loss_pct = Decimal(str(self.config_manager.get('stop_market.max_loss_percent', 30)))
+        
+        lines.append(f"  仓位：{size:.3f} ETH (名义价值：{notional:.2f}U)")
+        lines.append(f"  止盈价：{tp_price:.2f}  止损触发：{sl_trigger:.2f}  保底：{sm_price:.2f}")
+        lines.append(f"  止盈 PnL：+{tp_pnl:.2f}U (+{tp_pnl_pct:.1f}%)")
+        lines.append(f"  止损亏损：{sl_pnl:.2f}U ({sl_pnl_pct:.1f}%)  保底最大损失：{max_loss_usd:.2f}U ({max_loss_pct:.1f}%)")
+        
+        # 盈亏比
         tp_diff = tp_price - entry_price
         sl_diff = entry_price - sl_trigger
         if sl_diff > 0:
