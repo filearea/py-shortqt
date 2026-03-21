@@ -951,17 +951,41 @@ class LiveTrader:
             if close_price == 0:
                 close_price = Decimal(close_order.get('price', '0'))
             
-            # 3. 计算 PnL
-            if side == 'LONG':
-                pnl = (close_price - entry_price) * size
+            # 3. 获取手续费（从订单响应中获取）
+            # 币安 API 返回：commission 和 commissionAsset
+            fills = close_order.get('fills', [])
+            commission = Decimal('0')
+            commission_asset = 'USDC'
+            
+            # 调试：打印订单响应
+            print(f"  [DEBUG] 订单响应：{close_order}")
+            
+            if fills:
+                # 从成交明细中累加手续费
+                for fill in fills:
+                    comm = Decimal(fill.get('commission', '0'))
+                    asset = fill.get('commissionAsset', 'USDC')
+                    print(f"  [DEBUG] 手续费：{comm} {asset}")
+                    if asset == 'USDC':
+                        commission += comm
+                        commission_asset = asset
             else:
-                pnl = (entry_price - close_price) * size
+                # 没有 fills，尝试直接从订单响应获取
+                commission = Decimal(close_order.get('commission', '0'))
+                commission_asset = close_order.get('commissionAsset', 'USDC')
+            
+            # 4. 计算 PnL（实现盈亏 - 手续费）
+            if side == 'LONG':
+                pnl = (close_price - entry_price) * size - commission
+            else:
+                pnl = (entry_price - close_price) * size - commission
             
             pnl_str = f"{pnl:+.6f} USDT"
             print(f"  ✓ 已市价全平：{close_side} {size} @ {close_price}")
+            print(f"  手续费：{commission:.6f} {commission_asset}")
             print(f"  PnL: {pnl_str}")
             
-            self._add_action("市价全平", f"{close_side} {size} @ {close_price} | PnL: {pnl_str}")
+            self._add_action("市价全平", f"{close_side} {size} @ {close_price} | 手续费 {commission:.6f} {commission_asset} | PnL: {pnl_str}")
             
             # 4. 清除持仓状态
             self.position = None
