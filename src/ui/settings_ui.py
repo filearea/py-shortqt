@@ -10,7 +10,7 @@ from rich.panel import Panel
 from rich.layout import Layout
 from rich.text import Text
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Optional, Tuple, List
 
 
 class SettingsUI:
@@ -351,7 +351,7 @@ class SettingsUI:
         
         return 'continue'
     
-    def save_config(self) -> tuple[bool, list[str]]:
+    def save_config(self) -> Tuple[bool, List[str]]:
         """
         保存配置
         返回：(是否成功，错误消息列表)

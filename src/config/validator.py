@@ -4,14 +4,14 @@
 """
 
 from decimal import Decimal
-from typing import tuple
+from typing import Tuple, List, Any
 
 
 class ConfigValidator:
     """配置验证器"""
     
     @staticmethod
-    def validate(config: dict) -> tuple[bool, list[str]]:
+    def validate(config: dict) -> Tuple[bool, List[str]]:
         """
         验证配置合理性
         返回：(是否有效，错误消息列表)
@@ -84,7 +84,7 @@ class ConfigValidator:
         return len(errors) == 0, errors
     
     @staticmethod
-    def validate_take_profit(entry_price: Decimal, tp_price: Decimal, side: str) -> tuple[bool, str]:
+    def validate_take_profit(entry_price: Decimal, tp_price: Decimal, side: str) -> Tuple[bool, str]:
         """
         验证止盈价合理性
         """
@@ -104,7 +104,7 @@ class ConfigValidator:
         return True, "✓"
     
     @staticmethod
-    def validate_stop_loss(entry_price: Decimal, sl_trigger: Decimal, side: str) -> tuple[bool, str]:
+    def validate_stop_loss(entry_price: Decimal, sl_trigger: Decimal, side: str) -> Tuple[bool, str]:
         """
         验证止损触发价合理性
         """
@@ -124,7 +124,7 @@ class ConfigValidator:
         return True, "✓"
     
     @staticmethod
-    def validate_profit_loss_ratio(tp_price: Decimal, sl_trigger: Decimal, side: str) -> tuple[bool, str, Decimal]:
+    def validate_profit_loss_ratio(tp_price: Decimal, sl_trigger: Decimal, side: str) -> Tuple[bool, str, Decimal]:
         """
         验证盈亏比
         返回：(是否合理，消息，盈亏比)
