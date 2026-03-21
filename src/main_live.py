@@ -217,11 +217,19 @@ class LiveTradingBot:
                             except:
                                 key_char = key.decode('gbk', errors='ignore').lower()
                             
+                            # 特殊键映射
+                            if key == b'\r' or key == b'\n':  # Enter 键
+                                key_char = 'enter'
+                            elif key == b'\x08':  # Backspace
+                                key_char = 'backspace'
+                            elif key == b'\x1b':  # Esc
+                                key_char = 'escape'
+                            
                             # 在设置界面中
                             if self.in_settings:
-                                self.sys_logger.debug(f"设置界面按键：{repr(key)} {key_char}")
+                                self.sys_logger.debug(f"设置界面按键：{repr(key)} -> '{key_char}'")
                                 
-                                if key == b'\xe0' or key == b'\x00':
+                                if key == b'\xe0' or key == b'\x00':  # 方向键前缀
                                     key = msvcrt.getch()
                                     if key == b'H':  # ↑
                                         self.settings_ui.handle_key('up')
