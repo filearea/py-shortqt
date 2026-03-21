@@ -193,10 +193,18 @@ class LiveTradingUI:
                 sl_trigger_mode = sl_config.get('trigger_mode', 'fixed')
                 if sl_trigger_mode == 'fixed':
                     sl_trigger_value = abs(sl_config.get('trigger_points', 3.00))
-                    acc_text.append(f"止损：-{sl_trigger_value:.2f}点\n", style="red")
+                    acc_text.append(f"止损：触发 -{sl_trigger_value:.2f}点 / 挂单 ", style="red")
                 else:
                     sl_trigger_value = abs(sl_config.get('trigger_percent', 0.50))
-                    acc_text.append(f"止损：-{sl_trigger_value:.2f}%\n", style="red")
+                    acc_text.append(f"止损：触发 -{sl_trigger_value:.2f}% / 挂单 ", style="red")
+                
+                # 挂单方式
+                sl_limit_mode = sl_config.get('limit_mode', 'queue')
+                if sl_limit_mode == 'queue':
+                    acc_text.append("同向价 1\n", style="dim")
+                else:
+                    sl_offset = sl_config.get('limit_offset', 10.50)
+                    acc_text.append(f"滑点{sl_offset:.2f}点\n", style="dim")
                 
                 # 保底止损
                 sm_config = self.config_manager.get('stop_market', {})
