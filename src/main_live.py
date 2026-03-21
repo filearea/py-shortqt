@@ -189,8 +189,9 @@ class LiveTradingBot:
                 self.ui.render(),
                 refresh_per_second=10,
                 screen=False,
-                redirect_stdout=False,  # 不重定向，让日志输出到控制台
-                redirect_stderr=False
+                redirect_stdout=False,
+                redirect_stderr=False,
+                clear_on_resume=True  # 窗口大小变化时清屏重绘
             ) as live:
                 while self.running:
                     try:
@@ -199,6 +200,9 @@ class LiveTradingBot:
                             live.update(self.settings_ui.render())
                         else:
                             live.update(self.ui.render())
+                        
+                        # 强制刷新，避免窗口变化时残留
+                        live.refresh()
                     except Exception as e:
                         self.sys_logger.error(f"UI 更新错误：{e}")
                         continue
