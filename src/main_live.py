@@ -209,7 +209,7 @@ class LiveTradingBot:
             # 不退出程序，让 WebSocket 在后台继续重试
         
         print("=" * 70)
-        print("操作：↑做多  |  ↓做空  |  ←撤单  |  →平仓  |  S 设置  |  H 同步持仓  |  Q 退出")
+        print("操作：↑做多  |  ↓做空  |  ←撤单  |  →平仓  |  Z 市价全平  |  S 设置  |  H 同步  |  Q 退出")
         print("=" * 70)
         
         # 3. 主循环
@@ -379,6 +379,13 @@ class LiveTradingBot:
                                     pass  # 已在 try_enter_settings 中记录日志
                                 else:
                                     self.trader._add_action("✓ 已进入设置", "↑↓切换 Enter 编辑 S 保存退出")
+                            elif key_char == 'z':
+                                # Z 键：市价全平
+                                if self.trader.position:
+                                    print("\n[Z 键] 市价全平...")
+                                    await self.trader.close_position_market()
+                                else:
+                                    self.trader._add_action("⚠️ Z 键无效", "无持仓")
                             elif key_char == 'h':
                                 # 手动触发持仓同步
                                 print("\n[手动同步] 开始同步持仓...")

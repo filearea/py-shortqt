@@ -913,6 +913,53 @@ class LiveTrader:
         except:
             return False
     
+    async def close_position_market(self) -> bool:
+        """市价全平仓位（Z 键）"""
+        if not self.position:
+            print("✗ 无持仓，无法平仓")
+            return False
+        
+        side = self.position['side']
+        size = self.position['size']
+        
+        print(f"\n[Z 键平仓] 市价全平 {side} {size}...")
+        self._add_action("Z 键平仓", f"市价全平 {side} {size}")
+        
+        try:
+            # 1. 撤销所有挂单（止盈、止损、保底、提前平仓）
+            print("  撤销所有挂单...")
+            self.api.cancel_all_orders(self.symbol)
+            
+            # 2. 市价全平
+            close_side = 'SELL' if side == 'LONG' else 'BUY'
+            print(f"  市价 {close_side} {size}...")
+            
+            close_order = self.api.place_order(
+                symbol=self.symbol,
+                side=close_side,
+                type='MARKET',
+                quantity=str(size),
+                positionSide=side,
+                reduceOnly=True
+            )
+            
+            print(f"  ✓ 已市价全平：{close_order.get('orderId')}")
+            self._add_action("市价全平", f"{close_side} {size} @ {close_order.get('avgPrice', 'MARKET')}")
+            
+            # 3. 清除持仓状态
+            self.position = None
+            self.tp_order = None
+            self.sl_order = None
+            self.stop_market_order = None
+            self.early_close_order = None
+            self.pending_order = None
+            
+            return True
+        except Exception as e:
+            print(f"  ✗ 市价全平失败：{e}")
+            self._add_action("市价全平失败", str(e))
+            return False
+    
     async def close_position_early(self, retry_count: int = 0) -> bool:
         """提前平仓（带重试）"""
         if not self.position:
