@@ -649,8 +649,6 @@ class LiveTrader:
                     traceback.print_exc()
             else:
                 print(f"[4/3] 跳过保底止损：强平价无效 ({liquidation_price})")
-            else:
-                print("✗ 保底止损：强平价无效")
             
             print("\n✓ 止盈止损单全部下达完成")
         
