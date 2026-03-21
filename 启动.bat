@@ -9,7 +9,6 @@ echo py-shortqt v1.2.0 启动器
 echo ========================================
 echo.
 
-:: Check if config file exists
 if not exist "config\accounts.json" (
     echo X 未找到 config/accounts.json
     echo 请先配置 API Key
@@ -18,7 +17,6 @@ if not exist "config\accounts.json" (
     exit /b 1
 )
 
-:: Show account list using Python
 echo 选择账户:
 echo.
 python -c "import json; accounts=json.load(open('config/accounts.json', encoding='utf-8'))['accounts']; [print(f'{i+1}. {a[\"name\"]} ({\"testnet\" if a[\"testnet\"] else \"live\"})') for i,a in enumerate(accounts)]"
