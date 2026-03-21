@@ -445,16 +445,22 @@ class LiveTrader:
         self._add_action("止盈止损开始", f"{side} @ {entry_price} x {size}")
         
         try:
-            # 1. 获取强平价
-            print(f"[1/3] 获取强平价...")
-            positions = self.api.get_position(self.symbol)
+            # 1. 获取强平价（重试 3 次）
             liquidation_price = None
-            for pos in positions:
-                if pos['symbol'] == self.symbol and Decimal(pos['positionAmt']) != 0:
-                    liquidation_price = Decimal(pos['liquidationPrice'])
+            for retry in range(3):
+                print(f"[1/3] 获取强平价... (尝试 {retry + 1}/3)")
+                positions = self.api.get_position(self.symbol)
+                for pos in positions:
+                    if pos['symbol'] == self.symbol and Decimal(pos['positionAmt']) != 0:
+                        liquidation_price = Decimal(pos['liquidationPrice'])
+                        break
+                
+                if liquidation_price and liquidation_price != Decimal('0'):
+                    print(f"  ✓ 强平价有效：{liquidation_price}")
                     break
-            
-            print(f"  强平价：{liquidation_price}")
+                else:
+                    print(f"  ⚠ 强平价无效，等待 1 秒后重试...")
+                    await asyncio.sleep(1)
             
             # 检查强平价是否有效
             if not liquidation_price or liquidation_price == Decimal('0'):
@@ -589,8 +595,8 @@ class LiveTrader:
             print(f"✓ 止损单已下：触发={sl_trigger_display}, 限价={actual_price:.2f}, algoId={sl_order['algoId']}")
             
             # 4. 保底止损（使用 config_manager 配置）
+            print(f"[4/3] 下保底止损... (强平价={liquidation_price})")
             if liquidation_price and liquidation_price != Decimal('0'):
-                print(f"[4/3] 下保底止损...")
                 liquidation_price = liquidation_price.quantize(Decimal('0.01'))
                 
                 if self.config_manager:
@@ -624,13 +630,7 @@ class LiveTrader:
                 try:
                     stop_order = self.api.place_algo_order(**sm_params)
                     print(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}")
-                except Exception as e:
-                    print(f"  ✗ 保底止损失败：{e}")
-                    import traceback
-                    traceback.print_exc()
-                    stop_order = None
-                
-                if stop_order:
+                    
                     self.stop_market_order = {
                         'algoId': stop_order['algoId'],
                         'side': sm_side,
@@ -641,6 +641,12 @@ class LiveTrader:
                     
                     self._add_action("保底止损已下", f"强平价={liquidation_price}, 触发={sm_price}")
                     print(f"✓ 保底止损已下：强平价={liquidation_price}, 触发={sm_price}, algoId={stop_order['algoId']}")
+                except Exception as e:
+                    print(f"  ✗ 保底止损失败：{e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"  ✗ 跳过保底止损：强平价无效 ({liquidation_price})")
             else:
                 print("✗ 保底止损：强平价无效")
             
