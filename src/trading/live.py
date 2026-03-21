@@ -500,13 +500,10 @@ class LiveTrader:
             for retry in range(3):
                 print(f"[1/3] 获取强平价... (尝试 {retry + 1}/3)")
                 positions = self.api.get_position(self.symbol)
-                print(f"  API 返回持仓：{positions}")  # 调试日志
                 
                 for pos in positions:
-                    print(f"  检查持仓：symbol={pos.get('symbol')}, positionAmt={pos.get('positionAmt')}, liquidationPrice={pos.get('liquidationPrice')}")  # 调试日志
                     if pos['symbol'] == self.symbol and Decimal(pos['positionAmt']) != 0:
                         liquidation_price = Decimal(pos['liquidationPrice'])
-                        print(f"  提取强平价：{liquidation_price}")  # 调试日志
                         break
                 
                 if liquidation_price and liquidation_price != Decimal('0'):
@@ -517,20 +514,32 @@ class LiveTrader:
                         print(f"  ⚠ 强平价无效，等待 0.3 秒后重试...")
                         await asyncio.sleep(0.3)
             
-            # 检查强平价是否有效
-            if not liquidation_price or liquidation_price == Decimal('0'):
-                print(f"✗ 保底止损：强平价无效 ({liquidation_price})，跳过")
-            else:
-                print(f"✓ 强平价有效：{liquidation_price}")
-            
             # 2. 从 config_manager 获取止盈止损配置
             if self.config_manager:
                 tp_price = self.config_manager.get_take_profit_price(entry_price)
                 sl_trigger, sl_algo_params = self.config_manager.get_stop_loss_params(self.symbol, entry_price, side, size)
+                
+                # 计算保底止损价格（基于用户配置的最大损失比例）
                 sm_price = self.config_manager.get_stop_market_price(
                     entry_price, side, size, self.available_balance, liquidation_price or Decimal('0')
                 )
-                print(f"  配置止盈：{tp_price}, 止损触发：{sl_trigger}, 保底：{sm_price}")
+                
+                # 如果强平价有效，和强平价 +1 比较，取更安全的
+                if liquidation_price and liquidation_price != Decimal('0'):
+                    if side == 'LONG':
+                        # 多单：保底价格不能低于强平价 +1
+                        liquidation_floor = liquidation_price + Decimal('1')
+                        if sm_price < liquidation_floor:
+                            print(f"  保底价格 {sm_price:.2f} 低于强平价 +1 ({liquidation_floor:.2f})，使用强平价 +1")
+                            sm_price = liquidation_floor
+                    else:
+                        # 空单：保底价格不能高于强平价 -1
+                        liquidation_floor = liquidation_price - Decimal('1')
+                        if sm_price > liquidation_floor:
+                            print(f"  保底价格 {sm_price:.2f} 高于强平价 -1 ({liquidation_floor:.2f})，使用强平价 -1")
+                            sm_price = liquidation_floor
+                
+                print(f"  配置止盈：{tp_price}, 止损触发：{sl_trigger}, 保底：{sm_price} (强平价={liquidation_price or 'N/A'})")
             else:
                 # 兼容模式：使用硬编码值
                 tp_price = entry_price + Decimal('1')
@@ -650,58 +659,44 @@ class LiveTrader:
             print(f"✓ 止损单已下：触发={sl_trigger_display}, 限价={actual_price:.2f}, algoId={sl_order['algoId']}")
             
             # 4. 保底止损（使用 config_manager 配置）
-            if liquidation_price and liquidation_price != Decimal('0'):
-                print(f"[4/3] 下保底止损... (强平价={liquidation_price})")
-                liquidation_price = liquidation_price.quantize(Decimal('0.01'))
+            print(f"[4/3] 下保底止损...")
+            
+            if side == 'LONG':
+                sm_side = 'SELL'
+            else:
+                sm_side = 'BUY'
+            
+            # 保底止损参数
+            sm_params = {
+                'symbol': self.symbol,
+                'side': sm_side,
+                'type': 'STOP_MARKET',
+                'triggerPrice': str(sm_price),
+                'quantity': str(size),
+                'workingType': 'MARK_PRICE',
+                'positionSide': side
+            }
+            
+            print(f"  保底止损参数：{sm_params}")
+            try:
+                stop_order = self.api.place_algo_order(**sm_params)
+                print(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}")
                 
-                if self.config_manager:
-                    sm_price = self.config_manager.get_stop_market_price(
-                        entry_price, side, size, self.available_balance, liquidation_price
-                    )
-                else:
-                    # 兼容模式：硬编码
-                    if side == 'LONG':
-                        sm_price = liquidation_price + Decimal('1')
-                    else:
-                        sm_price = liquidation_price - Decimal('1')
-                
-                if side == 'LONG':
-                    sm_side = 'SELL'
-                else:
-                    sm_side = 'BUY'
-                
-                # 保底止损参数
-                sm_params = {
-                    'symbol': self.symbol,
+                self.stop_market_order = {
+                    'algoId': stop_order['algoId'],
                     'side': sm_side,
-                    'type': 'STOP_MARKET',
-                    'triggerPrice': str(sm_price),
-                    'quantity': str(size),
-                    'workingType': 'MARK_PRICE',
-                    'positionSide': side
+                    'trigger': sm_price,
+                    'liquidation': liquidation_price or Decimal('0'),
+                    'type': 'STOP_MARKET'
                 }
                 
-                print(f"  保底止损参数：{sm_params}")
-                try:
-                    stop_order = self.api.place_algo_order(**sm_params)
-                    print(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}")
-                    
-                    self.stop_market_order = {
-                        'algoId': stop_order['algoId'],
-                        'side': sm_side,
-                        'trigger': sm_price,
-                        'liquidation': liquidation_price,
-                        'type': 'STOP_MARKET'
-                    }
-                    
-                    self._add_action("保底止损已下", f"强平价={liquidation_price}, 触发={sm_price}")
-                    print(f"✓ 保底止损已下：强平价={liquidation_price}, 触发={sm_price}, algoId={stop_order['algoId']}")
-                except Exception as e:
-                    print(f"  ✗ 保底止损失败：{e}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                print(f"[4/3] 跳过保底止损：强平价无效 ({liquidation_price})")
+                liq_display = f"{liquidation_price:.2f}" if liquidation_price else "N/A"
+                self._add_action("保底止损已下", f"强平价={liq_display}, 触发={sm_price}")
+                print(f"✓ 保底止损已下：强平价={liq_display}, 触发={sm_price}, algoId={stop_order['algoId']}")
+            except Exception as e:
+                print(f"  ✗ 保底止损失败：{e}")
+                import traceback
+                traceback.print_exc()
             
             print("\n✓ 止盈止损单全部下达完成")
         

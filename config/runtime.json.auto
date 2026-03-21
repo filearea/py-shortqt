@@ -16,8 +16,8 @@
     },
     "leverage": {
         "api": 100,
-        "actual": 75
+        "actual": 74
     },
     "order_timeout_seconds": 2.0,
-    "last_modified": "2026-03-21T16:46:30.548810"
+    "last_modified": "2026-03-21T16:46:38.236167"
 }
