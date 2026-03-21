@@ -672,8 +672,12 @@ class LiveTrader:
             else:
                 print(f"✗ 止损单失败，跳过记录")
             
+            # === 调试：检查是否执行到这里 ===
+            print(f"\n=== 调试：止损单之后，准备下保底止损 ===")
+            print(f"=== sm_price={sm_price}, type={type(sm_price)}")
+            
             # 4. 保底止损（使用 config_manager 配置）
-            print(f"\n[4/3] 下保底止损...")
+            print(f"[4/3] 下保底止损...")
             print(f"  side={side}, sm_price={sm_price}, size={size}")
             print(f"  available_balance={self.available_balance}, liquidation_price={liquidation_price}")
             
