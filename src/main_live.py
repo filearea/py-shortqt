@@ -206,7 +206,7 @@ class LiveTradingBot:
             # 不退出程序，让 WebSocket 在后台继续重试
         
         print("=" * 70)
-        print("操作：↑做多  |  ↓做空  |  ←撤单  |  →平仓  |  S 设置  |  Q 退出")
+        print("操作：↑做多  |  ↓做空  |  ←撤单  |  →平仓  |  S 设置  |  H 同步持仓  |  Q 退出")
         print("=" * 70)
         
         # 3. 主循环
@@ -376,6 +376,10 @@ class LiveTradingBot:
                                     pass  # 已在 try_enter_settings 中记录日志
                                 else:
                                     self.trader._add_action("✓ 已进入设置", "↑↓切换 Enter 编辑 S 保存退出")
+                            elif key_char == 'h':
+                                # 手动触发持仓同步
+                                print("\n[手动同步] 开始同步持仓...")
+                                await self.trader.sync_position_from_exchange()
                             elif key_char == 'q':
                                 self.running = False
                     except Exception as e:
@@ -384,6 +388,18 @@ class LiveTradingBot:
                     
                     # 同步账户信息
                     self.trader.sync_account()
+                    
+                    # 定期同步持仓（每 600 帧 = 约 60 秒，如果有挂单则每 100 帧 = 约 10 秒）
+                    if not hasattr(self, '_sync_counter'):
+                        self._sync_counter = 0
+                    self._sync_counter += 1
+                    
+                    # 如果有挂单，更频繁地同步（每 100 帧）
+                    if self.trader.pending_order and self._sync_counter % 100 == 0:
+                        await self.trader.sync_position_from_exchange()
+                    # 否则每 600 帧同步一次
+                    elif self._sync_counter % 600 == 0:
+                        await self.trader.sync_position_from_exchange()
                     
                     await asyncio.sleep(0.05)
         

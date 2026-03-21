@@ -107,6 +107,54 @@ class LiveTrader:
             print("  程序仍可正常运行，但订单状态更新可能有延迟")
             print("  建议：检查网络连接或防火墙设置")
     
+    async def sync_position_from_exchange(self):
+        """从交易所同步持仓状态（用于修复用户数据流失效时的状态不一致）"""
+        try:
+            positions = self.api.get_position(self.symbol)
+            total_size = Decimal('0')
+            entry_price = Decimal('0')
+            side = None
+            
+            for pos in positions:
+                size = Decimal(pos['positionAmt'])
+                if size != 0:
+                    total_size = abs(size)
+                    entry_price = Decimal(pos['entryPrice'])
+                    side = 'LONG' if size > 0 else 'SHORT'
+                    break
+            
+            # 如果有持仓但程序不知道，强制同步
+            if total_size > 0 and not self.position:
+                print(f"\n[持仓同步] 发现未同步的持仓！")
+                print(f"  方向：{side}, 数量：{total_size}, 开仓价：{entry_price}")
+                
+                self.position = {
+                    'side': side,
+                    'entry_price': entry_price,
+                    'size': total_size,
+                    'time': datetime.now()
+                }
+                self.pending_order = None  # 清除挂单状态
+                self._add_action("持仓同步", f"{side} @ {entry_price} x {total_size}")
+                
+                # 下止盈止损单
+                print(f"  开始下止盈止损单...")
+                asyncio.create_task(self._safe_place_tp_sl_orders())
+            
+            # 如果程序有持仓但实际没有，清除
+            elif total_size == 0 and self.position:
+                print(f"\n[持仓同步] 持仓已平仓（程序未感知）")
+                self.position = None
+                self.tp_order = None
+                self.sl_order = None
+                self.stop_market_order = None
+                self._add_action("持仓同步", "持仓已清除")
+            
+            return total_size > 0
+        except Exception as e:
+            print(f"[持仓同步] 失败：{e}")
+            return False
+    
     def _on_order_update(self, order_data: dict):
         """订单更新回调（同步函数）"""
         order_status = order_data.get('X')
