@@ -609,14 +609,25 @@ class LiveTrader:
                 else:
                     sm_side = 'BUY'
                 
-                stop_order = self.api.place_algo_order(
-                    symbol=self.symbol,
-                    side=sm_side,
-                    type='STOP_MARKET',
-                    triggerPrice=str(sm_price),
-                    quantity=str(size),
-                    workingType='MARK_PRICE',
-                    positionSide=side
+                # 保底止损参数
+                sm_params = {
+                    'symbol': self.symbol,
+                    'side': sm_side,
+                    'type': 'STOP_MARKET',
+                    'triggerPrice': str(sm_price),
+                    'quantity': str(size),
+                    'workingType': 'MARK_PRICE',
+                    'positionSide': side
+                }
+                
+                print(f"  保底止损参数：{sm_params}")
+                try:
+                    stop_order = self.api.place_algo_order(**sm_params)
+                    print(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}")
+                except Exception as e:
+                    print(f"  ✗ 保底止损失败：{e}")
+                    import traceback
+                    traceback.print_exc()
                 )
                 
                 self.stop_market_order = {
