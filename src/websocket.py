@@ -39,15 +39,9 @@ class BinanceListener:
         reconnect_delay = 3  # 初始重连延迟（秒）
         max_reconnect_delay = 30  # 最大重连延迟
         
-        # WebSocket 连接参数
-        ws_kwargs = {}
-        if self.proxy:
-            # websockets 库不直接支持代理，需要通过环境变量
-            print(f"[WebSocket] 提示：websockets 库不支持 HTTP 代理，请确保能直连币安 WebSocket")
-        
         while self.running:
             try:
-                async with websockets.connect(self.ws_url, **ws_kwargs) as ws:
+                async with websockets.connect(self.ws_url) as ws:
                     self.connected = True
                     print(f"✓ 已连接：{self.ws_url}")
                     reconnect_delay = 3  # 连接成功后重置延迟
@@ -56,6 +50,12 @@ class BinanceListener:
                         message = await asyncio.wait_for(ws.recv(), timeout=30)
                         data = json.loads(message)
                         await self.process_message(data)
+            except websockets.exceptions.ConnectionClosed:
+                self.connected = False
+                if self.running:  # 只有在非正常退出时才显示重连
+                    print(f"WebSocket 断开，{reconnect_delay}秒后重连...")
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
             except websockets.exceptions.ConnectionClosed:
                 self.connected = False
                 print(f"WebSocket 断开，{reconnect_delay}秒后重连...")

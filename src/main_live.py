@@ -152,10 +152,28 @@ class LiveTradingBot:
         self.in_settings = True
         return True
     
+    async def _cleanup_resources(self, ws_task=None):
+        """清理资源（确保 WebSocket 正确关闭）"""
+        print("\n清理资源...")
+        self.running = False
+        self.listener.running = False
+        
+        # 关闭用户数据流 WebSocket
+        await self.trader.cleanup()
+        
+        # 等待行情 WebSocket 任务结束
+        if ws_task:
+            try:
+                await asyncio.wait_for(ws_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                print("WebSocket 任务超时，强制结束")
+        
+        print("✓ 资源已清理")
+    
     async def run(self):
         """运行主循环"""
         print("=" * 70)
-        print("py-shortqt v1.1.1 - 实盘交易模式")
+        print("py-shortqt v1.2.0 - 实盘交易模式")
         print("=" * 70)
         
         # 1. 初始化实盘连接（带重试机制）
@@ -415,22 +433,16 @@ class LiveTradingBot:
         
         except KeyboardInterrupt:
             print("\n用户中断")
+            await self._cleanup_resources(ws_task)
         except Exception as e:
             print(f"\n[主循环异常] {e}")
             import traceback
             traceback.print_exc()
+            await self._cleanup_resources(ws_task)
         
-        # 4. 清理
-        print("\n清理资源...")
-        self.running = False
-        self.listener.running = False
-        await self.trader.cleanup()
-        
-        # 等待 WebSocket 任务结束（最多 2 秒）
-        try:
-            await asyncio.wait_for(ws_task, timeout=2.0)
-        except asyncio.TimeoutError:
-            print("WebSocket 任务超时，强制结束")
+        # 正常退出时也清理
+        if self.running:
+            await self._cleanup_resources(ws_task)
         
         self.logger.close()
         
