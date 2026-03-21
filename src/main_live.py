@@ -49,6 +49,7 @@ class LiveTradingBot:
         self.running = True
         self.in_settings = False  # 是否在设置界面中
         self._pending_reset = False  # 重置确认标志
+        self._pending_confirm_exit = False  # 退出确认标志
         
         # 获取系统日志
         self.sys_logger = get_system_logger()
@@ -231,20 +232,27 @@ class LiveTradingBot:
                                     elif key == b'M':  # →
                                         self.settings_ui.handle_key('right')
                                 elif key == b'\x1b':  # Esc
-                                    result = self.settings_ui.handle_key('escape')
-                                    if result == 'exit':
+                                    if self._pending_confirm_exit:
+                                        # 二次确认：直接退出，放弃修改
                                         self.in_settings = False
-                                        self.trader._add_action("✓ 已退出设置", "")
-                                    elif result == 'save':
-                                        success, errors = self.settings_ui.save_config()
-                                        if success:
-                                            self.trader._add_action("✓ 配置已保存", "")
+                                        self._pending_confirm_exit = False
+                                        self.trader._add_action("✓ 已放弃修改并退出", "")
+                                    else:
+                                        result = self.settings_ui.handle_key('escape')
+                                        if result == 'exit':
                                             self.in_settings = False
-                                        else:
-                                            for err in errors:
-                                                self.trader._add_action("⚠️ 配置错误", err)
-                                    elif result == 'confirm_exit':
-                                        self.trader._add_action("⚠️ 有未保存的修改", "按 S 保存退出 或 再按 Esc 放弃")
+                                            self.trader._add_action("✓ 已退出设置", "")
+                                        elif result == 'save':
+                                            success, errors = self.settings_ui.save_config()
+                                            if success:
+                                                self.trader._add_action("✓ 配置已保存", "")
+                                                self.in_settings = False
+                                            else:
+                                                for err in errors:
+                                                    self.trader._add_action("⚠️ 配置错误", err)
+                                        elif result == 'confirm_exit':
+                                            self._pending_confirm_exit = True
+                                            self.trader._add_action("⚠️ 有未保存的修改", "再按 Esc 放弃修改退出")
                                 elif key_char == 's':
                                     # S 保存并退出
                                     success, errors = self.settings_ui.save_config()
@@ -259,10 +267,12 @@ class LiveTradingBot:
                                         self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager)
                                         
                                         self.in_settings = False
+                                        self._pending_confirm_exit = False
                                     else:
                                         for err in errors:
                                             self.trader._add_action("⚠️ 配置错误", err)
                                             self.sys_logger.error(f"设置错误：{err}")
+                                        self._pending_confirm_exit = False
                                 else:
                                     # 其他按键交给设置界面处理
                                     result = self.settings_ui.handle_key(key_char)
@@ -281,13 +291,15 @@ class LiveTradingBot:
                                         self.trader._add_action("⚠️ 有未保存的修改", "按 S 保存退出 或 再按 Esc 放弃")
                                     elif result == 'reset_confirm':
                                         # 显示二次确认提示
-                                        self.trader._add_action("⚠️ 确认重置", "再次按 D 确认重置为默认值")
-                                        self._pending_reset = True
-                                    elif self._pending_reset and key_char == 'd':
-                                        # 二次确认重置
-                                        self.config_manager.reset_to_defaults()
-                                        self.trader._add_action("✓ 配置已重置为默认值", "")
-                                        self._pending_reset = False
+                                        if self._pending_reset:
+                                            # 第二次按 D，执行重置
+                                            self.config_manager.reset_to_defaults()
+                                            self.trader._add_action("✓ 配置已重置为默认值", "")
+                                            self._pending_reset = False
+                                        else:
+                                            # 第一次按 D，显示提示
+                                            self._pending_reset = True
+                                            self.trader._add_action("⚠️ 确认重置", "再次按 D 确认重置为默认值")
                                     elif result == 'backed_up':
                                         backup_path = self.config_manager.backup_config()
                                         self.trader._add_action("✓ 备份已创建", backup_path)
@@ -297,6 +309,10 @@ class LiveTradingBot:
                                         self.trader._add_action("✓ 备份已删除", "")
                                     elif result == 'enter_edit':
                                         self.trader._add_action("ℹ️ 编辑模式", "数字输入或←→调整，Enter 确认")
+                                    
+                                    # 重置待处理标志
+                                    if key_char != 'd':
+                                        self._pending_reset = False
                                 continue
                             
                             # 主交易界面 - 只用方向键
