@@ -147,17 +147,27 @@ class ConfigManager:
     
     # ========== 便捷访问方法 ==========
     
-    def get_take_profit_price(self, entry_price: Decimal) -> Decimal:
+    def get_take_profit_price(self, entry_price: Decimal, side: str = 'LONG') -> Decimal:
         """计算止盈价"""
         tp = self.config.get('take_profit', {})
         mode = tp.get('mode', 'fixed')
         
         if mode == 'fixed':
             points = Decimal(str(tp.get('points', 1.00)))
-            return entry_price + points
+            if side == 'LONG':
+                # 多单止盈：开仓价 + 点数
+                return entry_price + points
+            else:
+                # 空单止盈：开仓价 - 点数
+                return entry_price - points
         else:
             percent = Decimal(str(tp.get('percent', 0.36)))
-            return entry_price * (Decimal('1') + percent / Decimal('100'))
+            if side == 'LONG':
+                # 多单止盈：开仓价 * (1 + 百分比)
+                return entry_price * (Decimal('1') + percent / Decimal('100'))
+            else:
+                # 空单止盈：开仓价 * (1 - 百分比)
+                return entry_price * (Decimal('1') - percent / Decimal('100'))
     
     def get_stop_loss_params(self, symbol: str, entry_price: Decimal, side: str, size: Decimal) -> tuple[Decimal, dict]:
         """
