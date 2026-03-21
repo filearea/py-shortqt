@@ -628,18 +628,19 @@ class LiveTrader:
                     print(f"  ✗ 保底止损失败：{e}")
                     import traceback
                     traceback.print_exc()
-                )
+                    stop_order = None
                 
-                self.stop_market_order = {
-                    'algoId': stop_order['algoId'],
-                    'side': sm_side,
-                    'trigger': sm_price,
-                    'liquidation': liquidation_price,
-                    'type': 'STOP_MARKET'
-                }
-                
-                self._add_action("保底止损已下", f"强平价={liquidation_price}, 触发={sm_price}")
-                print(f"✓ 保底止损已下：强平价={liquidation_price}, 触发={sm_price}, algoId={stop_order['algoId']}")
+                if stop_order:
+                    self.stop_market_order = {
+                        'algoId': stop_order['algoId'],
+                        'side': sm_side,
+                        'trigger': sm_price,
+                        'liquidation': liquidation_price,
+                        'type': 'STOP_MARKET'
+                    }
+                    
+                    self._add_action("保底止损已下", f"强平价={liquidation_price}, 触发={sm_price}")
+                    print(f"✓ 保底止损已下：强平价={liquidation_price}, 触发={sm_price}, algoId={stop_order['algoId']}")
             else:
                 print("✗ 保底止损：强平价无效")
             
