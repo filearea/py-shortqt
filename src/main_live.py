@@ -188,8 +188,8 @@ class LiveTradingBot:
                 self.ui.render(),
                 refresh_per_second=10,
                 screen=False,
-                redirect_stdout=True,
-                redirect_stderr=True
+                redirect_stdout=False,  # 不重定向，让日志输出到控制台
+                redirect_stderr=False
             ) as live:
                 while self.running:
                     try:
