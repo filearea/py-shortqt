@@ -218,9 +218,10 @@ class LiveTradingBot:
             with Live(
                 self.ui.render(),
                 refresh_per_second=10,
-                screen=False,
-                redirect_stdout=False,
-                redirect_stderr=False
+                screen=True,  # 使用全屏模式，避免堆叠
+                redirect_stdout=True,
+                redirect_stderr=True,
+                transient=False  # 保留历史输出
             ) as live:
                 while self.running:
                     try:
