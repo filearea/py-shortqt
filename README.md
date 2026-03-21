@@ -48,7 +48,7 @@ pip install -r requirements.txt
 
 1. 复制配置模板：
 ```bash
-cp config/accounts.example.json config/accounts.json
+cp config/accounts.json.example config/accounts.json
 ```
 
 2. 编辑 `config/accounts.json`，填入你的币安 API Key：
@@ -57,11 +57,24 @@ cp config/accounts.example.json config/accounts.json
     "accounts": [
         {
             "name": "主账号",
-            "api_key": "YOUR_API_KEY",
-            "api_secret": "YOUR_API_SECRET",
-            "testnet": false
+            "api_key": "YOUR_BINANCE_API_KEY",
+            "api_secret": "YOUR_BINANCE_API_SECRET",
+            "testnet": false,
+            "note": "实盘交易账户"
+        },
+        {
+            "name": "测试网账号",
+            "api_key": "YOUR_TESTNET_API_KEY",
+            "api_secret": "YOUR_TESTNET_API_SECRET",
+            "testnet": true,
+            "note": "测试网络，不产生真实交易"
         }
-    ]
+    ],
+    "settings": {
+        "default_account": "主账号",
+        "risk_warning": "⚠️ 实盘交易有风险，请谨慎操作",
+        "ip_whitelist_reminder": "请确保已在币安 API 设置中添加本机外网 IP 到白名单"
+    }
 }
 ```
 
