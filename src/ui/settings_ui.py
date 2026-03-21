@@ -159,7 +159,8 @@ class SettingsUI:
                 
                 if is_selected:
                     if self.editing:
-                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{value}{self.input_buffer}_[/green]  [dim][数字输入 Enter 确认][/dim]")
+                        # 编辑模式：只显示 input_buffer（包含当前值）
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{self.input_buffer}_[/green]  [dim][数字输入 Enter 确认][/dim]")
                     else:
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{value}{unit}[/green]  [dim][←→调整 或 Enter 输入][/dim]")
                 else:
@@ -312,6 +313,7 @@ class SettingsUI:
             
             elif field['type'] in ['decimal', 'int']:
                 if key == 'enter':
+                    # 确认输入
                     if self.input_buffer:
                         try:
                             if field['type'] == 'int':
@@ -326,13 +328,13 @@ class SettingsUI:
                             pass
                     self.editing = False
                     self.input_buffer = ""
-                    return 'enter_edit'
                 elif key.isdigit() or key == '.':
                     self.input_buffer += key
                 elif key == 'backspace':
                     if self.input_buffer:
                         self.input_buffer = self.input_buffer[:-1]
                 elif key == 'left':
+                    # 在编辑模式下，←减少数值
                     current = self._get_nested_value(config, field['key'])
                     if current is not None:
                         step = field.get('step', 1)
@@ -341,10 +343,12 @@ class SettingsUI:
                         else:
                             current -= step
                         current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self.input_buffer = str(current)
                         self._set_nested_value(config, field['key'], float(current) if isinstance(current, Decimal) else current)
                         self.config_manager.config = config
                         self.modified = True
                 elif key == 'right':
+                    # 在编辑模式下，→增加数值
                     current = self._get_nested_value(config, field['key'])
                     if current is not None:
                         step = field.get('step', 1)
@@ -353,6 +357,7 @@ class SettingsUI:
                         else:
                             current += step
                         current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self.input_buffer = str(current)
                         self._set_nested_value(config, field['key'], float(current) if isinstance(current, Decimal) else current)
                         self.config_manager.config = config
                         self.modified = True
@@ -363,8 +368,14 @@ class SettingsUI:
             elif key == 'down':
                 self.current_field = min(max_field, self.current_field + 1)
             elif key == 'enter':
+                # 进入编辑模式
+                if field['type'] in ['decimal', 'int']:
+                    # 数值类型：把当前值放入 input_buffer，方便修改
+                    current = self._get_nested_value(config, field['key'])
+                    self.input_buffer = str(current) if current is not None else ""
+                else:
+                    self.input_buffer = ""
                 self.editing = True
-                self.input_buffer = ""
                 return 'enter_edit'
             elif key == 'left':
                 if field['type'] == 'select':

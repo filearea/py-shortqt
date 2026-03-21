@@ -15,9 +15,9 @@
         "max_loss_percent": 10
     },
     "leverage": {
-        "api": 99,
+        "api": 98,
         "actual": 14
     },
     "order_timeout_seconds": 2.0,
-    "last_modified": "2026-03-21T15:23:29.512161"
+    "last_modified": "2026-03-21T15:24:41.109473"
 }
