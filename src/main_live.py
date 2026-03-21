@@ -191,8 +191,7 @@ class LiveTradingBot:
                 refresh_per_second=10,
                 screen=False,
                 redirect_stdout=False,
-                redirect_stderr=False,
-                clear_on_resume=True  # 窗口大小变化时清屏重绘
+                redirect_stderr=False
             ) as live:
                 while self.running:
                     try:
