@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import os
 from decimal import Decimal
 import websockets
 
@@ -20,6 +21,11 @@ class BinanceListener:
         self.callbacks = []
         self.running = False
         self.connected = False
+        
+        # 代理配置
+        self.proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
+        if self.proxy:
+            print(f"[WebSocket] 使用代理：{self.proxy}")
     
     def add_callback(self, callback):
         """添加数据回调"""
@@ -33,9 +39,15 @@ class BinanceListener:
         reconnect_delay = 3  # 初始重连延迟（秒）
         max_reconnect_delay = 30  # 最大重连延迟
         
+        # WebSocket 连接参数
+        ws_kwargs = {}
+        if self.proxy:
+            # websockets 库不直接支持代理，需要通过环境变量
+            print(f"[WebSocket] 提示：websockets 库不支持 HTTP 代理，请确保能直连币安 WebSocket")
+        
         while self.running:
             try:
-                async with websockets.connect(self.ws_url) as ws:
+                async with websockets.connect(self.ws_url, **ws_kwargs) as ws:
                     self.connected = True
                     print(f"✓ 已连接：{self.ws_url}")
                     reconnect_delay = 3  # 连接成功后重置延迟
