@@ -82,6 +82,9 @@ class LiveTradingBot:
         self.listener = BinanceListener(self.symbol.lower(), "wss://fstream.binance.com/ws")
         self.listener.add_callback(self.on_market_data)
         
+        # 将 listener 赋值给 trader，用于 UI 显示连接状态
+        self.trader.listener = self.listener
+        
         # UI
         tp = self.config_manager.get_take_profit_price(Decimal('2150'))
         self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager)

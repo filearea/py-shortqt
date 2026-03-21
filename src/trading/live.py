@@ -31,6 +31,7 @@ class LiveTrader:
         self.config_manager = config_manager
         
         self.api = BinanceClient(api_key, api_secret, testnet)
+        self.listener = None  # 行情 WebSocket 监听器（从外部传入）
         self.user_stream_ws: Optional[UserStreamWebSocket] = None
         self.listen_key: Optional[str] = None
         

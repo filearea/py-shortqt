@@ -62,8 +62,11 @@ class LiveTradingUI:
         if hasattr(self.trader, 'last_price_change') and self.trader.last_price_change:
             price_arrow = " [green]↑[/green]" if self.trader.last_price_change > 0 else " [red]↓[/red]"
         
+        # WebSocket 连接状态
+        ws_status = self._render_ws_status()
+        
         # 状态
-        status = "就绪 - ↑做多 ↓做空 ←撤单 →平仓 S 设置 Q 退出"
+        status = "就绪 - ↑做多 ↓做空 ←撤单 →平仓 S 设置 H 同步 Q 退出"
         
         if self.trader.early_close_order:
             status = f"[yellow]平仓挂单中[/yellow] @ {self.trader.early_close_order['price']:.2f} (←撤单)"
@@ -74,9 +77,31 @@ class LiveTradingUI:
             status = f"[green]持仓中[/green] (→提前平仓)"
         
         return Panel(
-            f"[bold cyan]ETHUSDC[/bold cyan]  |  价格：[yellow]{price_text}{price_arrow}[/yellow]  |  杠杆：[bold]{self.actual_leverage}x/{self.leverage}x[/bold]  |  {status}",
-            title="py-shortqt v1.2.0 实盘"
+            f"[bold cyan]ETHUSDC[/bold cyan]  |  价格：[yellow]{price_text}{price_arrow}[/yellow]  |  {ws_status}  |  杠杆：[bold]{self.actual_leverage}x/{self.leverage}x[/bold]  |  {status}",
+            title="py-shortqt v1.2.0"
         )
+    
+    def _render_ws_status(self) -> str:
+        """渲染 WebSocket 连接状态"""
+        # 行情 WebSocket 状态
+        if hasattr(self.trader, 'listener') and self.trader.listener:
+            if self.trader.listener.connected:
+                ws_market = "[green]●[/green]"  # 绿色圆点
+            else:
+                ws_market = "[red]●[/red]"  # 红色圆点
+        else:
+            ws_market = "[dim]●[/dim]"  # 灰色圆点
+        
+        # 用户数据流 WebSocket 状态
+        if hasattr(self.trader, 'user_stream_ws') and self.trader.user_stream_ws:
+            if self.trader.user_stream_ws.connected:
+                ws_user = "[green]●[/green]"  # 绿色圆点
+            else:
+                ws_user = "[red]●[/red]"  # 红色圆点
+        else:
+            ws_user = "[dim]●[/dim]"  # 灰色圆点
+        
+        return f"行情：{ws_market} 订单：{ws_user}"
     
     def _render_orderbook(self) -> Table:
         """渲染订单簿（7 档）"""
