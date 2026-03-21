@@ -248,6 +248,12 @@ class LiveTradingBot:
                                         msg = "✓ 配置已保存并退出"
                                         self.trader._add_action(msg, "")
                                         self.sys_logger.info(f"设置操作：{msg}")
+                                        
+                                        # 更新 UI 的杠杆显示
+                                        api_lev, actual_lev = self.config_manager.get_leverage_config()
+                                        tp = self.config_manager.get_take_profit_price(Decimal('2150'))
+                                        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev)
+                                        
                                         self.in_settings = False
                                     else:
                                         for err in errors:
