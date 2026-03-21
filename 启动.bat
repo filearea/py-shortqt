@@ -31,13 +31,16 @@ if "%mode%"=="" set mode=1
 if "%mode%"=="1" (
     echo.
     echo 已选择：实盘交易
+    set main_file=src/main_live.py
 ) else if "%mode%"=="2" (
     echo.
     echo 已选择：模拟交易
+    set main_file=src/main_sim.py
 ) else (
     echo.
     echo 无效选项，使用默认：实盘交易
     set mode=1
+    set main_file=src/main_live.py
 )
 
 :: 2. 选择账户
@@ -58,9 +61,10 @@ for /f "delims=" %%a in ('python -c "import json; accounts=json.load(open('confi
 
 echo.
 echo 启动账户：%account_name%
+echo 启动文件：%main_file%
 echo.
 
-python src/main_live.py --account "%account_name%"
+python %main_file% --account "%account_name%"
 
 echo.
 pause
