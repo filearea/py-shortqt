@@ -49,32 +49,41 @@ def main():
         main_file = "src/main_live.py"
         print("\n无效选项，使用默认：实盘交易")
     
-    # 2. 选择账户
-    print()
-    print("选择账户:")
-    print()
-    
-    for i, acc in enumerate(accounts):
-        acc_type = "测试网" if acc.get('testnet') else "实盘"
-        print(f"{i+1}. {acc['name']} ({acc_type})")
-    
-    print()
-    account_choice = input("请输入账户编号 (1-N, 默认 1): ").strip()
-    if account_choice == "":
-        account_choice = 1
+    # 2. 选择账户（仅实盘交易需要）
+    if mode == "1":
+        print()
+        print("选择账户:")
+        print()
+        
+        for i, acc in enumerate(accounts):
+            acc_type = "测试网" if acc.get('testnet') else "实盘"
+            print(f"{i+1}. {acc['name']} ({acc_type})")
+        
+        print()
+        account_choice = input("请输入账户编号 (1-N, 默认 1): ").strip()
+        if account_choice == "":
+            account_choice = 1
+        else:
+            account_choice = int(account_choice)
+        
+        # 获取账户名称
+        account_name = accounts[account_choice - 1]['name']
+        
+        print()
+        print(f"启动账户：{account_name}")
+        print(f"启动文件：{main_file}")
+        print()
+        
+        # 启动程序
+        subprocess.run([sys.executable, main_file, "--account", account_name])
     else:
-        account_choice = int(account_choice)
-    
-    # 获取账户名称
-    account_name = accounts[account_choice - 1]['name']
-    
-    print()
-    print(f"启动账户：{account_name}")
-    print(f"启动文件：{main_file}")
-    print()
-    
-    # 启动程序
-    subprocess.run([sys.executable, main_file, "--account", account_name])
+        # 模拟交易直接启动
+        print()
+        print(f"启动文件：{main_file}")
+        print()
+        
+        # 启动程序
+        subprocess.run([sys.executable, main_file])
     
     print()
     input("按回车键退出...")
