@@ -672,17 +672,12 @@ class LiveTrader:
             else:
                 self._add_action("止损单失败", "跳过记录")
             
-            # === 调试：检查是否执行到这里 ===
-            debug_msg = f"\n=== 调试：止损单之后，准备下保底止损 ===\n=== sm_price={sm_price}, type={type(sm_price)}"
-            print(debug_msg)
-            if self.logger:
-                self.logger.log_trade('调试信息', {'msg': debug_msg})
-            
             # 4. 保底止损（使用 config_manager 配置）
-            debug_msg = f"[4/3] 下保底止损...\n  side={side}, sm_price={sm_price}, size={size}\n  available_balance={self.available_balance}, liquidation_price={liquidation_price}"
-            print(debug_msg)
-            if self.logger:
-                self.logger.log_trade('调试信息', {'msg': debug_msg})
+            # print(f"\n=== 调试：止损单之后，准备下保底止损 ===")
+            # print(f"=== sm_price={sm_price}, type={type(sm_price)}")
+            # print(f"[4/3] 下保底止损...")
+            # print(f"  side={side}, sm_price={sm_price}, size={size}")
+            # print(f"  available_balance={self.available_balance}, liquidation_price={liquidation_price}")
             
             if side == 'LONG':
                 sm_side = 'SELL'
@@ -700,24 +695,12 @@ class LiveTrader:
                 'positionSide': side
             }
             
-            debug_msg = f"  保底止损参数：{sm_params}"
-            print(debug_msg)
-            if self.logger:
-                self.logger.log_trade('调试信息', {'msg': debug_msg})
+            # print(f"  保底止损参数：{sm_params}")
             
             try:
-                debug_msg = f"  调用 place_algo_order..."
-                print(debug_msg)
-                if self.logger:
-                    self.logger.log_trade('调试信息', {'msg': debug_msg})
-                
+                # print(f"  调用 place_algo_order...")
                 stop_order = self.api.place_algo_order(**sm_params)
-                
-                debug_msg = f"  API 返回：{stop_order}"
-                print(debug_msg)
-                if self.logger:
-                    self.logger.log_trade('调试信息', {'msg': debug_msg})
-                
+                # print(f"  API 返回：{stop_order}")
                 print(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}")
                 
                 self.stop_market_order = {
@@ -732,10 +715,7 @@ class LiveTrader:
                 self._add_action("保底止损已下", f"强平价={liq_display}, 触发={sm_price}")
                 print(f"✓ 保底止损已下：强平价={liq_display}, 触发={sm_price}, algoId={stop_order['algoId']}")
             except Exception as e:
-                error_msg = f"  ✗ 保底止损失败：{type(e).__name__}: {e}"
-                print(error_msg)
-                if self.logger:
-                    self.logger.log_trade('调试信息', {'msg': error_msg, 'error': str(e)})
+                print(f"  ✗ 保底止损失败：{type(e).__name__}: {e}")
                 import traceback
                 traceback.print_exc()
             
