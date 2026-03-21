@@ -534,11 +534,20 @@ class LiveTrader:
             
             # 3. 止损单（使用 config_manager 配置）
             print(f"[3/3] 下止损单...")
-            if self.config_manager:
+            if self.config_manager and sl_algo_params:
                 # 从配置读取止损参数
-                sl_order = self.api.place_algo_order(**sl_algo_params)
-                actual_price = Decimal(sl_order.get('price', '0'))
-                sl_trigger_display = sl_algo_params.get('triggerPrice', sl_trigger)
+                print(f"  止损参数：{sl_algo_params}")
+                try:
+                    sl_order = self.api.place_algo_order(**sl_algo_params)
+                    actual_price = Decimal(sl_order.get('price', '0'))
+                    sl_trigger_display = sl_algo_params.get('triggerPrice', sl_trigger)
+                    print(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}")
+                except Exception as e:
+                    print(f"  ✗ 止损单失败：{e}")
+                    import traceback
+                    traceback.print_exc()
+                    sl_trigger_display = sl_trigger
+                    actual_price = Decimal('0')
             else:
                 # 兼容模式：硬编码
                 if side == 'LONG':
