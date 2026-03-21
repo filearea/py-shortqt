@@ -1,0 +1,23 @@
+{
+    "take_profit": {
+        "mode": "fixed",
+        "points": 1.00,
+        "percent": 0.36
+    },
+    "stop_loss": {
+        "trigger_mode": "fixed",
+        "trigger_points": 3.00,
+        "trigger_percent": 0.50,
+        "limit_mode": "queue",
+        "limit_offset": 10.50
+    },
+    "stop_market": {
+        "max_loss_percent": 30.00
+    },
+    "leverage": {
+        "api": 100,
+        "actual": 25
+    },
+    "order_timeout_seconds": 2.00,
+    "last_modified": "2026-03-21T12:00:00+08:00"
+}
