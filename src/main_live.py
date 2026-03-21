@@ -195,6 +195,7 @@ class LiveTradingBot:
                     if msvcrt.kbhit():
                         try:
                             key = msvcrt.getch()
+                            key_char = key.decode('gbk', errors='ignore').lower()
                             
                             # 在设置界面中
                             if self.in_settings:
@@ -208,15 +209,15 @@ class LiveTradingBot:
                                         self.settings_ui.handle_key('left')
                                     elif key == b'M':  # →
                                         self.settings_ui.handle_key('right')
-                                elif key.lower() == b's':
+                                elif key_char == 's':
                                     # 退出设置
                                     self.in_settings = False
-                                elif key.lower() == b'q':
+                                elif key_char == 'q':
                                     # 退出设置
                                     self.in_settings = False
                                 else:
                                     # 其他按键交给设置界面处理
-                                    result = self.settings_ui.handle_key(key.decode('gbk', errors='ignore').lower())
+                                    result = self.settings_ui.handle_key(key_char)
                                     if result == 'exit':
                                         self.in_settings = False
                                     elif result == 'save':
@@ -246,7 +247,7 @@ class LiveTradingBot:
                                     await self.close_position_early()
                                 elif key == b'K':  # ←
                                     await self.cancel_order()
-                            elif key.lower() == b's':
+                            elif key_char == 's':
                                 # 进入设置界面
                                 if not self.try_enter_settings():
                                     pass  # 已在 try_enter_settings 中记录日志
