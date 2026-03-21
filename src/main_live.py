@@ -297,10 +297,18 @@ class LiveTradingBot:
                                         self.trader._add_action(msg, "")
                                         self.sys_logger.info(f"设置操作：{msg}")
                                         
-                                        # 更新 UI 的杠杆显示
+                                        # 更新配置
                                         api_lev, actual_lev = self.config_manager.get_leverage_config()
+                                        
+                                        # 更新 UI 的杠杆显示
                                         tp = self.config_manager.get_take_profit_price(Decimal('2150'))
                                         self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager)
+                                        
+                                        # 更新 trader 的杠杆设置
+                                        self.trader.leverage_limit = api_lev
+                                        self.trader.actual_leverage = actual_lev
+                                        
+                                        self.sys_logger.info(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
                                         
                                         self.in_settings = False
                                         self._pending_confirm_exit = False
