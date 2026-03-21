@@ -689,13 +689,13 @@ class LiveTrader:
             else:
                 sm_side = 'BUY'
             
-            # 保底止损参数
+            # 保底止损参数（价格保留 2 位小数）
             sm_params = {
                 'symbol': self.symbol,
                 'side': sm_side,
                 'type': 'STOP_MARKET',
-                'triggerPrice': str(sm_price),
-                'quantity': str(size),
+                'triggerPrice': str(sm_price.quantize(Decimal('0.01'))),  # 保留 2 位小数
+                'quantity': str(size.quantize(Decimal('0.001'))),  # 保留 3 位小数
                 'workingType': 'MARK_PRICE',
                 'positionSide': side
             }
