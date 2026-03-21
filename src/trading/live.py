@@ -713,27 +713,20 @@ class LiveTrader:
             # 币安要求：最小名义价值 20 USDC
             MIN_NOTIONAL = Decimal('20')
             
-            # 计算所需保证金
-            required_margin = MIN_NOTIONAL / self.actual_leverage
-            
-            if self.available_balance < required_margin:
-                print(f"✗ 保证金不足（最小需要{required_margin:.2f}U，当前{self.available_balance:.2f}U）")
-                print(f"  提示：当前杠杆{self.actual_leverage}x，最小订单 20 USDC，需要至少{required_margin:.2f}U 保证金")
-                return False
-            
-            # 计算仓位
+            # 计算仓位（全仓进出）
             contract_value = self.available_balance * self.actual_leverage
             size = (contract_value / self.last_price).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
             
-            # 验证名义价值
+            if size <= 0:
+                print("✗ 余额不足")
+                return False
+            
+            # 验证名义价值（仓位价值 = 数量 × 价格）
             notional_value = size * self.last_price
             if notional_value < MIN_NOTIONAL:
                 print(f"✗ 名义价值不足（最小 20 USDC，计算值{notional_value:.2f} USDC）")
-                print(f"  提示：增加保证金或提高杠杆倍数")
-                return False
-            
-            if size <= 0:
-                print("✗ 余额不足")
+                print(f"  当前：保证金{self.available_balance:.2f}U × {self.actual_leverage}x = {notional_value:.2f}U")
+                print(f"  提示：提高杠杆倍数 或 增加保证金")
                 return False
             
             if side == 'LONG':
