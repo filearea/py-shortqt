@@ -82,7 +82,7 @@ class LiveTradingBot:
         
         # UI
         tp = self.config_manager.get_take_profit_price(Decimal('2150'))
-        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'))
+        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev)
         
         # 设置 UI
         self.settings_ui = SettingsUI(self.config_manager, self.trader)

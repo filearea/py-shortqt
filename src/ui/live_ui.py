@@ -15,9 +15,10 @@ from decimal import Decimal
 class LiveTradingUI:
     """实盘交易界面"""
     
-    def __init__(self, trader, leverage: int, take_profit: Decimal = Decimal('1'), stop_loss: Decimal = Decimal('3')):
+    def __init__(self, trader, leverage: int, take_profit: Decimal = Decimal('1'), stop_loss: Decimal = Decimal('3'), actual_leverage: int = 25):
         self.trader = trader
-        self.leverage = leverage
+        self.leverage = leverage  # API 杠杆
+        self.actual_leverage = actual_leverage  # 实际杠杆
         self.take_profit = take_profit
         self.stop_loss = stop_loss
     
@@ -72,8 +73,8 @@ class LiveTradingUI:
             status = f"[green]持仓中[/green] (→提前平仓)"
         
         return Panel(
-            f"[bold cyan]ETHUSDC[/bold cyan]  |  价格：[yellow]{price_text}{price_arrow}[/yellow]  |  {status}",
-            title="py-shortqt v1.1.1 实盘"
+            f"[bold cyan]ETHUSDC[/bold cyan]  |  价格：[yellow]{price_text}{price_arrow}[/yellow]  |  杠杆：[bold]{self.actual_leverage}x/{self.leverage}x[/bold]  |  {status}",
+            title="py-shortqt v1.2.0 实盘"
         )
     
     def _render_orderbook(self) -> Table:
