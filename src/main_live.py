@@ -48,6 +48,7 @@ class LiveTradingBot:
         self.symbol = SYMBOL
         self.running = True
         self.in_settings = False  # 是否在设置界面中
+        self._pending_reset = False  # 重置确认标志
         
         # 获取系统日志
         self.sys_logger = get_system_logger()
@@ -269,9 +270,14 @@ class LiveTradingBot:
                                     elif result == 'confirm_exit':
                                         self.trader._add_action("⚠️ 有未保存的修改", "按 S 保存退出 或 再按 Esc 放弃")
                                     elif result == 'reset_confirm':
-                                        # 重置默认 - 直接执行，显示提示
+                                        # 显示二次确认提示
+                                        self.trader._add_action("⚠️ 确认重置", "再次按 D 确认重置为默认值")
+                                        self._pending_reset = True
+                                    elif self._pending_reset and key_char == 'd':
+                                        # 二次确认重置
                                         self.config_manager.reset_to_defaults()
                                         self.trader._add_action("✓ 配置已重置为默认值", "")
+                                        self._pending_reset = False
                                     elif result == 'backed_up':
                                         backup_path = self.config_manager.backup_config()
                                         self.trader._add_action("✓ 备份已创建", backup_path)
@@ -280,8 +286,7 @@ class LiveTradingBot:
                                     elif result == 'deleted':
                                         self.trader._add_action("✓ 备份已删除", "")
                                     elif result == 'enter_edit':
-                                        # Enter 进入编辑模式
-                                        self.trader._add_action("ℹ️ 编辑模式", "输入数值或←→调整，Enter 确认")
+                                        self.trader._add_action("ℹ️ 编辑模式", "数字输入或←→调整，Enter 确认")
                                 continue
                             
                             # 主交易界面 - 只用方向键

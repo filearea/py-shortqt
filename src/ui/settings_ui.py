@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-TUI 设置界面 - v1.2.0 重构版
+TUI 设置界面 - v1.2.0 修复版
 """
 
-from rich.console import Console
 from rich.panel import Panel
 from decimal import Decimal
 from typing import Any, Tuple, List
@@ -15,13 +14,12 @@ class SettingsUI:
     def __init__(self, config_manager, trader=None):
         self.config_manager = config_manager
         self.trader = trader
-        self.current_tab = 0  # 0=交易参数，1=备份管理
-        self.current_field = 0  # 当前选中的字段索引（基于可见字段）
-        self.editing = False  # 是否处于编辑模式
-        self.input_buffer = ""  # 数字输入缓冲
-        self.modified = False  # 是否有未保存的修改
+        self.current_tab = 0
+        self.current_field = 0
+        self.editing = False
+        self.input_buffer = ""
+        self.modified = False
         
-        # 字段定义
         self.tabs = [
             {
                 'name': '交易参数',
@@ -62,10 +60,7 @@ class SettingsUI:
                      'min': 0.5, 'max': 30, 'step': 0.5, 'unit': 's'},
                 ]
             },
-            {
-                'name': '备份管理',
-                'fields': []
-            }
+            {'name': '备份管理', 'fields': []}
         ]
     
     def render(self) -> Panel:
@@ -73,20 +68,18 @@ class SettingsUI:
         try:
             lines = []
             
-            # 头部
             if self.editing:
                 lines.append("[bold cyan]⚙️ 编辑中[/bold cyan]  Enter 确认  Esc 取消  S 保存退出")
             else:
                 lines.append("[bold cyan]⚙️ 设置面板[/bold cyan]  ↑↓切换  ←→调整  Enter 编辑  S 保存退出")
             lines.append("")
             
-            # 主体
             if self.current_tab == 0:
                 lines.extend(self._render_trading_tab_lines())
             else:
                 lines.extend(self._render_backup_tab_lines())
             
-            # 日志区域（如果有 trader）
+            # 日志区域
             if self.trader and hasattr(self.trader, 'action_log'):
                 actions = self.trader.action_log
                 if actions:
@@ -94,11 +87,8 @@ class SettingsUI:
                     lines.append("─" * 50)
                     lines.append("[bold]最近操作[/bold]")
                     for action in reversed(actions[-5:]):
-                        time_str = action['time'].strftime('%H:%M:%S.%f')[:-3] if hasattr(action['time'], 'strftime') else ''
+                        time_str = action['time'].strftime('%H:%M:%S') if hasattr(action['time'], 'strftime') else ''
                         lines.append(f"  [{time_str}] {action['action']}: {action['details']}")
-                else:
-                    lines.append("")
-                    lines.append("[dim]暂无操作记录[/dim]")
             
             lines.append("")
             lines.append(self._render_footer_lines())
@@ -109,7 +99,7 @@ class SettingsUI:
             return Panel(f"[red]渲染错误：{e}[/red]", title="错误")
     
     def _get_visible_fields(self) -> List[Tuple[int, dict]]:
-        """获取当前标签页的可见字段列表"""
+        """获取可见字段列表"""
         if self.current_tab != 0:
             return []
         
@@ -134,20 +124,17 @@ class SettingsUI:
             lines.append("无可用配置项")
             return lines
         
-        # 确保 current_field 在有效范围内
         max_field = len(visible_fields) - 1
         if self.current_field > max_field:
             self.current_field = max_field
         if self.current_field < 0:
             self.current_field = 0
         
-        # 渲染每个可见字段
         for visible_idx, (original_idx, field) in enumerate(visible_fields):
             is_selected = (visible_idx == self.current_field)
             value = self._get_nested_value(config, field['key'])
             
             if field['type'] == 'select':
-                # 选择类型
                 options = field['options']
                 labels = field.get('labels', options)
                 current_idx = options.index(value) if value in options else 0
@@ -155,30 +142,25 @@ class SettingsUI:
                 
                 if is_selected:
                     if self.editing:
-                        # 编辑模式：显示所有选项
                         option_strs = []
                         for j, opt_label in enumerate(labels):
                             if j == current_idx:
                                 option_strs.append(f"[green]●{opt_label}[/green]")
                             else:
                                 option_strs.append(f"○{opt_label}")
-                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] {' '.join(option_strs)}  [green]←→切换[/green]  [yellow]Enter 确认[/yellow]")
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] {' '.join(option_strs)}  ←→切换  Enter 确认")
                     else:
-                        # 浏览模式
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][Enter 切换][/dim]")
                 else:
                     lines.append(f"  {field['label']}: {label}")
             
             elif field['type'] in ['decimal', 'int']:
-                # 数值类型
                 unit = field.get('unit', '')
                 
                 if is_selected:
                     if self.editing:
-                        # 编辑模式：显示输入光标
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{value}{self.input_buffer}_[/green]  [dim][数字输入 Enter 确认][/dim]")
                     else:
-                        # 浏览模式
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{value}{unit}[/green]  [dim][←→调整 或 Enter 输入][/dim]")
                 else:
                     lines.append(f"  {field['label']}: {value}{unit}")
@@ -255,23 +237,15 @@ class SettingsUI:
         d[keys[-1]] = value
     
     def handle_key(self, key: str) -> str:
-        """
-        处理按键输入
-        返回：'continue' 继续，'exit' 退出，'save' 保存并退出，'cancel' 取消，'reset_confirm' 确认重置
-        """
-        # 全局快捷键
+        """处理按键输入"""
         if key == 's':
-            # S 保存并退出
             return 'save'
         elif key == 'escape':
-            # Esc 退出
             if self.editing:
-                # 编辑中按 Esc 取消编辑
                 self.editing = False
                 self.input_buffer = ""
                 return 'continue'
             elif self.modified:
-                # 有修改时提示保存
                 return 'confirm_exit'
             else:
                 return 'exit'
@@ -281,7 +255,6 @@ class SettingsUI:
             self.editing = False
             return 'continue'
         
-        # Tab 0: 交易参数
         if self.current_tab == 0:
             return self._handle_trading_tab_key(key)
         else:
@@ -295,7 +268,6 @@ class SettingsUI:
         if not visible_fields:
             return 'continue'
         
-        # 确保 current_field 在有效范围内
         max_field = len(visible_fields) - 1
         if self.current_field > max_field:
             self.current_field = max_field
@@ -306,9 +278,7 @@ class SettingsUI:
         field_idx, field = visible_fields[visible_idx]
         
         if self.editing:
-            # 编辑模式
             if field['type'] == 'select':
-                # 选择类型：←→切换
                 if key == 'left':
                     options = field['options']
                     current = self._get_nested_value(config, field['key'])
@@ -326,21 +296,17 @@ class SettingsUI:
                     self.config_manager.config = config
                     self.modified = True
                 elif key == 'enter':
-                    # 确认编辑
                     self.editing = False
                     self.input_buffer = ""
             
             elif field['type'] in ['decimal', 'int']:
-                # 数值类型：数字输入或←→调整
                 if key == 'enter':
-                    # 确认输入
                     if self.input_buffer:
                         try:
                             if field['type'] == 'int':
                                 new_value = int(self.input_buffer)
                             else:
                                 new_value = float(self.input_buffer)
-                            # 限制范围
                             new_value = max(field.get('min', 0), min(field.get('max', 999), new_value))
                             self._set_nested_value(config, field['key'], new_value)
                             self.config_manager.config = config
@@ -349,15 +315,13 @@ class SettingsUI:
                             pass
                     self.editing = False
                     self.input_buffer = ""
+                    return 'enter_edit'
                 elif key.isdigit() or key == '.':
-                    # 数字输入
                     self.input_buffer += key
                 elif key == 'backspace':
-                    # 退格
                     if self.input_buffer:
                         self.input_buffer = self.input_buffer[:-1]
                 elif key == 'left':
-                    # 减少数值
                     current = self._get_nested_value(config, field['key'])
                     if current is not None:
                         step = field.get('step', 1)
@@ -370,7 +334,6 @@ class SettingsUI:
                         self.config_manager.config = config
                         self.modified = True
                 elif key == 'right':
-                    # 增加数值
                     current = self._get_nested_value(config, field['key'])
                     if current is not None:
                         step = field.get('step', 1)
@@ -384,23 +347,15 @@ class SettingsUI:
                         self.modified = True
         
         else:
-            # 浏览模式
             if key == 'up':
-                # 上一个字段
                 self.current_field = max(0, self.current_field - 1)
-            
             elif key == 'down':
-                # 下一个字段
                 self.current_field = min(max_field, self.current_field + 1)
-            
             elif key == 'enter':
-                # 进入编辑模式
                 self.editing = True
                 self.input_buffer = ""
                 return 'enter_edit'
-            
             elif key == 'left':
-                # 减少数值/切换选项
                 if field['type'] == 'select':
                     options = field['options']
                     current = self._get_nested_value(config, field['key'])
@@ -421,9 +376,7 @@ class SettingsUI:
                         self._set_nested_value(config, field['key'], float(current) if isinstance(current, Decimal) else current)
                         self.config_manager.config = config
                         self.modified = True
-            
             elif key == 'right':
-                # 增加数值/切换选项
                 if field['type'] == 'select':
                     options = field['options']
                     current = self._get_nested_value(config, field['key'])
@@ -444,10 +397,8 @@ class SettingsUI:
                         self._set_nested_value(config, field['key'], float(current) if isinstance(current, Decimal) else current)
                         self.config_manager.config = config
                         self.modified = True
-            
             elif key == 'd':
                 return 'reset_confirm'
-            
             elif key == 'b':
                 self.config_manager.backup_config()
                 return 'backed_up'
@@ -476,7 +427,7 @@ class SettingsUI:
     
     def save_config(self) -> Tuple[bool, List[str]]:
         """保存配置"""
-        from .validator import ConfigValidator
+        from src.config.validator import ConfigValidator
         
         config = self.config_manager.get_config()
         valid, errors = ConfigValidator.validate(config)
