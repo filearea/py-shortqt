@@ -352,7 +352,7 @@ py-shortqt v1.2.0 启动测试
 
 ## 💼 开发团队
 
-**魔力塔互动娱乐**
+**Morita Entertainment  Lab.**
 
 - 执行总裁：老王
 - 技术顾问：杰哥
