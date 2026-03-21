@@ -921,14 +921,18 @@ class LiveTrader:
         
         side = self.position['side']
         size = self.position['size']
+        entry_price = self.position['entry_price']
         
         print(f"\n[Z 键平仓] 市价全平 {side} {size}...")
         self._add_action("Z 键平仓", f"市价全平 {side} {size}")
         
         try:
-            # 1. 撤销所有挂单（止盈、止损、保底、提前平仓）
+            # 1. 撤销所有挂单（普通订单 + Algo Order）
             print("  撤销所有挂单...")
             self.api.cancel_all_orders(self.symbol)
+            # 撤销所有 Algo Order（止损单、保底止损单）
+            self.api.cancel_all_open_orders(self.symbol)
+            print("  ✓ 已撤销所有挂单")
             
             # 2. 市价全平
             close_side = 'SELL' if side == 'LONG' else 'BUY'
@@ -940,13 +944,26 @@ class LiveTrader:
                 type='MARKET',
                 quantity=str(size),
                 positionSide=side
-                # 币安 Futures 全仓模式下不需要 reduceOnly
             )
             
-            print(f"  ✓ 已市价全平：{close_order.get('orderId')}")
-            self._add_action("市价全平", f"{close_side} {size} @ {close_order.get('avgPrice', 'MARKET')}")
+            # 获取成交价
+            close_price = Decimal(close_order.get('avgPrice', '0'))
+            if close_price == 0:
+                close_price = Decimal(close_order.get('price', '0'))
             
-            # 3. 清除持仓状态
+            # 3. 计算 PnL
+            if side == 'LONG':
+                pnl = (close_price - entry_price) * size
+            else:
+                pnl = (entry_price - close_price) * size
+            
+            pnl_str = f"{pnl:+.6f} USDT"
+            print(f"  ✓ 已市价全平：{close_side} {size} @ {close_price}")
+            print(f"  PnL: {pnl_str}")
+            
+            self._add_action("市价全平", f"{close_side} {size} @ {close_price} | PnL: {pnl_str}")
+            
+            # 4. 清除持仓状态
             self.position = None
             self.tp_order = None
             self.sl_order = None
