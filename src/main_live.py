@@ -83,7 +83,7 @@ class LiveTradingBot:
         
         # UI
         tp = self.config_manager.get_take_profit_price(Decimal('2150'))
-        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev)
+        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager)
         
         # 设置 UI
         try:
@@ -252,7 +252,7 @@ class LiveTradingBot:
                                         # 更新 UI 的杠杆显示
                                         api_lev, actual_lev = self.config_manager.get_leverage_config()
                                         tp = self.config_manager.get_take_profit_price(Decimal('2150'))
-                                        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev)
+                                        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager)
                                         
                                         self.in_settings = False
                                     else:

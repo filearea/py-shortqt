@@ -15,12 +15,13 @@ from decimal import Decimal
 class LiveTradingUI:
     """实盘交易界面"""
     
-    def __init__(self, trader, leverage: int, take_profit: Decimal = Decimal('1'), stop_loss: Decimal = Decimal('3'), actual_leverage: int = 25):
+    def __init__(self, trader, leverage: int, take_profit: Decimal = Decimal('1'), stop_loss: Decimal = Decimal('3'), actual_leverage: int = 25, config_manager=None):
         self.trader = trader
         self.leverage = leverage  # API 杠杆
         self.actual_leverage = actual_leverage  # 实际杠杆
         self.take_profit = take_profit
         self.stop_loss = stop_loss
+        self.config_manager = config_manager  # 配置管理器，用于读取止盈止损配置
     
     def render(self) -> Layout:
         """渲染界面"""
@@ -171,6 +172,36 @@ class LiveTradingUI:
         
         else:
             acc_text.append("无持仓\n", style="gray")
+            
+            # 显示止盈止损配置信息
+            if self.config_manager:
+                acc_text.append("\n")
+                acc_text.append("─" * 20 + "\n", style="dim")
+                
+                # 止盈
+                tp_config = self.config_manager.get('take_profit', {})
+                tp_mode = tp_config.get('mode', 'fixed')
+                if tp_mode == 'fixed':
+                    tp_value = tp_config.get('points', 1.00)
+                    acc_text.append(f"止盈：+{tp_value:.2f}点\n", style="green")
+                else:
+                    tp_value = tp_config.get('percent', 0.36)
+                    acc_text.append(f"止盈：+{tp_value:.2f}%\n", style="green")
+                
+                # 止损触发
+                sl_config = self.config_manager.get('stop_loss', {})
+                sl_trigger_mode = sl_config.get('trigger_mode', 'fixed')
+                if sl_trigger_mode == 'fixed':
+                    sl_trigger_value = abs(sl_config.get('trigger_points', 3.00))
+                    acc_text.append(f"止损：-{sl_trigger_value:.2f}点\n", style="red")
+                else:
+                    sl_trigger_value = abs(sl_config.get('trigger_percent', 0.50))
+                    acc_text.append(f"止损：-{sl_trigger_value:.2f}%\n", style="red")
+                
+                # 保底止损
+                sm_config = self.config_manager.get('stop_market', {})
+                sm_value = sm_config.get('max_loss_percent', 30.00)
+                acc_text.append(f"保底：最大损失{sm_value:.0f}%\n", style="bold red")
         
         return acc_text
     
