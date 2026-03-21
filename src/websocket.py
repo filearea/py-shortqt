@@ -30,6 +30,7 @@ class BinanceListener:
         self.running = True
         print(f"[WebSocket] 尝试连接：{self.ws_url}")
         
+        msg_count = 0
         while self.running:
             try:
                 async with websockets.connect(self.ws_url) as ws:
@@ -39,6 +40,9 @@ class BinanceListener:
                         message = await asyncio.wait_for(ws.recv(), timeout=30)
                         data = json.loads(message)
                         await self.process_message(data)
+                        msg_count += 1
+                        if msg_count % 100 == 0:
+                            print(f"[WebSocket] 已接收 {msg_count} 条消息，最新价：{self.last_price}")
             except websockets.exceptions.ConnectionClosed:
                 self.connected = False
                 print("WebSocket 断开，重连中...")
@@ -52,21 +56,36 @@ class BinanceListener:
     
     async def process_message(self, data: dict):
         """处理 WebSocket 消息"""
-        if 'e' in data:
-            if data['e'] == 'aggTrade':
-                # 实时成交
-                price = Decimal(data['p'])
-                self.last_price = price
-                for callback in self.callbacks:
-                    await callback('ticker', {'price': price})
-            
-            elif data['e'] == 'depthUpdate':
-                # 深度快照
-                bids = [[Decimal(p), Decimal(q)] for p, q in data.get('b', [])]
-                asks = [[Decimal(p), Decimal(q)] for p, q in data.get('a', [])]
-                if bids:
+        try:
+            if 'e' in data:
+                if data['e'] == 'aggTrade':
+                    # 实时成交
+                    price = Decimal(data['p'])
+                    self.last_price = price
+                    for callback in self.callbacks:
+                        await callback('ticker', {'price': price})
+                
+                elif data['e'] == 'depthUpdate':
+                    # 深度更新
+                    bids = [[Decimal(p), Decimal(q)] for p, q in data.get('b', [])]
+                    asks = [[Decimal(p), Decimal(q)] for p, q in data.get('a', [])]
+                    if bids:
+                        self.orderbook['bids'] = bids[:10]
+                    if asks:
+                        self.orderbook['asks'] = asks[:10]
+                    for callback in self.callbacks:
+                        await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
+            else:
+                # 可能是深度快照（没有 'e' 字段）
+                if 'lastUpdateId' in data and 'bids' in data and 'asks' in data:
+                    # 初始深度快照
+                    bids = [[Decimal(p), Decimal(q)] for p, q in data.get('bids', [])]
+                    asks = [[Decimal(p), Decimal(q)] for p, q in data.get('asks', [])]
                     self.orderbook['bids'] = bids[:10]
-                if asks:
                     self.orderbook['asks'] = asks[:10]
-                for callback in self.callbacks:
-                    await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
+                    for callback in self.callbacks:
+                        await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
+        except Exception as e:
+            print(f"[WebSocket] 处理消息错误：{e}")
+            import traceback
+            traceback.print_exc()

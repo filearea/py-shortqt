@@ -95,7 +95,6 @@ class LiveTradingBot:
             if event_type == 'ticker':
                 price = data['price']
                 self.trader.update_price(price)
-                
                 # 记录价格
                 self.logger.record_price(price)
             
@@ -103,8 +102,9 @@ class LiveTradingBot:
                 bids = data.get('bids', [])
                 asks = data.get('asks', [])
                 self.trader.update_orderbook(bids, asks)
-        except Exception:
-            pass
+        except Exception as e:
+            self.sys_logger.error(f"市场数据回调错误：{e}")
+            print(f"[Market Data Error] {e}")
     
     async def place_order(self, side: str):
         """开仓"""
