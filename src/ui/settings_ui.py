@@ -127,7 +127,7 @@ class SettingsUI:
                     
                     if self.editing and i == self.current_field:
                         # 编辑模式
-                        lines.append(f"{prefix}[bold yellow]{field['label']}:[/bold yellow] [{value}{self.input_buffer}_]  Enter 确认")
+                        lines.append(f"{prefix}[bold yellow]{field['label']}:[/bold yellow] {value}{self.input_buffer}_  Enter 确认")
                     else:
                         # 显示模式
                         if i == self.current_field:
