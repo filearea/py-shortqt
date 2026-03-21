@@ -383,6 +383,7 @@ class SettingsUI:
                 # 进入编辑模式
                 self.editing = True
                 self.input_buffer = ""
+                return 'enter_edit'
             
             elif key == 'left':
                 # 减少数值/切换选项

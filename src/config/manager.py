@@ -103,7 +103,7 @@ class ConfigManager:
     def backup_config(self, backup_name: str = None) -> str:
         """备份当前配置"""
         if not self.config_path.exists():
-            return ""
+            return "配置文件不存在"
         
         if backup_name is None:
             backup_name = f"runtime.json.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -111,7 +111,7 @@ class ConfigManager:
         backup_path = self.config_path.parent / backup_name
         shutil.copy(self.config_path, backup_path)
         
-        return str(backup_path)
+        return backup_path
     
     def restore_config(self, backup_name: str) -> bool:
         """从备份恢复配置"""
