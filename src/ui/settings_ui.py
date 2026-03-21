@@ -171,12 +171,23 @@ class SettingsUI:
         lines.append("[bold]实时计算预览（开仓价 2150，多单，保证金 35U）[/bold]")
         
         entry_price = Decimal('2150.00')
+        balance = Decimal('35.00')
+        
+        # 获取实际杠杆，计算仓位
+        leverage_config = self.config_manager.get('leverage', {})
+        actual_leverage = leverage_config.get('actual', 25)
+        
+        # 计算名义价值和仓位
+        notional = balance * actual_leverage
+        size = notional / entry_price
+        
         tp_price = self.config_manager.get_take_profit_price(entry_price)
-        sl_trigger, _ = self.config_manager.get_stop_loss_params(entry_price, 'LONG', Decimal('0.407'))
+        sl_trigger, _ = self.config_manager.get_stop_loss_params(entry_price, 'LONG', size)
         sm_price = self.config_manager.get_stop_market_price(
-            entry_price, 'LONG', Decimal('0.407'), Decimal('35.00'), Decimal('2060.00')
+            entry_price, 'LONG', size, balance, Decimal('2060.00')
         )
         
+        lines.append(f"  仓位：{size:.3f} ETH (名义价值：{notional:.2f}U)")
         lines.append(f"  止盈：{tp_price:.2f}  止损触发：{sl_trigger:.2f}  保底：{sm_price:.2f}")
         
         tp_diff = tp_price - entry_price
