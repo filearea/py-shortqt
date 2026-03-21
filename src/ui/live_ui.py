@@ -62,7 +62,7 @@ class LiveTradingUI:
             price_arrow = " [green]↑[/green]" if self.trader.last_price_change > 0 else " [red]↓[/red]"
         
         # 状态
-        status = "就绪 - ↑做多 ↓做空 ←撤单 →平仓 Q 退出"
+        status = "就绪 - ↑做多 ↓做空 ←撤单 →/D 平仓 S 设置 Q 退出"
         
         if self.trader.early_close_order:
             status = f"[yellow]平仓挂单中[/yellow] @ {self.trader.early_close_order['price']:.2f} (←撤单)"
@@ -70,7 +70,7 @@ class LiveTradingUI:
             side_text = '多' if self.trader.pending_order['side'] == 'LONG' else '空'
             status = f"[yellow]开仓挂单中[/yellow] - {side_text} @ {self.trader.pending_order['price']:.2f} (←撤单)"
         elif self.trader.position:
-            status = f"[green]持仓中[/green] (→提前平仓)"
+            status = f"[green]持仓中[/green] (D 提前平仓)"
         
         return Panel(
             f"[bold cyan]ETHUSDC[/bold cyan]  |  价格：[yellow]{price_text}{price_arrow}[/yellow]  |  杠杆：[bold]{self.actual_leverage}x/{self.leverage}x[/bold]  |  {status}",
