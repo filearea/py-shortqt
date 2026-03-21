@@ -939,8 +939,8 @@ class LiveTrader:
                 side=close_side,
                 type='MARKET',
                 quantity=str(size),
-                positionSide=side,
-                reduceOnly=True
+                positionSide=side
+                # 币安 Futures 全仓模式下不需要 reduceOnly
             )
             
             print(f"  ✓ 已市价全平：{close_order.get('orderId')}")
