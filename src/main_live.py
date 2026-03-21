@@ -268,12 +268,22 @@ class LiveTradingBot:
                                         
                                         self.in_settings = False
                                         self._pending_confirm_exit = False
+                                        self._pending_reset = False  # 清除重置标志
                                     else:
                                         for err in errors:
                                             self.trader._add_action("⚠️ 配置错误", err)
                                             self.sys_logger.error(f"设置错误：{err}")
                                         self._pending_confirm_exit = False
+                                        self._pending_reset = False  # 清除重置标志
                                 else:
+                                    # 先检查是否有待处理的确认
+                                    if self._pending_reset and key_char == 'd':
+                                        # 第二次按 D，直接执行重置
+                                        self.config_manager.reset_to_defaults()
+                                        self.trader._add_action("✓ 配置已重置为默认值", "")
+                                        self._pending_reset = False
+                                        continue
+                                    
                                     # 其他按键交给设置界面处理
                                     result = self.settings_ui.handle_key(key_char)
                                     if result == 'exit':
@@ -290,16 +300,9 @@ class LiveTradingBot:
                                     elif result == 'confirm_exit':
                                         self.trader._add_action("⚠️ 有未保存的修改", "按 S 保存退出 或 再按 Esc 放弃")
                                     elif result == 'reset_confirm':
-                                        # 显示二次确认提示
-                                        if self._pending_reset:
-                                            # 第二次按 D，执行重置
-                                            self.config_manager.reset_to_defaults()
-                                            self.trader._add_action("✓ 配置已重置为默认值", "")
-                                            self._pending_reset = False
-                                        else:
-                                            # 第一次按 D，显示提示
-                                            self._pending_reset = True
-                                            self.trader._add_action("⚠️ 确认重置", "再次按 D 确认重置为默认值")
+                                        # 第一次按 D，显示提示
+                                        self._pending_reset = True
+                                        self.trader._add_action("⚠️ 确认重置", "再次按 D 确认重置为默认值")
                                     elif result == 'backed_up':
                                         backup_path = self.config_manager.backup_config()
                                         self.trader._add_action("✓ 备份已创建", backup_path)
@@ -309,10 +312,6 @@ class LiveTradingBot:
                                         self.trader._add_action("✓ 备份已删除", "")
                                     elif result == 'enter_edit':
                                         self.trader._add_action("ℹ️ 编辑模式", "数字输入或←→调整，Enter 确认")
-                                    
-                                    # 重置待处理标志
-                                    if key_char != 'd':
-                                        self._pending_reset = False
                                 continue
                             
                             # 主交易界面 - 只用方向键
