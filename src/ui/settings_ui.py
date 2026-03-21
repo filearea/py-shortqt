@@ -57,36 +57,113 @@ class SettingsUI:
     
     def render(self) -> Layout:
         """渲染设置界面"""
-        layout = Layout()
-        layout.split_column(
-            Layout(name="header", size=3),
-            Layout(name="main"),
-            Layout(name="footer", size=3)
-        )
-        
-        # 头部
-        layout["header"].update(Panel(
-            Text.from_markup(f"[bold]⚙️ 设置面板[/bold]  |  "
-                           f"←→调整数值  ↑↓切换字段  Tab 切换标签  "
-                           f"[green]Enter 保存[/green]  [red]Esc 取消[/red]  [yellow]S 返回[/yellow]"),
-            title="py-shortqt v1.2.0 设置"
-        ))
-        
-        # 主体
-        if self.current_tab == 0:
-            layout["main"].update(self._render_trading_tab())
-        else:
-            layout["main"].update(self._render_backup_tab())
-        
-        # 底部
-        layout["footer"].update(self._render_footer())
-        
-        return layout
+        try:
+            layout = Layout()
+            layout.split_column(
+                Layout(name="header", size=3),
+                Layout(name="main"),
+                Layout(name="footer", size=3)
+            )
+            
+            # 头部
+            layout["header"].update(Panel(
+                Text.from_markup(f"[bold]⚙️ 设置面板[/bold]  |  "
+                               f"←→调整数值  ↑↓切换字段  Tab 切换标签  "
+                               f"[green]Enter 保存[/green]  [red]Esc 取消[/red]  [yellow]S 返回[/yellow]"),
+                title="py-shortqt v1.2.0 设置"
+            ))
+            
+            # 主体
+            if self.current_tab == 0:
+                layout["main"].update(self._render_trading_tab())
+            else:
+                layout["main"].update(self._render_backup_tab())
+            
+            # 底部
+            layout["footer"].update(self._render_footer())
+            
+            return layout
+        except Exception as e:
+            # 渲染失败时返回错误面板
+            layout = Layout()
+            layout.update(Panel(f"[red]设置界面渲染错误：{e}[/red]", title="错误"))
+            return layout
     
     def _render_trading_tab(self) -> Panel:
         """渲染交易参数标签页"""
-        config = self.config_manager.get_config()
-        lines = []
+        try:
+            config = self.config_manager.get_config()
+            lines = []
+            
+            # 渲染每个字段
+            visible_fields = []
+            for i, field in enumerate(self.tabs[0]['fields']):
+                # 检查可见性
+                if 'visible_cond' in field:
+                    if not field['visible_cond'](config):
+                        continue
+                
+                visible_fields.append((i, field))
+                
+                # 渲染字段
+                prefix = "→ " if i == self.current_field else "  "
+                value = self._get_nested_value(config, field['key'])
+                
+                if field['type'] == 'select':
+                    # 选择类型
+                    options = field['options']
+                    labels = field.get('labels', options)
+                    current_idx = options.index(value) if value in options else 0
+                    label = labels[current_idx]
+                    
+                    if i == self.current_field:
+                        lines.append(f"{prefix}[bold yellow]{field['label']}:[/bold yellow] [green]● {label}[/green]  ←→切换")
+                    else:
+                        lines.append(f"{prefix}{field['label']}: {label}")
+                
+                elif field['type'] in ['decimal', 'int']:
+                    # 数值类型
+                    unit = field.get('unit', '')
+                    
+                    if self.editing and i == self.current_field:
+                        # 编辑模式
+                        lines.append(f"{prefix}[bold yellow]{field['label']}:[/bold yellow] [{value}{self.input_buffer}_]  Enter 确认")
+                    else:
+                        # 显示模式
+                        if i == self.current_field:
+                            lines.append(f"{prefix}[bold yellow]{field['label']}:[/bold yellow] [green]{value}{unit}[/green]  ←→调整  数字键输入")
+                        else:
+                            lines.append(f"{prefix}{field['label']}: {value}{unit}")
+            
+            # 实时计算预览
+            lines.append("")
+            lines.append("─" * 50)
+            lines.append("[bold]实时计算预览（假设开仓价 2150.00，多单，保证金 35U）[/bold]")
+            
+            # 计算示例值
+            entry_price = Decimal('2150.00')
+            tp_price = self.config_manager.get_take_profit_price(entry_price)
+            sl_trigger, _ = self.config_manager.get_stop_loss_params(entry_price, 'LONG', Decimal('0.407'))
+            sm_price = self.config_manager.get_stop_market_price(
+                entry_price, 'LONG', Decimal('0.407'), Decimal('35.00'), Decimal('2060.00')
+            )
+            
+            lines.append(f"  止盈价：{tp_price:.2f}")
+            lines.append(f"  止损触发：{sl_trigger:.2f}")
+            lines.append(f"  保底止损：{sm_price:.2f}")
+            
+            # 盈亏比
+            tp_diff = tp_price - entry_price
+            sl_diff = entry_price - sl_trigger
+            if sl_diff > 0:
+                ratio = tp_diff / sl_diff
+                status = "✓" if ratio >= Decimal('1.5') else "⚠️"
+                lines.append(f"  盈亏比：{ratio:.2f}:1 {status}")
+            
+            content = "\n".join(lines)
+            return Panel(content, title="交易参数")
+        except Exception as e:
+            return Panel(f"[red]渲染错误：{e}[/red]", title="交易参数")
         
         # 渲染每个字段
         visible_fields = []
@@ -153,8 +230,7 @@ class SettingsUI:
             status = "✓" if ratio >= Decimal('1.5') else "⚠️"
             lines.append(f"  盈亏比：{ratio:.2f}:1 {status}")
         
-        content = "\n".join(lines)
-        return Panel(content, title="交易参数")
+
     
     def _render_backup_tab(self) -> Panel:
         """渲染备份管理标签页"""

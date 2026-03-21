@@ -183,19 +183,24 @@ class LiveTradingBot:
             ) as live:
                 while self.running:
                     try:
+                        # 先刷新 UI
                         if self.in_settings:
                             live.update(self.settings_ui.render())
                         else:
                             live.update(self.ui.render())
                     except Exception as e:
+                        self.sys_logger.error(f"UI 更新错误：{e}")
                         print(f"\n[UI 更新错误] {e}")
                         continue
                     
-                    # 键盘输入
-                    if msvcrt.kbhit():
-                        try:
+                    try:
+                        # 键盘输入（非阻塞）
+                        if msvcrt.kbhit():
                             key = msvcrt.getch()
-                            key_char = key.decode('gbk', errors='ignore').lower()
+                            try:
+                                key_char = key.decode('utf-8', errors='ignore').lower()
+                            except:
+                                key_char = key.decode('gbk', errors='ignore').lower()
                             
                             # 在设置界面中
                             if self.in_settings:
@@ -251,10 +256,11 @@ class LiveTradingBot:
                                 # 进入设置界面
                                 if not self.try_enter_settings():
                                     pass  # 已在 try_enter_settings 中记录日志
-                            elif key.upper() == b'Q':
+                            elif key_char == 'q':
                                 self.running = False
-                        except Exception as e:
-                            print(f"\n[键盘输入错误] {e}")
+                    except Exception as e:
+                        self.sys_logger.error(f"键盘输入错误：{e}")
+                        print(f"\n[键盘输入错误] {e}")
                     
                     # 同步账户信息
                     self.trader.sync_account()
