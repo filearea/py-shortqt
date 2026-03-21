@@ -49,7 +49,7 @@ class SettingsUI:
                      'visible_cond': lambda c: c.get('stop_loss', {}).get('limit_mode') == 'custom'},
                     
                     {'key': 'stop_market.max_loss_percent', 'label': '最大损失比例', 'type': 'decimal',
-                     'min': 10, 'max': 80, 'step': 1, 'unit': '%'},
+                     'min': 0.1, 'max': 80, 'step': 0.1, 'unit': '%'},
                     
                     {'key': 'leverage.api', 'label': 'API 杠杆', 'type': 'int',
                      'min': 1, 'max': 125, 'step': 1},

@@ -209,7 +209,7 @@ class LiveTradingUI:
                 # 保底止损
                 sm_config = self.config_manager.get('stop_market', {})
                 sm_value = sm_config.get('max_loss_percent', 30.00)
-                acc_text.append(f"保底：最大损失{sm_value:.0f}%\n", style="bold red")
+                acc_text.append(f"保底：最大损失{sm_value:.1f}%\n", style="bold red")
         
         return acc_text
     

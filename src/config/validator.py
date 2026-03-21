@@ -57,8 +57,8 @@ class ConfigValidator:
         
         # 3. 最大损失验证
         max_loss = config.get('stop_market', {}).get('max_loss_percent', 0)
-        if max_loss < 10:
-            errors.append("最大损失比例不能小于 10%")
+        if max_loss < Decimal('0.1'):
+            errors.append("最大损失比例不能小于 0.1%")
         if max_loss > 80:
             errors.append("最大损失比例不能大于 80%（建议 20-40%）")
         
