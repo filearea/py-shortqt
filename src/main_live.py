@@ -155,10 +155,35 @@ class LiveTradingBot:
         print("py-shortqt v1.1.1 - 实盘交易模式")
         print("=" * 70)
         
-        # 1. 初始化实盘连接
-        if not await self.trader.initialize():
-            print("\n✗ 实盘初始化失败，退出")
-            return
+        # 1. 初始化实盘连接（带重试机制）
+        max_retries = 3
+        for retry in range(max_retries):
+            try:
+                if await self.trader.initialize():
+                    break
+                else:
+                    if retry < max_retries - 1:
+                        print(f"初始化失败，{retry + 1}/{max_retries}，5 秒后重试...")
+                        await asyncio.sleep(5)
+                    else:
+                        print("\n✗ 实盘初始化失败，退出")
+                        return
+            except Exception as e:
+                error_msg = str(e)
+                if "too many requests" in error_msg.lower() or "banned" in error_msg.lower():
+                    print(f"\n✗ API 请求频率过高，IP 可能被限制")
+                    print(f"错误：{e}")
+                    print("\n建议：")
+                    print("1. 等待 1-2 分钟让 IP 解封")
+                    print("2. 检查是否有多个程序同时运行")
+                    print("3. 使用 WebSocket 订阅代替轮询")
+                    return
+                if retry < max_retries - 1:
+                    print(f"初始化错误：{e}，{retry + 1}/{max_retries}，5 秒后重试...")
+                    await asyncio.sleep(5)
+                else:
+                    print(f"\n✗ 实盘初始化失败：{e}，退出")
+                    return
         
         # 2. 连接行情 WebSocket
         print("连接行情 WebSocket...")

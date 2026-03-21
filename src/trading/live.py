@@ -913,7 +913,38 @@ class LiveTrader:
     
     async def cleanup(self):
         """清理资源"""
+        print("\n清理交易器资源...")
         self.running = False
+        
+        # 1. 关闭用户数据流 WebSocket
         if self.user_stream_ws:
-            await self.user_stream_ws.close()
-        print("\n实盘交易已清理")
+            try:
+                self.user_stream_ws.running = False
+                if hasattr(self.user_stream_ws, 'websocket') and self.user_stream_ws.websocket:
+                    await self.user_stream_ws.websocket.close()
+                print("✓ 用户数据流 WebSocket 已关闭")
+            except Exception as e:
+                print(f"关闭用户数据流失败：{e}")
+        
+        # 2. 等待用户数据流任务结束
+        if hasattr(self, 'user_stream_task') and self.user_stream_task:
+            try:
+                await asyncio.wait_for(self.user_stream_task, timeout=1.0)
+                print("✓ 用户数据流任务已结束")
+            except asyncio.TimeoutError:
+                print("⚠ 用户数据流任务超时，强制结束")
+            except Exception as e:
+                print(f"等待用户数据流任务失败：{e}")
+        
+        # 3. 撤销所有挂单（避免遗留订单）
+        try:
+            print("撤销所有挂单...")
+            self.api.cancel_all_orders(self.symbol)
+            print("✓ 所有挂单已撤销")
+        except Exception as e:
+            print(f"撤销挂单失败：{e}")
+        
+        # 4. 等待一小段时间，确保 API 请求完成
+        await asyncio.sleep(0.5)
+        
+        print("✓ 实盘交易器已清理")

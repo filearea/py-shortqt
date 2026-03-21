@@ -30,25 +30,32 @@ class BinanceListener:
         self.running = True
         print(f"[WebSocket] 尝试连接：{self.ws_url}")
         
+        reconnect_delay = 3  # 初始重连延迟（秒）
+        max_reconnect_delay = 30  # 最大重连延迟
+        
         while self.running:
             try:
                 async with websockets.connect(self.ws_url) as ws:
                     self.connected = True
                     print(f"✓ 已连接：{self.ws_url}")
+                    reconnect_delay = 3  # 连接成功后重置延迟
+                    
                     while self.running:
                         message = await asyncio.wait_for(ws.recv(), timeout=30)
                         data = json.loads(message)
                         await self.process_message(data)
             except websockets.exceptions.ConnectionClosed:
                 self.connected = False
-                print("WebSocket 断开，重连中...")
-                await asyncio.sleep(3)
+                print(f"WebSocket 断开，{reconnect_delay}秒后重连...")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
                 self.connected = False
-                print(f"WebSocket 错误：{e}")
-                await asyncio.sleep(3)
+                print(f"WebSocket 错误：{e}，{reconnect_delay}秒后重连...")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
     
     async def process_message(self, data: dict):
         """处理 WebSocket 消息"""
