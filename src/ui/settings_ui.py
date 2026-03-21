@@ -190,7 +190,7 @@ class SettingsUI:
         
         # 计算止盈止损价格
         tp_price = self.config_manager.get_take_profit_price(entry_price)
-        sl_trigger, _ = self.config_manager.get_stop_loss_params(entry_price, 'LONG', size)
+        sl_trigger, _ = self.config_manager.get_stop_loss_params('ETHUSDC', entry_price, 'LONG', size)
         sm_price = self.config_manager.get_stop_market_price(
             entry_price, 'LONG', size, balance, Decimal('2060.00')
         )
