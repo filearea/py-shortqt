@@ -180,31 +180,16 @@ class LiveTradingBot:
         
         # 3. 主循环
         print("\n进入主循环...")
-        print("按 S 进入设置界面")
         print("=" * 70)
         
-        # 测试渲染
-        print("测试 UI 渲染...")
-        try:
-            test_render = self.ui.render()
-            print(f"✓ 主界面渲染成功：{type(test_render)}")
-            test_settings = self.settings_ui.render()
-            print(f"✓ 设置界面渲染成功：{type(test_settings)}")
-        except Exception as e:
-            print(f"✗ UI 渲染失败：{e}")
-            import traceback
-            traceback.print_exc()
-            return
-        
-        print("启动 Rich Live...")
         try:
             # 使用自适应高度（不强制全屏）
             with Live(
                 self.ui.render(),
                 refresh_per_second=10,
-                screen=False,  # 不使用全屏
-                redirect_stdout=False,  # 不重定向 stdout
-                redirect_stderr=False   # 不重定向 stderr
+                screen=False,
+                redirect_stdout=True,
+                redirect_stderr=True
             ) as live:
                 while self.running:
                     try:
@@ -215,7 +200,6 @@ class LiveTradingBot:
                             live.update(self.ui.render())
                     except Exception as e:
                         self.sys_logger.error(f"UI 更新错误：{e}")
-                        print(f"\n[UI 更新错误] {e}")
                         continue
                     
                     try:
