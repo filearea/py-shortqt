@@ -71,8 +71,7 @@ class ConfigValidator:
             errors.append("API 杠杆必须在 1-125 之间")
         if actual_lev < 1 or actual_lev > 125:
             errors.append("实际杠杆必须在 1-125 之间")
-        if actual_lev > api_lev:
-            errors.append("实际杠杆不能大于 API 杠杆")
+        # 移除"实际杠杆不能大于 API 杠杆"错误，因为 save_config 会自动修正
         
         # 5. 订单超时验证
         timeout = config.get('order_timeout_seconds', 0)

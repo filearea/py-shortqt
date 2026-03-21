@@ -452,6 +452,17 @@ class SettingsUI:
         from src.config.validator import ConfigValidator
         
         config = self.config_manager.get_config()
+        
+        # 自动修正：如果实际杠杆 > API 杠杆，自动覆盖为 API 杠杆
+        leverage = config.get('leverage', {})
+        api_lev = leverage.get('api', 100)
+        actual_lev = leverage.get('actual', 25)
+        
+        if actual_lev > api_lev:
+            config['leverage']['actual'] = api_lev
+            self.config_manager.config = config
+            self.trader._add_action("ℹ️ 已自动修正", f"实际杠杆调整为{api_lev}x（不能超过 API 杠杆）")
+        
         valid, errors = ConfigValidator.validate(config)
         
         if not valid:
