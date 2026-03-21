@@ -236,7 +236,8 @@ class BinanceClient:
         if price:
             params['price'] = price
         
-        if timeInForce:
+        # 市价单不需要 timeInForce
+        if timeInForce and type != 'MARKET':
             params['timeInForce'] = timeInForce
         
         if stopPrice:
