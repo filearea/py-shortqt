@@ -127,7 +127,7 @@ class LiveTrader:
                 commission = Decimal(order_data.get('fc', '0'))
                 commission_asset = order_data.get('fs', 'USDC')
                 
-                print(f"[开仓成交] 挂单完全成交，等待 2 秒后下止盈止损单...")
+                print(f"[开仓成交] 挂单完全成交，立即下止盈止损单...")
                 print(f"  成交价：{entry_price}, 成交量：{filled_qty}")
                 print(f"  手续费：{commission} {commission_asset}")
                 self._add_action("开仓成交", f"{side} @ {entry_price} x {filled_qty} | 手续费 {commission} {commission_asset}")
@@ -139,10 +139,11 @@ class LiveTrader:
                     'time': datetime.now()
                 }
                 self.pending_order = None
-                # 等待 2 秒让仓位完全建立，强平价更新
-                asyncio.create_task(self._delayed_place_tp_sl_orders(2))
+                # 立即下止盈止损单（不等待）
+                asyncio.create_task(self._safe_place_tp_sl_orders())
             
             elif order_status == 'CANCELED':
+                # 开仓挂单被撤销（可能是部分成交后超时）
                 self._add_action("开仓撤销", "开仓挂单已撤销")
                 self.pending_order = None
         
@@ -430,13 +431,6 @@ class LiveTrader:
             traceback.print_exc()
             self._add_action("止盈止损异常", str(e))
     
-    async def _delayed_place_tp_sl_orders(self, delay_seconds: int = 2):
-        """延迟放置止盈止损单（等待仓位完全建立，强平价更新）"""
-        print(f"  等待 {delay_seconds} 秒，让仓位完全建立...")
-        await asyncio.sleep(delay_seconds)
-        print(f"  等待完成，开始下止盈止损单...")
-        await self._safe_place_tp_sl_orders()
-    
     async def place_tp_sl_orders(self):
         """开仓成功后，放置止盈止损单（使用 config_manager 配置）"""
         if not self.position:
@@ -452,7 +446,7 @@ class LiveTrader:
         self._add_action("止盈止损开始", f"{side} @ {entry_price} x {size}")
         
         try:
-            # 1. 获取强平价（重试 3 次）
+            # 1. 获取强平价（快速重试 3 次，每次间隔 0.3 秒）
             liquidation_price = None
             for retry in range(3):
                 print(f"[1/3] 获取强平价... (尝试 {retry + 1}/3)")
@@ -466,12 +460,13 @@ class LiveTrader:
                     print(f"  ✓ 强平价有效：{liquidation_price}")
                     break
                 else:
-                    print(f"  ⚠ 强平价无效，等待 1 秒后重试...")
-                    await asyncio.sleep(1)
+                    if retry < 2:  # 最后一次不等待
+                        print(f"  ⚠ 强平价无效，等待 0.3 秒后重试...")
+                        await asyncio.sleep(0.3)
             
             # 检查强平价是否有效
             if not liquidation_price or liquidation_price == Decimal('0'):
-                print("✗ 保底止损：强平价无效，跳过")
+                print("✗ 保底止损：强平价无效，跳过（但不影响止盈止损单）")
             else:
                 print(f"✓ 强平价有效：{liquidation_price}")
             
@@ -602,8 +597,8 @@ class LiveTrader:
             print(f"✓ 止损单已下：触发={sl_trigger_display}, 限价={actual_price:.2f}, algoId={sl_order['algoId']}")
             
             # 4. 保底止损（使用 config_manager 配置）
-            print(f"[4/3] 下保底止损... (强平价={liquidation_price})")
             if liquidation_price and liquidation_price != Decimal('0'):
+                print(f"[4/3] 下保底止损... (强平价={liquidation_price})")
                 liquidation_price = liquidation_price.quantize(Decimal('0.01'))
                 
                 if self.config_manager:
@@ -653,7 +648,7 @@ class LiveTrader:
                     import traceback
                     traceback.print_exc()
             else:
-                print(f"  ✗ 跳过保底止损：强平价无效 ({liquidation_price})")
+                print(f"[4/3] 跳过保底止损：强平价无效 ({liquidation_price})")
             else:
                 print("✗ 保底止损：强平价无效")
             
