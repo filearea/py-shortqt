@@ -102,9 +102,8 @@ class LiveTradingBot:
                 bids = data.get('bids', [])
                 asks = data.get('asks', [])
                 self.trader.update_orderbook(bids, asks)
-        except Exception as e:
-            self.sys_logger.error(f"市场数据回调错误：{e}")
-            print(f"[Market Data Error] {e}")
+        except Exception:
+            pass
     
     async def place_order(self, side: str):
         """开仓"""
