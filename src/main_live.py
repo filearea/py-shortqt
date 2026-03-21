@@ -61,6 +61,9 @@ class LiveTradingBot:
         # 初始化配置管理器
         self.config_manager = ConfigManager(project_root / "config" / "runtime.json")
         
+        # 同步配置到 settings_ui
+        self.settings_ui.config_manager = self.config_manager
+        
         # 获取杠杆配置
         api_lev, actual_lev = self.config_manager.get_leverage_config()
         
@@ -213,19 +216,11 @@ class LiveTradingBot:
                                         self.settings_ui.handle_key('left')
                                     elif key == b'M':  # →
                                         self.settings_ui.handle_key('right')
-                                elif key_char == 's':
-                                    # 退出设置
-                                    self.in_settings = False
-                                elif key_char == 'q':
-                                    # 退出设置
-                                    self.in_settings = False
-                                else:
-                                    # 其他按键交给设置界面处理
-                                    result = self.settings_ui.handle_key(key_char)
+                                elif key == b'\x1b':  # Esc
+                                    result = self.settings_ui.handle_key('escape')
                                     if result == 'exit':
                                         self.in_settings = False
                                     elif result == 'save':
-                                        # 保存配置
                                         success, errors = self.settings_ui.save_config()
                                         if success:
                                             self.trader._add_action("✓ 配置已保存", "")
@@ -233,11 +228,42 @@ class LiveTradingBot:
                                             for err in errors:
                                                 self.trader._add_action("⚠️ 配置错误", err)
                                         self.in_settings = False
-                                    elif result == 'cancel':
+                                    elif result == 'confirm_exit':
+                                        self.trader._add_action("⚠️ 有未保存的修改", "按 S 保存退出 或 再按 Esc 放弃")
+                                elif key_char == 's':
+                                    # S 保存并退出
+                                    success, errors = self.settings_ui.save_config()
+                                    if success:
+                                        self.trader._add_action("✓ 配置已保存", "")
                                         self.in_settings = False
+                                    else:
+                                        for err in errors:
+                                            self.trader._add_action("⚠️ 配置错误", err)
+                                else:
+                                    # 其他按键交给设置界面处理
+                                    result = self.settings_ui.handle_key(key_char)
+                                    if result == 'exit':
+                                        self.in_settings = False
+                                    elif result == 'save':
+                                        success, errors = self.settings_ui.save_config()
+                                        if success:
+                                            self.trader._add_action("✓ 配置已保存", "")
+                                        else:
+                                            for err in errors:
+                                                self.trader._add_action("⚠️ 配置错误", err)
+                                        self.in_settings = False
+                                    elif result == 'confirm_exit':
+                                        self.trader._add_action("⚠️ 有未保存的修改", "按 S 保存退出 或 再按 Esc 放弃")
                                     elif result == 'reset_confirm':
-                                        # TODO: 显示确认对话框
-                                        pass
+                                        # 重置默认
+                                        self.config_manager.reset_to_defaults()
+                                        self.trader._add_action("✓ 配置已重置", "已恢复默认值")
+                                    elif result == 'backed_up':
+                                        self.trader._add_action("✓ 备份已创建", "")
+                                    elif result == 'restored':
+                                        self.trader._add_action("✓ 配置已恢复", "从备份恢复")
+                                    elif result == 'deleted':
+                                        self.trader._add_action("✓ 备份已删除", "")
                                 continue
                             
                             # 主交易界面 - 只用方向键
