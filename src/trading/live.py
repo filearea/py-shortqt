@@ -500,9 +500,13 @@ class LiveTrader:
             for retry in range(3):
                 print(f"[1/3] 获取强平价... (尝试 {retry + 1}/3)")
                 positions = self.api.get_position(self.symbol)
+                print(f"  API 返回持仓：{positions}")  # 调试日志
+                
                 for pos in positions:
+                    print(f"  检查持仓：symbol={pos.get('symbol')}, positionAmt={pos.get('positionAmt')}, liquidationPrice={pos.get('liquidationPrice')}")  # 调试日志
                     if pos['symbol'] == self.symbol and Decimal(pos['positionAmt']) != 0:
                         liquidation_price = Decimal(pos['liquidationPrice'])
+                        print(f"  提取强平价：{liquidation_price}")  # 调试日志
                         break
                 
                 if liquidation_price and liquidation_price != Decimal('0'):
@@ -515,7 +519,7 @@ class LiveTrader:
             
             # 检查强平价是否有效
             if not liquidation_price or liquidation_price == Decimal('0'):
-                print("✗ 保底止损：强平价无效，跳过（但不影响止盈止损单）")
+                print(f"✗ 保底止损：强平价无效 ({liquidation_price})，跳过")
             else:
                 print(f"✓ 强平价有效：{liquidation_price}")
             
