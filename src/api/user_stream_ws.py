@@ -34,13 +34,16 @@ class UserStreamWebSocket:
     async def connect(self):
         """连接 WebSocket"""
         self.running = True
+        reconnect_delay = 3  # 初始重连延迟（秒）
+        max_reconnect_delay = 30  # 最大重连延迟
         
         while self.running:
             try:
-                async with websockets.connect(self.ws_url) as ws:
+                async with websockets.connect(self.ws_url, ping_timeout=10, ping_interval=20) as ws:
                     self.ws = ws
                     self.connected = True
                     print(f"✓ 用户数据流已连接")
+                    reconnect_delay = 3  # 连接成功后重置延迟
                     
                     while self.running:
                         try:
@@ -48,16 +51,33 @@ class UserStreamWebSocket:
                             await self.process_message(message)
                         except asyncio.TimeoutError:
                             continue
+                        except websockets.exceptions.ConnectionClosed:
+                            print("用户数据流连接关闭")
+                            break
+                        except OSError as e:
+                            # Windows 网络错误（如 WinError 64）
+                            print(f"用户数据流网络错误：{e}")
+                            break
             
-            except websockets.exceptions.ConnectionClosed:
+            except OSError as e:
+                # Windows 网络错误（如 WinError 64 指定的网络名不再可用）
                 self.connected = False
-                print("用户数据流断开，重连中...")
-                await asyncio.sleep(3)
+                print(f"用户数据流连接失败：{e}")
+                print(f"  {reconnect_delay}秒后重试...")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+            
+            except websockets.exceptions.InvalidStatusCode:
+                self.connected = False
+                print(f"用户数据流连接失败：无效的 Listen Key，可能需要更新")
+                await asyncio.sleep(10)
             
             except Exception as e:
                 self.connected = False
                 print(f"用户数据流错误：{e}")
-                await asyncio.sleep(3)
+                print(f"  {reconnect_delay}秒后重试...")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
     
     async def process_message(self, message: str):
         """处理 WebSocket 消息"""

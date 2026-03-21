@@ -189,17 +189,21 @@ class LiveTradingBot:
         print("连接行情 WebSocket...")
         ws_task = asyncio.create_task(self.listener.connect())
         
-        # 等待行情连接（最多 10 秒）
+        # 等待行情连接（最多 15 秒）
         print("等待连接...")
-        for i in range(20):  # 10 秒 = 20 * 0.5 秒
+        for i in range(30):  # 15 秒 = 30 * 0.5 秒
             if self.listener.connected:
                 print("✓ 行情已连接")
                 break
             await asyncio.sleep(0.5)
         else:
-            print("✗ 行情连接超时，退出")
-            self.listener.running = False
-            return
+            print("⚠ 行情连接超时，但程序继续运行")
+            print("  可能的原因：")
+            print("  1. 网络连接不稳定")
+            print("  2. 币安 WebSocket 服务暂时不可用")
+            print("  3. 防火墙/代理阻止了连接")
+            print("\n  程序将在后台继续尝试连接...")
+            # 不退出程序，让 WebSocket 在后台继续重试
         
         print("=" * 70)
         print("操作：↑做多  |  ↓做空  |  ←撤单  |  →平仓  |  S 设置  |  Q 退出")

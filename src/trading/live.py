@@ -94,12 +94,18 @@ class LiveTrader:
             return False
     
     async def _start_user_stream(self):
-        """启动用户数据流 WebSocket"""
-        self.listen_key = self.api.get_listen_key()
-        self.user_stream_ws = UserStreamWebSocket(self.listen_key)
-        self.user_stream_ws.add_order_callback(self._on_order_update)
-        self.user_stream_task = asyncio.create_task(self.user_stream_ws.connect())
-        await asyncio.sleep(1)
+        """启动用户数据流 WebSocket（可选功能，失败不影响主程序）"""
+        try:
+            self.listen_key = self.api.get_listen_key()
+            self.user_stream_ws = UserStreamWebSocket(self.listen_key)
+            self.user_stream_ws.add_order_callback(self._on_order_update)
+            self.user_stream_task = asyncio.create_task(self.user_stream_ws.connect())
+            await asyncio.sleep(1)
+            print("✓ 用户数据流已启动（用于订单状态更新）")
+        except Exception as e:
+            print(f"⚠ 用户数据流启动失败：{e}")
+            print("  程序仍可正常运行，但订单状态更新可能有延迟")
+            print("  建议：检查网络连接或防火墙设置")
     
     def _on_order_update(self, order_data: dict):
         """订单更新回调（同步函数）"""
