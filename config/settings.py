@@ -21,6 +21,8 @@ ORDER_TIMEOUT_SECONDS = 2.0  # 挂单超时时间（秒）
 
 # 日志配置
 LOG_BASE_DIR = "logs"
+LOG_DEBUG_MODE = False  # True=记录详细调试日志（订单簿、WS 消息等）
+LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 # 显示配置
 PRICE_PRECISION = 2  # 价格精度

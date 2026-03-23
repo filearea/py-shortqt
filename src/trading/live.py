@@ -29,6 +29,7 @@ class LiveTrader:
         self.testnet = testnet
         self.logger = logger
         self.config_manager = config_manager
+        self.log_manager: LogManager = None  # 由外部注入
         
         self.api = BinanceClient(api_key, api_secret, testnet)
         self.listener = None  # 行情 WebSocket 监听器（从外部传入）

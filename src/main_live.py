@@ -22,14 +22,14 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from config.settings import SYMBOL, LEVERAGE_LIMIT, TESTNET
+from config.settings import SYMBOL, LEVERAGE_LIMIT, TESTNET, LOG_DEBUG_MODE, LOG_LEVEL
 from src.api.binance_client import BinanceAPIError
 from src.trading.live import LiveTrader
 from src.websocket import BinanceListener
 from src.ui.live_ui import LiveTradingUI
 from src.ui.settings_ui import SettingsUI
 from src.logger import TradeLogger
-from src.system_logger import get_system_logger
+from src.logging import get_logger, LogManager
 from src.config.manager import ConfigManager
 
 try:
@@ -51,13 +51,15 @@ class LiveTradingBot:
         self._pending_reset = False  # 重置确认标志
         self._pending_confirm_exit = False  # 退出确认标志
         
-        # 获取系统日志
-        self.sys_logger = get_system_logger()
-        self.sys_logger.info(f"=== py-shortqt v1.2.0 启动 ===")
-        self.sys_logger.info(f"使用账户：{account_name}")
-        
-        # 初始化交易日志（项目根目录/logs/）
+        # 初始化新日志系统（项目根目录/logs/）
         project_root = Path(__file__).parent.parent
+        self.log_manager: LogManager = get_logger(project_root / "logs", LOG_DEBUG_MODE)
+        self.log_manager.set_level(LOG_LEVEL)
+        self.log_manager.system.info(f"=== py-shortqt v1.3.0 启动 ===")
+        self.log_manager.system.info(f"使用账户：{account_name}")
+        self.log_manager.system.info(f"调试模式：{LOG_DEBUG_MODE}, 日志级别：{LOG_LEVEL}")
+        
+        # 兼容旧日志（保留给 LiveTrader 使用）
         self.logger = TradeLogger(project_root / "logs")
         
         # 初始化配置管理器
@@ -92,14 +94,12 @@ class LiveTradingBot:
         # 设置 UI
         try:
             self.settings_ui = SettingsUI(self.config_manager, self.trader)
-            self.sys_logger.info("设置 UI 初始化成功")
+            self.log_manager.system.info("设置 UI 初始化成功")
         except Exception as e:
-            self.sys_logger.error(f"设置 UI 初始化失败：{e}")
-            import traceback
-            traceback.print_exc()
+            self.log_manager.system.error(f"设置 UI 初始化失败：{e}", exc_info=True)
             raise
         
-        self.sys_logger.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
+        self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
     
     async def on_market_data(self, event_type: str, data: dict):
         """市场数据回调"""
@@ -255,7 +255,7 @@ class LiveTradingBot:
                         # 强制刷新，避免窗口变化时残留
                         live.refresh()
                     except Exception as e:
-                        self.sys_logger.error(f"UI 更新错误：{e}")
+                        self.log_manager.system.error(f"UI 更新错误：{e}")
                         continue
                     
                     try:
@@ -277,7 +277,7 @@ class LiveTradingBot:
                             
                             # 在设置界面中
                             if self.in_settings:
-                                self.sys_logger.debug(f"设置界面按键：{repr(key)} -> '{key_char}'")
+                                self.log_manager.system.debug(f"设置界面按键：{repr(key)} -> '{key_char}'")
                                 
                                 if key == b'\xe0' or key == b'\x00':  # 方向键前缀
                                     key = msvcrt.getch()
@@ -317,7 +317,7 @@ class LiveTradingBot:
                                     if success:
                                         msg = "✓ 配置已保存并退出"
                                         self.trader._add_action(msg, "")
-                                        self.sys_logger.info(f"设置操作：{msg}")
+                                        self.log_manager.system.info(f"设置操作：{msg}")
                                         
                                         # 更新配置
                                         api_lev, actual_lev = self.config_manager.get_leverage_config()
@@ -330,7 +330,7 @@ class LiveTradingBot:
                                         self.trader.leverage_limit = api_lev
                                         self.trader.actual_leverage = actual_lev
                                         
-                                        self.sys_logger.info(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
+                                        self.log_manager.system.info(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
                                         
                                         self.in_settings = False
                                         self._pending_confirm_exit = False
@@ -338,7 +338,7 @@ class LiveTradingBot:
                                     else:
                                         for err in errors:
                                             self.trader._add_action("⚠️ 配置错误", err)
-                                            self.sys_logger.error(f"设置错误：{err}")
+                                            self.log_manager.system.error(f"设置错误：{err}")
                                         self._pending_confirm_exit = False
                                         self._pending_reset = False  # 清除重置标志
                                 else:
@@ -411,7 +411,7 @@ class LiveTradingBot:
                             elif key_char == 'q':
                                 self.running = False
                     except Exception as e:
-                        self.sys_logger.error(f"键盘输入错误：{e}")
+                        self.log_manager.system.error(f"键盘输入错误：{e}")
                         print(f"\n[键盘输入错误] {e}")
                     
                     # 同步账户信息
@@ -444,11 +444,17 @@ class LiveTradingBot:
         if self.running:
             await self._cleanup_resources(ws_task)
         
+        # 关闭日志系统
         self.logger.close()
+        if hasattr(self, 'log_manager') and self.log_manager:
+            self.log_manager.close()
+            self.log_manager.system.info(f"交易结束，最终余额：{self.trader.available_balance:.4f} USDC")
         
         print("\n" + "=" * 70)
         print("交易结束")
         print(f"最终余额：{self.trader.available_balance:.4f} USDC")
+        if hasattr(self, 'log_manager') and self.log_manager:
+            print(f"日志已保存至：{self.log_manager.log_dir}")
         print("=" * 70)
         
         # 防止窗口立即关闭
