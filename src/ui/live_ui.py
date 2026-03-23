@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.layout import Layout
 from rich.text import Text
 from decimal import Decimal
+from src import __version__
 
 
 class LiveTradingUI:
@@ -78,7 +79,7 @@ class LiveTradingUI:
         
         return Panel(
             f"[bold cyan]ETHUSDC[/bold cyan]  |  价格：[yellow]{price_text}{price_arrow}[/yellow]  |  {ws_status}  |  杠杆：[bold]{self.actual_leverage}x/{self.leverage}x[/bold]  |  {status}",
-            title="py-shortqt v1.2.0"
+            title=f"py-shortqt v{__version__}"
         )
     
     def _render_ws_status(self) -> str:

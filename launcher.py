@@ -12,9 +12,13 @@ def main():
     project_root = Path(__file__).parent
     config_file = project_root / "config" / "accounts.json"
     
+    # 读取版本号
+    version_file = project_root / "VERSION"
+    version = version_file.read_text().strip() if version_file.exists() else "unknown"
+    
     print()
     print("=" * 40)
-    print("py-shortqt v1.3.0 启动器")
+    print(f"py-shortqt v{version} 启动器")
     print("=" * 40)
     print()
     

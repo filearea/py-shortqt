@@ -55,7 +55,7 @@ class LiveTradingBot:
         project_root = Path(__file__).parent.parent
         self.log_manager: LogManager = get_logger(project_root / "logs", LOG_DEBUG_MODE)
         self.log_manager.set_level(LOG_LEVEL)
-        self.log_manager.system.info(f"=== py-shortqt v1.3.0 启动 ===")
+        self.log_manager.system.info(f"=== py-shortqt v{__version__} 启动 ===")
         self.log_manager.system.info(f"使用账户：{account_name}")
         self.log_manager.system.info(f"调试模式：{LOG_DEBUG_MODE}, 日志级别：{LOG_LEVEL}")
         
