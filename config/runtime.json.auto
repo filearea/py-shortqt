@@ -1,7 +1,7 @@
 {
     "take_profit": {
         "mode": "fixed",
-        "points": 0.25,
+        "points": 0.55,
         "percent": 2.0
     },
     "stop_loss": {
@@ -19,5 +19,5 @@
         "actual": 60
     },
     "order_timeout_seconds": 2.0,
-    "last_modified": "2026-03-23T12:41:36.850924"
+    "last_modified": "2026-03-23T14:42:11.953016"
 }
