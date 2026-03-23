@@ -521,8 +521,10 @@ class LiveTrader:
                 sl_trigger, sl_algo_params = self.config_manager.get_stop_loss_params(self.symbol, entry_price, side, size)
                 
                 # 计算保底止损价格（基于用户配置的最大损失比例）
+                # 使用总权益（可用余额 + 持仓保证金），而不是开仓后的可用余额
+                total_equity = self.available_balance + self.position_margin
                 sm_price = self.config_manager.get_stop_market_price(
-                    entry_price, side, size, self.available_balance, liquidation_price or Decimal('0')
+                    entry_price, side, size, total_equity, liquidation_price or Decimal('0')
                 )
                 
                 # 如果强平价有效，和强平价 +1 比较，取更安全的
