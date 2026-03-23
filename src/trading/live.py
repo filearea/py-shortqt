@@ -548,9 +548,11 @@ class LiveTrader:
                 # 计算保底止损价格（基于用户配置的最大损失比例）
                 # 使用总权益（可用余额 + 持仓保证金），而不是开仓后的可用余额
                 total_equity = self.available_balance + self.position_margin
+                print(f"\n[保底止损计算] 总权益={total_equity:.6f} USDT (可用={self.available_balance:.6f} + 持仓={self.position_margin:.6f})")
                 sm_price = self.config_manager.get_stop_market_price(
                     entry_price, side, size, total_equity, liquidation_price or Decimal('0')
                 )
+                print(f"[保底止损计算] 保底价格={sm_price:.2f}, 强平价={liquidation_price or 'N/A'}")
                 
                 # 如果强平价有效，和强平价 +1 比较，取更安全的
                 if liquidation_price and liquidation_price != Decimal('0'):

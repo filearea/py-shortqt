@@ -205,9 +205,14 @@ class ConfigManager:
         
         limit_mode = sl.get('limit_mode', 'queue')
         if limit_mode == "queue":
-            # 同向价 1 模式（原有功能，别改崩）
-            algo_params['priceMatch'] = 'QUEUE'
-            # 不传 price
+            # 同向价 1 模式：触发价 ±1 点作为限价
+            # 多单止损：触发价 -1（卖出价更低，确保成交）
+            # 空单止损：触发价 +1（买入价更高，确保成交）
+            if side == 'LONG':
+                limit_price = trigger_price - Decimal('1')
+            else:
+                limit_price = trigger_price + Decimal('1')
+            algo_params['price'] = str(limit_price)
         else:
             # 自定义滑点模式（新增）
             # 多单止损：卖出平仓，挂高价（触发价 + 滑点）
