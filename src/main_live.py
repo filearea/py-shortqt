@@ -31,6 +31,7 @@ from src.ui.settings_ui import SettingsUI
 from src.logger import TradeLogger
 from src.loggers import get_logger, LogManager
 from src.config.manager import ConfigManager
+from src import __version__
 
 try:
     from rich.live import Live
