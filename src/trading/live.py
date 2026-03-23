@@ -326,6 +326,8 @@ class LiveTrader:
                             duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
                             self.logger.update_signal_result('MANUAL', float(pnl), duration)
                     
+                    # 撤销所有止盈止损单
+                    self._cancel_other_orders(exclude='none')
                     self.early_close_order = None
                 elif order_status in ['CANCELED', 'EXPIRED']:
                     print(f"[提前平仓取消] 提前平仓已取消/过期")
