@@ -29,7 +29,7 @@ from src.websocket import BinanceListener
 from src.ui.live_ui import LiveTradingUI
 from src.ui.settings_ui import SettingsUI
 from src.logger import TradeLogger
-from src.logging import get_logger, LogManager
+from src.loggers import get_logger, LogManager
 from src.config.manager import ConfigManager
 
 try:

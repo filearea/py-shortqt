@@ -17,6 +17,14 @@ logs/
 ├── trading_2026-03-23.jsonl     # 交易日志（订单/持仓/信号）
 ├── signals_2026-03-23.csv       # 信号特征与结果（CSV 格式）
 └── index.json                   # 日志索引（便于查询）
+
+src/
+└── loggers/                     # 日志模块（避免与标准库 logging 冲突）
+    ├── __init__.py
+    ├── manager.py
+    ├── system.py
+    ├── market.py
+    └── trading.py
 ```
 
 ## 日志级别
@@ -133,7 +141,7 @@ timestamp,side,entry_price,price_5s_change,price_10s_change,price_30s_change,ord
 ### 在代码中使用
 
 ```python
-from src.logging import get_logger
+from src.loggers import get_logger
 
 # 获取日志管理器
 log_manager = get_logger()
