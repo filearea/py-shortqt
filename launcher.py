@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-py-shortqt v1.2.0 启动器
+py-shortqt v1.3.0 启动器
 """
 
 import json
@@ -14,7 +14,7 @@ def main():
     
     print()
     print("=" * 40)
-    print("py-shortqt v1.2.0 启动器")
+    print("py-shortqt v1.3.0 启动器")
     print("=" * 40)
     print()
     
