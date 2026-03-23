@@ -189,6 +189,11 @@ class LiveTrader:
                     'time': datetime.now()
                 }
                 self.pending_order = None
+                
+                # 记录信号特征（用于后续分析）
+                if self.logger:
+                    self.logger.record_signal(side, entry_price, self.orderbook)
+                
                 # 立即下止盈止损单（不等待）
                 asyncio.create_task(self._safe_place_tp_sl_orders())
             
@@ -217,6 +222,11 @@ class LiveTrader:
                     print(f"  手续费：{commission} {commission_asset}")
                     print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
                     self._add_action("止盈成交", f"PnL: {pnl:+.6f} USDT")
+                    
+                    # 记录信号结果
+                    if self.logger:
+                        duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
+                        self.logger.update_signal_result('TP', float(pnl), duration)
                 
                 self._cancel_other_orders(exclude='tp')
                 self.tp_order = None
@@ -244,6 +254,11 @@ class LiveTrader:
                     print(f"  手续费：{commission} {commission_asset}")
                     print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
                     self._add_action("止损成交", f"PnL: {pnl:+.6f} USDT")
+                    
+                    # 记录信号结果
+                    if self.logger:
+                        duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
+                        self.logger.update_signal_result('SL', float(pnl), duration)
                 
                 self._cancel_other_orders(exclude='sl')
                 self.sl_order = None
@@ -271,6 +286,11 @@ class LiveTrader:
                     print(f"  手续费：{commission} {commission_asset}")
                     print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
                     self._add_action("保底止损成交", f"PnL: {pnl:+.6f} USDT")
+                    
+                    # 记录信号结果
+                    if self.logger:
+                        duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
+                        self.logger.update_signal_result('STOP_MARKET', float(pnl), duration)
                 
                 self._cancel_other_orders(exclude='stop_market')
                 self.stop_market_order = None
@@ -300,6 +320,11 @@ class LiveTrader:
                         print(f"  手续费：{commission} {commission_asset}")
                         print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
                         self._add_action("提前平仓成交", f"PnL: {pnl:+.6f} USDT")
+                        
+                        # 记录信号结果
+                        if self.logger:
+                            duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
+                            self.logger.update_signal_result('MANUAL', float(pnl), duration)
                     
                     self.early_close_order = None
                 elif order_status in ['CANCELED', 'EXPIRED']:
