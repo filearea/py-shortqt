@@ -546,9 +546,12 @@ class LiveTrader:
                 sl_trigger, sl_algo_params = self.config_manager.get_stop_loss_params(self.symbol, entry_price, side, size)
                 
                 # 计算保底止损价格（基于用户配置的最大损失比例）
-                # 使用总权益（可用余额 + 持仓保证金），而不是开仓后的可用余额
-                total_equity = self.available_balance + self.position_margin
-                print(f"\n[保底止损计算] 总权益={total_equity:.6f} USDT (可用={self.available_balance:.6f} + 持仓={self.position_margin:.6f})")
+                # 使用总权益 = 开仓后可用余额 + 开仓保证金（因为开仓后 position_margin 可能还没更新）
+                # 开仓保证金 = 仓位价值 / 实际杠杆
+                position_value = entry_price * size
+                position_margin_required = position_value / Decimal(self.actual_leverage)
+                total_equity = self.available_balance + position_margin_required
+                print(f"\n[保底止损计算] 总权益={total_equity:.6f} USDT (可用={self.available_balance:.6f} + 本单保证金={position_margin_required:.6f})")
                 sm_price = self.config_manager.get_stop_market_price(
                     entry_price, side, size, total_equity, liquidation_price or Decimal('0')
                 )
