@@ -348,10 +348,19 @@ class LiveTrader:
                 else:
                     pnl = (self.position['entry_price'] - fill_price) * fill_qty - commission
                 
+                duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
+                
                 print(f"[订单成交] 未知订单成交（可能是止损触发）！")
                 print(f"  成交价：{fill_price}, 成交量：{fill_qty}")
                 print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
-                self._add_action("订单成交", f"PnL: {pnl:+.6f} USDT")
+                self._add_action("止损成交", f"PnL: {pnl:+.6f} USDT")
+                
+                # 记录信号结果（修复 Bug：之前这里缺失导致 signals.csv 没有记录）
+                if self.logger:
+                    self.logger.update_signal_result('SL', float(pnl), duration)
+                
+                # 清空订单状态
+                self._cancel_other_orders(exclude='none')
         
         # 任何订单成交（全部或部分）→ 触发持仓同步
         if order_status in ['FILLED', 'PARTIALLY_FILLED']:
