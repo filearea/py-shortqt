@@ -30,7 +30,9 @@ from src.ui.live_ui import LiveTradingUI
 from src.ui.settings_ui import SettingsUI
 from src.logger import TradeLogger
 from src.loggers import get_logger, LogManager
+from src.loggers.market import MarketLogger
 from src.config.manager import ConfigManager
+from src.indicators import IndicatorsManager
 from src import __version__
 
 try:
@@ -63,6 +65,12 @@ class LiveTradingBot:
         
         # 兼容旧日志（保留给 LiveTrader 使用）
         self.logger = TradeLogger(project_root / "logs")
+        
+        # 初始化指标管理器（v1.4.0 新增）
+        self.indicators = IndicatorsManager()
+        
+        # 初始化市场日志记录器（v1.4.0 新增）
+        self.market_logger = MarketLogger(project_root / "logs")
         
         # 初始化配置管理器
         self.config_manager = ConfigManager(project_root / "config" / "runtime.json")
@@ -116,6 +124,12 @@ class LiveTradingBot:
                 bids = data.get('bids', [])
                 asks = data.get('asks', [])
                 self.trader.update_orderbook(bids, asks)
+                
+                # 更新指标管理器的订单簿数据（v1.4.0 新增）
+                from decimal import Decimal
+                bids_decimal = [(Decimal(str(b[0])), Decimal(str(b[1]))) for b in bids]
+                asks_decimal = [(Decimal(str(a[0])), Decimal(str(a[1]))) for a in asks]
+                self.indicators.update_orderbook(bids_decimal, asks_decimal)
         except Exception:
             pass
     
