@@ -114,10 +114,10 @@ class LiveTradingBot:
         
         self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
     
-    async def _init_historical_klines(self, limit: int = 50):
-        """v1.4.0: 获取少量历史 K 线（避免频率限制）"""
+    def _init_historical_klines(self, limit: int = 50):
+        """v1.4.0: 获取少量历史 K 线（带速率限制）"""
         try:
-            # 通过 REST API 获取最近 50 根 1 分钟 K 线
+            # 通过 REST API 获取最近 50 根 1 分钟 K 线（带速率限制）
             klines = self.trader.api.get_klines(self.symbol, '1m', limit=limit)
             
             for kline_data in klines:
@@ -231,9 +231,9 @@ class LiveTradingBot:
                         'leverage': self.trader.actual_leverage
                     })
                     
-                    # v1.4.0: 获取 50 根历史 K 线（避免频率限制）
+                    # v1.4.0: 获取 50 根历史 K 线（带速率限制）
                     await asyncio.sleep(1)  # 等待 1 秒，避免与初始化请求冲突
-                    await self._init_historical_klines(limit=50)
+                    self._init_historical_klines(limit=50)
                     
                     break
                 else:

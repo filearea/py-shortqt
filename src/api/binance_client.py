@@ -8,8 +8,10 @@ import requests
 from decimal import Decimal
 from pathlib import Path
 import json
+import asyncio
 
 from .signature import build_signed_params, get_timestamp
+from .rate_limiter import RateLimiter, BINANCE_WEIGHTS
 
 
 class BinanceClient:
@@ -30,9 +32,26 @@ class BinanceClient:
             'X-MBX-APIKEY': self.api_key,
             'Content-Type': 'application/x-www-form-urlencoded'
         })
+        
+        # v1.4.0 新增：API 请求速率限制器
+        self.rate_limiter = RateLimiter(weight_limit=1200, window_seconds=60)
     
-    def _get(self, path: str, params: dict = None, signed: bool = False) -> dict:
-        """GET 请求"""
+    def _get(self, path: str, params: dict = None, signed: bool = False, weight: int = 1) -> dict:
+        """GET 请求（带速率限制）"""
+        # 同步等待获取请求权限
+        import time
+        while True:
+            if self.rate_limiter.get_available_weight() >= weight:
+                self.rate_limiter.requests.append((time.time(), weight))
+                self.rate_limiter.current_weight += weight
+                break
+            else:
+                wait_time = self.rate_limiter.get_wait_time(weight)
+                if wait_time > 0:
+                    time.sleep(wait_time)
+                else:
+                    time.sleep(0.1)
+        
         url = f"{self.base_url}{path}"
         
         if signed:
@@ -63,7 +82,8 @@ class BinanceClient:
             'interval': interval,
             'limit': limit
         }
-        return self._get('/fapi/v1/klines', params)
+        weight = BINANCE_WEIGHTS.get('GET /fapi/v1/klines', 1)
+        return self._get('/fapi/v1/klines', params, signed=False, weight=weight)
     
     def _post(self, path: str, params: dict = None, signed: bool = False) -> dict:
         """POST 请求"""
