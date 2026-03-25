@@ -34,7 +34,7 @@ class LiveTradingUI:
             Layout(name="header", size=3),
             Layout(name="main"),  # 自适应高度
             Layout(name="footer", size=12),  # 固定日志 12 行
-            Layout(name="indicators", size=6)  # v1.4.0 新增：指标区 6 行（三行布局）
+            Layout(name="indicators", size=8)  # v1.4.0 新增：指标区 8 行（四行布局 + 分类评分）
         )
         
         # 头部
@@ -347,17 +347,28 @@ class LiveTradingUI:
         if any('🟡' in l or '🔴' in l for l in liq_lines):
             liq_row.append(" 🟡", style="yellow")
         
-        # 第三行：交易建议（信号灯 + 评分）
+        # 第三行：交易建议（信号灯 + 综合评分）
         score_row = Text()
         score_row.append("建议：", style="bold cyan")
         score_row.append(f" {score['emoji']} ", style=f"bold {score['color']}")
         score_row.append(f"{score['recommendation']} ", style=f"bold {score['color']}")
-        score_row.append(f"| 评分 {score['score']}/100", style="dim")
+        score_row.append(f"| 综合：{score['score']:.1f}/100", style="dim")
         
-        # 添加三行
+        # 第四行：分类评分（新增）
+        category_scores = score.get('category_scores', {})
+        cat_row = Text()
+        cat_row.append("  波动率：", style="dim")
+        cat_row.append(f"{category_scores.get('volatility', 50.0):.1f} ", style="cyan")
+        cat_row.append("| 流动性：", style="dim")
+        cat_row.append(f"{category_scores.get('liquidity', 50.0):.1f} ", style="cyan")
+        cat_row.append("| 动量：", style="dim")
+        cat_row.append(f"{category_scores.get('momentum', 50.0):.1f}", style="cyan")
+        
+        # 添加行
         table.add_row(vol_row)
         table.add_row(liq_row)
         table.add_row(score_row)
+        table.add_row(cat_row)  # 新增分类评分行
         
         return table
 

@@ -40,7 +40,7 @@ WEIGHT_PER_DEPTH = 5  # 深度查询权重 5
 DEFAULT_SYMBOLS = ["ETHUSDC"]  # 默认交易对列表
 HISTORY_DAYS = 14  # 历史数据天数
 KLINES_LIMIT = 500  # 每次获取 500 根 K 线
-ORDERBOOK_LIMIT = 20  # 订单簿 20 档
+ORDERBOOK_LIMIT = 200  # 订单簿 200 档深度
 ORDERBOOK_INTERVAL = 300  # 订单簿快照间隔（秒）= 5 分钟
 
 # ==================== 工具函数 ====================
@@ -268,7 +268,7 @@ def fetch_orderbook(symbol: str, limit: int = ORDERBOOK_LIMIT) -> Optional[Dict]
     
     return {
         'timestamp': int(time.time() * 1000),
-        'bids': data.get('bids', []),
+        'bids': data.get('bids', []),  # 保持原始精度（价格 8 位，数量 8 位）
         'asks': data.get('asks', [])
     }
 

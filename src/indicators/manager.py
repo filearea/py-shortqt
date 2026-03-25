@@ -10,20 +10,28 @@ from typing import Dict, List, Tuple, Optional
 
 from .volatility import VolatilityAnalyzer
 from .liquidity import LiquidityAnalyzer
-from .scorer import QualityScorer
+from .scorer import DynamicScorer, SimpleScorer
 
 
 class IndicatorsManager:
     """指标管理器"""
     
     def __init__(self):
-        """初始化指标管理器"""
+        """初始化指标管理器 - v1.4.0 动态评分"""
         self.volatility = VolatilityAnalyzer(max_klines=200)
-        self.liquidity = LiquidityAnalyzer()
-        self.scorer = QualityScorer()
+        self.liquidity = LiquidityAnalyzer(max_levels=1000)
+        
+        # 动态评分器（数据充足时）
+        self.scorer = DynamicScorer(window_days=14)
+        
+        # 简单评分器（数据不足时）
+        self.simple_scorer = SimpleScorer()
         
         # 缓存最新指标
         self._last_snapshot: Optional[Dict] = None
+        
+        # 样本量统计
+        self._sample_count = 0
     
     def update_kline(self, kline: dict):
         """
@@ -57,15 +65,39 @@ class IndicatorsManager:
         self._update_snapshot()
     
     def _update_snapshot(self):
-        """更新指标快照缓存"""
+        """更新指标快照缓存 - v1.4.0 动态评分"""
         vol_metrics = self.volatility.get_metrics()
         liq_metrics = self.liquidity.get_metrics()
-        score_result = self.scorer.calculate(vol_metrics, liq_metrics)
+        
+        # 准备评分数据
+        current_data = {
+            '1min_amplitude': vol_metrics.get('1min_amplitude', 0),
+            '3h_avg_amplitude': vol_metrics.get('1h_avg_amplitude', 0),
+            'spread_rate': liq_metrics.get('spread_rate', 0),
+            'depth_surface': liq_metrics.get('depth_surface', 0),
+            'depth_middle': liq_metrics.get('depth_middle', 0),
+            'depth_deep': liq_metrics.get('depth_deep', 0),
+            'depth_imbalance': liq_metrics.get('depth_imbalance', 0),
+            'atr_14': vol_metrics.get('atr_14', 0),
+            'volume_trend': 1.0,  # TODO: 从 K 线计算成交量趋势
+        }
+        
+        # 更新历史数据
+        self.scorer.update_history(current_data)
+        self._sample_count += 1
+        
+        # 根据样本量选择评分器
+        if self._sample_count < 30:
+            # 数据不足，使用简单评分器
+            score_result = self.simple_scorer.score(current_data)
+        else:
+            # 数据充足，使用动态评分器
+            score_result = self.scorer.score(current_data)
         
         self._last_snapshot = {
             'volatility': vol_metrics,
             'liquidity': liq_metrics,
-            'score': score_result
+            'score': score_result,
         }
     
     def get_snapshot(self) -> dict:
@@ -173,10 +205,15 @@ class IndicatorsManager:
                 f"深度：{liq['orderbook_depth']:.0f} ETH {liq['depth_status']}"
             ],
             'score_display': {
-                'emoji': score['signal_emoji'],
-                'color': score['signal_color'],
-                'recommendation': score['recommendation'],
-                'score': score['quality_score']
+                'emoji': score.get('signal_emoji', '🟡'),
+                'color': score.get('signal_color', 'yellow'),
+                'recommendation': score.get('recommendation', '观望'),
+                'score': score.get('total_score', 50.0),
+                'category_scores': score.get('category_scores', {
+                    'volatility': 50.0,
+                    'liquidity': 50.0,
+                    'momentum': 50.0,
+                })
             },
             'alerts': self.check_alerts()
         }

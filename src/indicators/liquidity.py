@@ -1,179 +1,250 @@
 # -*- coding: utf-8 -*-
 """
-流动性指标分析模块
+流动性指标计算 - v1.4.0
 
-基于订单簿数据计算流动性相关指标：
-- 买卖价差
-- 价差率
-- 订单簿深度
+分层分析订单簿深度：
+- 表层（Bid1-20 / Ask1-20）：50% 权重
+- 中层（Bid21-100 / Ask21-100）：30% 权重
+- 深层（Bid101-1000 / Ask101-1000）：20% 权重
 """
 
 from decimal import Decimal
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 
-# 阈值配置
-THRESHOLDS = {
-    'spread_rate': {
-        'normal_max': 0.01,  # < 0.01% 正常
-        'warning': 0.02,     # > 0.02% 警告 🔴
-    },
-    'orderbook_depth': {
-        'ideal_min': 2000,   # > 2000 ETH 充足
-        'warning': 500,      # < 500 ETH 警告 🔴
-    }
+# 分层配置
+LAYER_CONFIG = {
+    'surface': (0, 20),      # 表层：0-20 档
+    'middle': (20, 100),     # 中层：20-100 档
+    'deep': (100, 1000),     # 深层：100-1000 档
+}
+
+# 分层权重
+LAYER_WEIGHTS = {
+    'surface': 0.50,
+    'middle': 0.30,
+    'deep': 0.20,
 }
 
 
 class LiquidityAnalyzer:
-    """流动性分析器"""
+    """流动性分析器 - 分层计算深度指标"""
     
-    def __init__(self):
-        """初始化流动性分析器"""
-        self.bids: List[Tuple[Decimal, Decimal]] = []  # 买单 [(价格，数量), ...]
-        self.asks: List[Tuple[Decimal, Decimal]] = []  # 卖单 [(价格，数量), ...]
-    
-    def update_orderbook(self, bids: List[Tuple[Decimal, Decimal]], 
-                         asks: List[Tuple[Decimal, Decimal]]):
+    def __init__(self, max_levels: int = 1000):
         """
-        更新订单簿数据
+        初始化流动性分析器
         
         Args:
-            bids: 买单列表 [(价格，数量), ...]，按价格降序排列
-            asks: 卖单列表 [(价格，数量), ...]，按价格升序排列
+            max_levels: 最大支持档位
         """
-        self.bids = bids
-        self.asks = asks
+        self.max_levels = max_levels
     
-    def get_spread(self) -> Optional[Decimal]:
+    def analyze_layers(self, bids: List[Tuple[str, str]], 
+                       asks: List[Tuple[str, str]]) -> Dict[str, Dict]:
         """
-        获取买卖价差：ask[0] - bid[0]
+        分层分析深度
+        
+        Args:
+            bids: 买单列表 [(价格，数量), ...]
+            asks: 卖单列表 [(价格，数量), ...]
         
         Returns:
-            价差（USDC），如果订单簿为空返回 None
+            各层级深度数据
         """
-        if not self.bids or not self.asks:
-            return None
+        results = {}
         
-        best_bid = self.bids[0][0]
-        best_ask = self.asks[0][0]
+        for layer_name, (start, end) in LAYER_CONFIG.items():
+            # 确保不超出实际档位
+            actual_end = min(end, len(bids), len(asks))
+            
+            if start >= actual_end:
+                # 该层无数据
+                results[layer_name] = {
+                    'bid_depth': 0.0,
+                    'ask_depth': 0.0,
+                    'total_depth': 0.0,
+                    'imbalance': 0.0,
+                }
+                continue
+            
+            # 计算该层深度
+            bid_depth = sum(float(b[1]) for b in bids[start:actual_end])
+            ask_depth = sum(float(a[1]) for a in asks[start:actual_end])
+            total_depth = bid_depth + ask_depth
+            
+            # 计算深度不平衡
+            if total_depth > 0:
+                imbalance = (bid_depth - ask_depth) / total_depth
+            else:
+                imbalance = 0.0
+            
+            results[layer_name] = {
+                'bid_depth': bid_depth,
+                'ask_depth': ask_depth,
+                'total_depth': total_depth,
+                'imbalance': imbalance,
+            }
         
-        spread = best_ask - best_bid
-        return spread
+        return results
     
-    def get_mid_price(self) -> Optional[Decimal]:
+    def calc_spread_rate(self, bids: List[Tuple[str, str]], 
+                         asks: List[Tuple[str, str]]) -> float:
         """
-        获取中间价：(best_ask + best_bid) / 2
+        计算价差率
+        
+        Args:
+            bids: 买单列表
+            asks: 卖单列表
         
         Returns:
-            中间价，如果订单簿为空返回 None
+            价差率（百分比）
         """
-        if not self.bids or not self.asks:
-            return None
-        
-        best_bid = self.bids[0][0]
-        best_ask = self.asks[0][0]
-        
-        mid_price = (best_ask + best_bid) / 2
-        return mid_price
-    
-    def get_spread_rate(self) -> float:
-        """
-        获取价差率：价差 / 中间价 × 100%
-        
-        Returns:
-            价差率百分比
-        """
-        spread = self.get_spread()
-        mid_price = self.get_mid_price()
-        
-        if not spread or not mid_price or mid_price == 0:
+        if not bids or not asks:
             return 0.0
         
-        spread_rate = float(spread / mid_price * 100)
+        best_bid = float(bids[0][0])
+        best_ask = float(asks[0][0])
+        mid_price = (best_bid + best_ask) / 2
+        
+        if mid_price == 0:
+            return 0.0
+        
+        spread = best_ask - best_bid
+        spread_rate = (spread / mid_price) * 100
+        
         return spread_rate
     
-    def get_orderbook_depth(self, levels: int = 3) -> float:
+    def calc_total_depth(self, bids: List[Tuple[str, str]], 
+                         asks: List[Tuple[str, str]], 
+                         levels: int = 20) -> float:
         """
-        获取订单簿深度：前 N 档买单 + 卖单总量
+        计算指定档位的总深度
         
         Args:
-            levels: 计算深度档数，默认 3 档
+            bids: 买单列表
+            asks: 卖单列表
+            levels: 档位数量
         
         Returns:
-            深度总量（ETH）
+            总深度（ETH）
         """
-        bid_depth = sum(float(qty) for _, qty in self.bids[:levels])
-        ask_depth = sum(float(qty) for _, qty in self.asks[:levels])
+        actual_levels = min(levels, len(bids), len(asks))
         
-        total_depth = bid_depth + ask_depth
-        return total_depth
+        bid_depth = sum(float(b[1]) for b in bids[:actual_levels])
+        ask_depth = sum(float(a[1]) for a in asks[:actual_levels])
+        
+        return bid_depth + ask_depth
     
-    def get_status_label(self, value: float, threshold_key: str) -> str:
+    def get_metrics(self, bids: List[Tuple[str, str]], 
+                    asks: List[Tuple[str, str]]) -> Dict[str, float]:
         """
-        根据阈值获取状态标签
+        获取完整的流动性指标
         
         Args:
-            value: 指标值
-            threshold_key: 阈值键名（如 'spread_rate'）
+            bids: 买单列表
+            asks: 卖单列表
         
         Returns:
-            状态标签
+            流动性指标字典
         """
-        if threshold_key not in THRESHOLDS:
-            return ''
+        # 分层分析
+        layers = self.analyze_layers(bids, asks)
         
-        thresholds = THRESHOLDS[threshold_key]
+        # 价差率
+        spread_rate = self.calc_spread_rate(bids, asks)
         
-        if threshold_key == 'spread_rate':
-            if value <= thresholds['normal_max']:
-                return '正常'
-            elif value > thresholds['warning']:
-                return '过高 🔴'
-            else:
-                return '偏高 🟡'
+        # 各层深度
+        depth_surface = layers['surface']['total_depth']
+        depth_middle = layers['middle']['total_depth']
+        depth_deep = layers['deep']['total_depth']
         
-        elif threshold_key == 'orderbook_depth':
-            if value >= thresholds['ideal_min']:
-                return '充足'
-            elif value < thresholds['warning']:
-                return '不足 🔴'
-            else:
-                return '偏少 🟡'
-        
-        return ''
-    
-    def get_metrics(self) -> dict:
-        """
-        获取完整的流动性指标快照
-        
-        Returns:
-            指标字典 {
-                'spread': Decimal,
-                'spread_rate': float,
-                'orderbook_depth': float,
-                'best_bid': Decimal,
-                'best_ask': Decimal,
-                'mid_price': Decimal,
-                'spread_status': str,
-                'depth_status': str
-            }
-        """
-        spread = self.get_spread()
-        spread_rate = self.get_spread_rate()
-        depth = self.get_orderbook_depth(3)
-        
-        best_bid = self.bids[0][0] if self.bids else Decimal('0')
-        best_ask = self.asks[0][0] if self.asks else Decimal('0')
-        mid_price = self.get_mid_price() or Decimal('0')
+        # 深度不平衡（表层）
+        depth_imbalance = layers['surface']['imbalance']
         
         return {
-            'spread': spread or Decimal('0'),
             'spread_rate': spread_rate,
-            'orderbook_depth': depth,
-            'best_bid': best_bid,
-            'best_ask': best_ask,
-            'mid_price': mid_price,
-            'spread_status': self.get_status_label(spread_rate, 'spread_rate'),
-            'depth_status': self.get_status_label(depth, 'orderbook_depth')
+            'depth_surface': depth_surface,
+            'depth_middle': depth_middle,
+            'depth_deep': depth_deep,
+            'depth_imbalance': depth_imbalance,
+            'layers': layers,
         }
+
+
+# 工具函数
+def analyze_depth_distribution(bids: List[Tuple[str, str]], 
+                                asks: List[Tuple[str, str]], 
+                                bins: int = 10) -> Dict:
+    """
+    分析深度分布（用于可视化）
+    
+    Args:
+        bids: 买单列表
+        asks: 卖单列表
+        bins: 分桶数量
+    
+    Returns:
+        深度分布数据
+    """
+    if not bids or not asks:
+        return {'bid_distribution': [], 'ask_distribution': []}
+    
+    # 按价格分桶
+    min_price = min(float(bids[-1][0]), float(asks[-1][0]))
+    max_price = max(float(bids[0][0]), float(asks[0][0]))
+    price_range = max_price - min_price
+    
+    if price_range == 0:
+        return {'bid_distribution': [], 'ask_distribution': []}
+    
+    bucket_size = price_range / bins
+    bid_buckets = [0.0] * bins
+    ask_buckets = [0.0] * bins
+    
+    # 分配买单到桶
+    for price_str, qty_str in bids:
+        price = float(price_str)
+        qty = float(qty_str)
+        bucket_idx = int((price - min_price) / bucket_size)
+        bucket_idx = min(bucket_idx, bins - 1)
+        bid_buckets[bucket_idx] += qty
+    
+    # 分配卖单到桶
+    for price_str, qty_str in asks:
+        price = float(price_str)
+        qty = float(qty_str)
+        bucket_idx = int((price - min_price) / bucket_size)
+        bucket_idx = min(bucket_idx, bins - 1)
+        ask_buckets[bucket_idx] += qty
+    
+    return {
+        'bid_distribution': bid_buckets,
+        'ask_distribution': ask_buckets,
+        'price_range': (min_price, max_price),
+    }
+
+
+if __name__ == "__main__":
+    # 测试示例
+    analyzer = LiquidityAnalyzer(max_levels=1000)
+    
+    # 模拟订单簿数据（200 档）
+    bids = [(f"2180.{100-i:03d}", f"{10 + i*0.1:.3f}") for i in range(200)]
+    asks = [(f"2180.{100+i:03d}", f"{10 + i*0.1:.3f}") for i in range(200)]
+    
+    metrics = analyzer.get_metrics(bids, asks)
+    
+    print("流动性指标：")
+    print(f"  价差率：{metrics['spread_rate']:.6f}%")
+    print(f"  表层深度：{metrics['depth_surface']:.3f} ETH")
+    print(f"  中层深度：{metrics['depth_middle']:.3f} ETH")
+    print(f"  深层深度：{metrics['depth_deep']:.3f} ETH")
+    print(f"  深度不平衡：{metrics['depth_imbalance']:.4f}")
+    
+    print("\n分层详情：")
+    for layer_name, layer_data in metrics['layers'].items():
+        print(f"  {layer_name}:")
+        print(f"    买深度：{layer_data['bid_depth']:.3f} ETH")
+        print(f"    卖深度：{layer_data['ask_depth']:.3f} ETH")
+        print(f"    总深度：{layer_data['total_depth']:.3f} ETH")
+        print(f"    不平衡：{layer_data['imbalance']:.4f}")

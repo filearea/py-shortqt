@@ -7,12 +7,13 @@
 
 from .volatility import VolatilityAnalyzer
 from .liquidity import LiquidityAnalyzer
-from .scorer import QualityScorer
+from .scorer import DynamicScorer, SimpleScorer
 from .manager import IndicatorsManager
 
 __all__ = [
     'VolatilityAnalyzer',
     'LiquidityAnalyzer',
-    'QualityScorer',
+    'DynamicScorer',
+    'SimpleScorer',
     'IndicatorsManager',
 ]
