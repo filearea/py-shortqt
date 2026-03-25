@@ -112,7 +112,7 @@ class LiveTradingUI:
         return f"行情：{ws_market} 订单：{ws_user}"
     
     def _render_orderbook(self) -> Table:
-        """渲染订单簿（7 档）"""
+        """渲染订单簿（自适应档位，最多 20 档，最新价居中）"""
         ob_table = Table(show_header=False, box=None, padding=(0, 1))
         ob_table.add_column("价格", justify="right", width=10)
         ob_table.add_column("数量", justify="right", width=10)
@@ -120,25 +120,24 @@ class LiveTradingUI:
         asks = self.trader.orderbook.get('asks', [])
         bids = self.trader.orderbook.get('bids', [])
         
-        # 卖盘（倒序，显示 7 档）
-        for i in range(6, -1, -1):
-            if i < len(asks):
-                price, qty = asks[i]
-                ob_table.add_row(f"[red]{price:.2f}[/red]", f"{qty:.3f}")
-            else:
-                ob_table.add_row("", "")
+        # 计算可用高度（总高度 - 头部 3 行 - 日志 12 行 - 指标 6 行 - 边框等 4 行 = 约 20 行）
+        # 卖盘 + 买盘 + 最新价 = 总行数
+        # 假设最多 20 档，则卖 10 + 买 10 + 最新价 1 = 21 行
+        max_levels = 10  # 单边最多显示 10 档
         
-        # 最新价
+        # 卖盘（倒序，从远到近）
+        for i in range(min(max_levels, len(asks)) - 1, -1, -1):
+            price, qty = asks[i]
+            ob_table.add_row(f"[red]{price:.2f}[/red]", f"{qty:.3f}")
+        
+        # 最新价（居中显示）
         mid_price = f"{self.trader.last_price:.2f}" if self.trader.last_price else "----"
-        ob_table.add_row(f"[bold yellow]{mid_price}[/bold yellow]", "")
+        ob_table.add_row(f"[bold yellow]▶ {mid_price} ◀[/bold yellow]", "")
         
-        # 买盘（显示 7 档）
-        for i in range(7):
-            if i < len(bids):
-                price, qty = bids[i]
-                ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
-            else:
-                ob_table.add_row("", "")
+        # 买盘（从近到远）
+        for i in range(min(max_levels, len(bids))):
+            price, qty = bids[i]
+            ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
         
         return ob_table
     
