@@ -71,3 +71,8 @@ config/runtime.json
 .pytest_cache/
 .coverage
 htmlcov/
+
+# 本地脚本（不提交到 GitHub）
+同步到桌面.bat
+*.bat
+!启动.bat
