@@ -137,7 +137,7 @@ class LiveTradingUI:
         
         # 最新价（居中显示）
         mid_price = f"{self.trader.last_price:.2f}" if self.trader.last_price else "----"
-        ob_table.add_row(f"[bold yellow]▶ {mid_price} ◀[/bold yellow]", "")
+        ob_table.add_row(f"[bold yellow]  {mid_price}  [/bold yellow]", "")
         
         # 买盘（从近到远）
         for i in range(actual_bids):
