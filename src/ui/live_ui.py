@@ -14,23 +14,27 @@ from src import __version__
 
 
 class LiveTradingUI:
-    """实盘交易界面"""
+    """实盘交易界面 - v1.4.0"""
     
-    def __init__(self, trader, leverage: int, take_profit: Decimal = Decimal('1'), stop_loss: Decimal = Decimal('3'), actual_leverage: int = 25, config_manager=None):
+    def __init__(self, trader, leverage: int, take_profit: Decimal = Decimal('1'), 
+                 stop_loss: Decimal = Decimal('3'), actual_leverage: int = 25, 
+                 config_manager=None, indicators=None):
         self.trader = trader
         self.leverage = leverage  # API 杠杆
         self.actual_leverage = actual_leverage  # 实际杠杆
         self.take_profit = take_profit
         self.stop_loss = stop_loss
         self.config_manager = config_manager  # 配置管理器，用于读取止盈止损配置
+        self.indicators = indicators  # v1.4.0 新增：指标管理器
     
     def render(self) -> Layout:
-        """渲染界面"""
+        """渲染界面 - v1.4.0"""
         layout = Layout()
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="main"),  # 自适应高度
-            Layout(name="footer", size=12)  # 固定日志 12 行
+            Layout(name="footer", size=12),  # 固定日志 12 行
+            Layout(name="indicators", size=10)  # v1.4.0 新增：指标区 10 行
         )
         
         # 头部
@@ -50,6 +54,9 @@ class LiveTradingUI:
         
         # 底部日志
         layout["footer"].update(Panel(self._render_log(), title="日志"))
+        
+        # v1.4.0 新增：指标区
+        layout["indicators"].update(Panel(self._render_indicators(), title="盘面指标"))
         
         return layout
     
@@ -238,6 +245,78 @@ class LiveTradingUI:
                 acc_text.append(f"保底：最大损失{sm_value:.1f}%\n", style="bold red")
         
         return acc_text
+    
+    def _render_indicators(self) -> Text:
+        """渲染指标区 - v1.4.0 新增"""
+        from rich.text import Text
+        
+        text = Text()
+        
+        # 如果没有指标管理器，显示提示信息
+        if not self.indicators:
+            text.append("指标模块未初始化", style="dim")
+            return text
+        
+        # 获取指标数据
+        display_data = self.indicators.get_display_data()
+        
+        # 三列布局
+        vol_lines = display_data['volatility_lines']
+        liq_lines = display_data['liquidity_lines']
+        score = display_data['score_display']
+        
+        # 波动率区（左侧）
+        text.append("波动率\n", style="bold cyan")
+        text.append("─" * 18 + "\n", style="dim")
+        for line in vol_lines:
+            # 解析状态标记
+            if '🟡' in line or '🔴' in line:
+                text.append(line + "\n", style="yellow")
+            else:
+                text.append(line + "\n")
+        
+        text.append("\n")
+        
+        # 流动性区（中间）
+        text.append("流动性\n", style="bold cyan")
+        text.append("─" * 18 + "\n", style="dim")
+        for line in liq_lines:
+            if '🟡' in line or '🔴' in line:
+                text.append(line + "\n", style="yellow")
+            else:
+                text.append(line + "\n")
+        
+        text.append("\n")
+        
+        # 综合评分区（右侧）
+        text.append("交易建议\n", style="bold cyan")
+        text.append("─" * 18 + "\n", style="dim")
+        
+        # 信号灯（大字号模拟）
+        emoji = score['emoji']
+        text.append(f"  {emoji}  \n", style=f"bold {score['color']}")
+        
+        # 文字建议
+        rec_text = score['recommendation']
+        if score['color'] == 'green':
+            text.append(rec_text + "\n", style="bold green")
+        elif score['color'] == 'yellow':
+            text.append(rec_text + "\n", style="bold yellow")
+        else:
+            text.append(rec_text + "\n", style="bold red")
+        
+        # 评分
+        text.append(f"评分：{score['score']}/100\n", style="dim")
+        
+        # 告警（如果有）
+        alerts = display_data.get('alerts', [])
+        if alerts:
+            text.append("\n")
+            text.append("⚠ 告警:\n", style="bold red")
+            for alert in alerts[:2]:  # 最多显示 2 条
+                text.append(f"  • {alert['message']}\n", style="red")
+        
+        return text
     
     def _render_log(self) -> Text:
         """渲染日志（带颜色高亮）"""

@@ -99,7 +99,8 @@ class LiveTradingBot:
         
         # UI
         tp = self.config_manager.get_take_profit_price(Decimal('2150'))
-        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager)
+        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, 
+                                 self.config_manager, self.indicators)
         
         # 设置 UI
         try:
