@@ -179,6 +179,26 @@ class TradeLogger:
         self.pnl_log.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
         self.pnl_log.flush()
     
+    def log_balance(self, event: str, balance: Decimal, details: dict = None):
+        """
+        记录账户余额（用于复合收益率计算）
+        
+        Args:
+            event: 事件类型 ('startup' | 'position_closed' | 'shutdown')
+            balance: 账户余额 (USDC)
+            details: 额外信息
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        log_entry = {
+            'timestamp': timestamp,
+            'type': 'BALANCE',
+            'event': event,
+            'balance': float(balance),
+            'details': details or {}
+        }
+        self.trade_log.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        self.trade_log.flush()  # 立即刷新到磁盘，避免程序关闭时丢失
+    
     def close(self):
         """关闭所有日志文件"""
         self.trade_log.close()

@@ -51,6 +51,7 @@ class LiveTradingBot:
         self.in_settings = False  # 是否在设置界面中
         self._pending_reset = False  # 重置确认标志
         self._pending_confirm_exit = False  # 退出确认标志
+        self.account_name = account_name  # 保存账户名称供 run() 使用
         
         # 初始化新日志系统（项目根目录/logs/）
         project_root = Path(__file__).parent.parent
@@ -182,6 +183,11 @@ class LiveTradingBot:
         for retry in range(max_retries):
             try:
                 if await self.trader.initialize():
+                    # 记录启动时账户余额（用于复合收益率计算）
+                    self.logger.log_balance('startup', self.trader.available_balance, {
+                        'account': self.account_name,
+                        'leverage': self.trader.actual_leverage
+                    })
                     break
                 else:
                     if retry < max_retries - 1:
@@ -433,16 +439,31 @@ class LiveTradingBot:
                     await asyncio.sleep(0.05)
         
         except KeyboardInterrupt:
-            print("\n用户中断")
+            print("\n用户中断（窗口关闭）")
             await self._cleanup_resources(ws_task)
         except Exception as e:
             print(f"\n[主循环异常] {e}")
             import traceback
             traceback.print_exc()
             await self._cleanup_resources(ws_task)
+        finally:
+            # 无论何种退出方式，都要记录余额日志
+            print(f"\n[关闭日志] 开始同步账户信息...")
+            self.trader.sync_account()
+            print(f"[关闭日志] 当前余额：{self.trader.available_balance:.4f} USDC")
+            
+            print(f"[关闭日志] 正在写入 shutdown 余额日志...")
+            try:
+                self.logger.log_balance('shutdown', self.trader.available_balance, {
+                    'account': self.account_name,
+                    'exit_type': 'finally_block'
+                })
+                print(f"[关闭日志] shutdown 余额日志已写入")
+            except Exception as e:
+                print(f"[关闭日志] 写入失败：{e}")
         
-        # 正常退出时也清理
-        if self.running:
+        # 正常退出时也清理（Q 键退出时 running=False，但仍需清理）
+        if not self.running:
             await self._cleanup_resources(ws_task)
         
         # 关闭日志系统

@@ -143,9 +143,16 @@ class LiveTrader:
                 print(f"  开始下止盈止损单...")
                 asyncio.create_task(self._safe_place_tp_sl_orders())
             
-            # 如果程序有持仓但实际没有，清除
+            # 如果程序有持仓但实际没有，清除（彻底平仓）
             elif total_size == 0 and self.position:
                 print(f"\n[持仓同步] 持仓已平仓（程序未感知）")
+                # 记录平仓后账户余额（用于复合收益率计算）
+                if self.logger:
+                    self.logger.log_balance('position_closed', self.available_balance, {
+                        'reason': 'sync_detected',
+                        'last_position': self.position.get('side'),
+                        'last_entry': float(self.position.get('entry_price', 0))
+                    })
                 self.position = None
                 self.tp_order = None
                 self.sl_order = None
@@ -227,6 +234,15 @@ class LiveTrader:
                     if self.logger:
                         duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
                         self.logger.update_signal_result('TP', float(pnl), duration)
+                    
+                    # 记录平仓后账户余额（用于复合收益率计算）
+                    if self.logger:
+                        self.logger.log_balance('position_closed', self.available_balance, {
+                            'reason': 'TP',
+                            'pnl': float(pnl),
+                            'entry_price': float(self.position['entry_price']),
+                            'close_price': float(fill_price)
+                        })
                 
                 self._cancel_other_orders(exclude='tp')
                 self.tp_order = None
@@ -259,6 +275,15 @@ class LiveTrader:
                     if self.logger:
                         duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
                         self.logger.update_signal_result('SL', float(pnl), duration)
+                    
+                    # 记录平仓后账户余额（用于复合收益率计算）
+                    if self.logger:
+                        self.logger.log_balance('position_closed', self.available_balance, {
+                            'reason': 'SL',
+                            'pnl': float(pnl),
+                            'entry_price': float(self.position['entry_price']),
+                            'close_price': float(fill_price)
+                        })
                 
                 self._cancel_other_orders(exclude='sl')
                 self.sl_order = None
@@ -291,6 +316,15 @@ class LiveTrader:
                     if self.logger:
                         duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
                         self.logger.update_signal_result('STOP_MARKET', float(pnl), duration)
+                    
+                    # 记录平仓后账户余额（用于复合收益率计算）
+                    if self.logger:
+                        self.logger.log_balance('position_closed', self.available_balance, {
+                            'reason': 'STOP_MARKET',
+                            'pnl': float(pnl),
+                            'entry_price': float(self.position['entry_price']),
+                            'close_price': float(fill_price)
+                        })
                 
                 self._cancel_other_orders(exclude='stop_market')
                 self.stop_market_order = None
@@ -325,6 +359,15 @@ class LiveTrader:
                         if self.logger:
                             duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
                             self.logger.update_signal_result('MANUAL', float(pnl), duration)
+                        
+                        # 记录平仓后账户余额（用于复合收益率计算）
+                        if self.logger:
+                            self.logger.log_balance('position_closed', self.available_balance, {
+                                'reason': 'MANUAL',
+                                'pnl': float(pnl),
+                                'entry_price': float(self.position['entry_price']),
+                                'close_price': float(fill_price)
+                            })
                     
                     # 撤销所有止盈止损单
                     self._cancel_other_orders(exclude='none')
@@ -358,6 +401,15 @@ class LiveTrader:
                 # 记录信号结果（修复 Bug：之前这里缺失导致 signals.csv 没有记录）
                 if self.logger:
                     self.logger.update_signal_result('SL', float(pnl), duration)
+                
+                # 记录平仓后账户余额（用于复合收益率计算）
+                if self.logger:
+                    self.logger.log_balance('position_closed', self.available_balance, {
+                        'reason': 'SL_FALLBACK',
+                        'pnl': float(pnl),
+                        'entry_price': float(self.position['entry_price']),
+                        'close_price': float(fill_price)
+                    })
                 
                 # 清空订单状态
                 self._cancel_other_orders(exclude='none')
@@ -1030,6 +1082,16 @@ class LiveTrader:
             print(f"  PnL: {pnl_str}")
             
             self._add_action("市价全平", f"{close_side} {size} @ {close_price} | 手续费 {commission:.6f} {commission_asset} | PnL: {pnl_str}")
+            
+            # 记录平仓后账户余额（用于复合收益率计算）
+            if self.logger:
+                self.logger.log_balance('position_closed', self.available_balance, {
+                    'reason': 'MARKET_CLOSE',
+                    'pnl': float(pnl),
+                    'entry_price': float(entry_price),
+                    'close_price': float(close_price),
+                    'commission': float(commission)
+                })
             
             # 4. 清除持仓状态
             self.position = None
