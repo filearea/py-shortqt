@@ -19,7 +19,7 @@ class IndicatorsManager:
     def __init__(self):
         """初始化指标管理器 - v1.4.0 动态评分"""
         self.volatility = VolatilityAnalyzer(max_klines=200)
-        self.liquidity = LiquidityAnalyzer(max_levels=1000)
+        self.liquidity = LiquidityAnalyzer(max_levels=200, price_step=0.1)
         
         # 动态评分器（数据充足时）
         self.scorer = DynamicScorer(window_days=14)
@@ -69,17 +69,17 @@ class IndicatorsManager:
         vol_metrics = self.volatility.get_metrics()
         liq_metrics = self.liquidity.get_metrics()
         
-        # 准备评分数据
+        # 准备评分数据（v1.1 版本）
         current_data = {
             '1min_amplitude': vol_metrics.get('1min_amplitude', 0),
-            '3h_avg_amplitude': vol_metrics.get('1h_avg_amplitude', 0),
+            '60min_avg_amplitude': vol_metrics.get('1h_avg_amplitude', 0),  # 60 分钟平均振幅
             'spread_rate': liq_metrics.get('spread_rate', 0),
             'depth_surface': liq_metrics.get('depth_surface', 0),
             'depth_middle': liq_metrics.get('depth_middle', 0),
-            'depth_deep': liq_metrics.get('depth_deep', 0),
+            'depth_aggregated': liq_metrics.get('depth_aggregated', 0),  # 聚合层深度
             'depth_imbalance': liq_metrics.get('depth_imbalance', 0),
             'atr_14': vol_metrics.get('atr_14', 0),
-            'volume_trend': 1.0,  # TODO: 从 K 线计算成交量趋势
+            # 'volume_trend': 1.0,  # v1.5 迭代添加
         }
         
         # 更新历史数据
@@ -202,7 +202,7 @@ class IndicatorsManager:
             'liquidity_lines': [
                 f"价差：{float(liq['spread']):.2f} USDC",
                 f"价差率：{liq['spread_rate']:.4f}% {liq['spread_status']}",
-                f"深度：{liq['orderbook_depth']:.0f} ETH {liq['depth_status']}"
+                f"深度：{liq['depth_surface']:.0f} ETH {liq['depth_status']}"
             ],
             'score_display': {
                 'emoji': score.get('signal_emoji', '🟡'),
