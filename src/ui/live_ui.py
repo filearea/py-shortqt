@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 实盘交易 UI
 """
@@ -294,17 +294,17 @@ class LiveTradingUI:
         score_text = Text()
         score_text.append("交易建议\n", style="bold cyan")
         score_text.append("─" * 20 + "\n", style="dim")
-        score_text.append(f"  {score['emoji']}  \n", style=f"bold {score['color']}", justify="center")
+        score_text.append(f"  {score['emoji']}  \n", style=f"bold {score['color']}", justify="left")
         
         rec_text = score['recommendation']
         if score['color'] == 'green':
-            score_text.append(rec_text + "\n", style="bold green", justify="center")
+            score_text.append(rec_text + "\n", style="bold green", justify="left")
         elif score['color'] == 'yellow':
-            score_text.append(rec_text + "\n", style="bold yellow", justify="center")
+            score_text.append(rec_text + "\n", style="bold yellow", justify="left")
         else:
-            score_text.append(rec_text + "\n", style="bold red", justify="center")
+            score_text.append(rec_text + "\n", style="bold red", justify="left")
         
-        score_text.append(f"评分：{score['score']}/100\n", style="dim", justify="center")
+        score_text.append(f"评分：{score['score']}/100\n", style="dim", justify="left")
         
         # 告警（如果有）
         alerts = display_data.get('alerts', [])
@@ -373,3 +373,4 @@ class LiveTradingUI:
             log_text.append("等待操作...\n", style="dim")
         
         return log_text
+
