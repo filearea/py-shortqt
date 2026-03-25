@@ -77,7 +77,7 @@ class LogManager:
     def _init_market_logger(self):
         """初始化市场日志"""
         from .market import MarketLogger
-        self.market = MarketLogger(self.log_dir, self.debug_mode)
+        self.market = MarketLogger(self.log_dir)
     
     def _init_trading_logger(self):
         """初始化交易日志"""

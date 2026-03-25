@@ -14,12 +14,13 @@ from decimal import Decimal
 class MarketLogger:
     """市场指标日志记录器"""
     
-    def __init__(self, log_dir: Path):
+    def __init__(self, log_dir: Path, debug_mode: bool = False):
         """
         初始化市场日志记录器
         
         Args:
             log_dir: 日志目录路径
+            debug_mode: 调试模式（暂不使用）
         """
         self.log_dir = log_dir
         self.log_file = self.log_dir / "market.log"
