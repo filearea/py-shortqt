@@ -12,10 +12,12 @@ from pathlib import Path
 from decimal import Decimal
 from datetime import datetime
 
-# 设置 UTF-8
+# 设置 UTF-8 和窗口尺寸
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
     os.environ['PYTHONUTF8'] = '1'
+    # 设置控制台窗口尺寸（120 列 x 45 行）
+    os.system('mode con: cols=120 lines=45')
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
@@ -111,6 +113,27 @@ class LiveTradingBot:
             raise
         
         self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
+    
+    async def _init_historical_klines(self, limit: int = 50):
+        """v1.4.0: 获取少量历史 K 线（避免频率限制）"""
+        try:
+            # 通过 REST API 获取最近 50 根 1 分钟 K 线
+            klines = self.trader.api.get_klines(self.symbol, '1m', limit=limit)
+            
+            for kline_data in klines:
+                kline = {
+                    'timestamp': kline_data[0],
+                    'open': Decimal(str(kline_data[1])),
+                    'high': Decimal(str(kline_data[2])),
+                    'low': Decimal(str(kline_data[3])),
+                    'close': Decimal(str(kline_data[4])),
+                    'volume': Decimal(str(kline_data[5])),
+                    'is_closed': True
+                }
+                self.indicators.update_kline(kline)
+        except Exception as e:
+            # 如果 API 被封禁，静默失败，等 WebSocket 自然积累
+            pass
     
     async def on_market_data(self, event_type: str, data: dict):
         """市场数据回调 - v1.4.0 新增 K 线处理"""
@@ -208,7 +231,10 @@ class LiveTradingBot:
                         'leverage': self.trader.actual_leverage
                     })
                     
-                    # v1.4.0: K 线数据通过 WebSocket 自然积累，避免 REST API 频率限制
+                    # v1.4.0: 获取 50 根历史 K 线（避免频率限制）
+                    await asyncio.sleep(1)  # 等待 1 秒，避免与初始化请求冲突
+                    await self._init_historical_klines(limit=50)
+                    
                     break
                 else:
                     if retry < max_retries - 1:
