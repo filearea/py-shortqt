@@ -113,7 +113,7 @@ class LiveTradingBot:
         self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
     
     async def on_market_data(self, event_type: str, data: dict):
-        """市场数据回调"""
+        """市场数据回调 - v1.4.0 新增 K 线处理"""
         try:
             if event_type == 'ticker':
                 price = data['price']
@@ -131,6 +131,10 @@ class LiveTradingBot:
                 bids_decimal = [(Decimal(str(b[0])), Decimal(str(b[1]))) for b in bids]
                 asks_decimal = [(Decimal(str(a[0])), Decimal(str(a[1]))) for a in asks]
                 self.indicators.update_orderbook(bids_decimal, asks_decimal)
+            
+            elif event_type == 'kline':
+                # v1.4.0 新增：更新 K 线数据到指标管理器
+                self.indicators.update_kline(data)
         except Exception:
             pass
     

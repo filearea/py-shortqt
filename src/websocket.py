@@ -15,9 +15,11 @@ class BinanceListener:
     
     def __init__(self, symbol: str, ws_url: str):
         self.symbol = symbol.lower()
-        self.ws_url = f"{ws_url}/{self.symbol}@aggTrade/{self.symbol}@depth20@100ms"
+        # v1.4.0 新增：订阅 K 线数据（1 分钟）
+        self.ws_url = f"{ws_url}/{self.symbol}@aggTrade/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m"
         self.last_price = None
         self.orderbook = {'bids': [], 'asks': []}
+        self.current_kline = None  # v1.4.0 新增：当前 K 线
         self.callbacks = []
         self.running = False
         self.connected = False
@@ -70,7 +72,7 @@ class BinanceListener:
                 reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
     
     async def process_message(self, data: dict):
-        """处理 WebSocket 消息"""
+        """处理 WebSocket 消息 - v1.4.0 新增 K 线处理"""
         try:
             if 'e' in data:
                 if data['e'] == 'aggTrade':
@@ -90,6 +92,26 @@ class BinanceListener:
                         self.orderbook['asks'] = asks[:10]
                     for callback in self.callbacks:
                         await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
+                
+                elif data['e'] == 'kline':
+                    # v1.4.0 新增：K 线数据
+                    kline_data = data.get('k', {})
+                    kline = {
+                        'timestamp': kline_data.get('t', 0),
+                        'open': Decimal(kline_data.get('o', '0')),
+                        'high': Decimal(kline_data.get('h', '0')),
+                        'low': Decimal(kline_data.get('l', '0')),
+                        'close': Decimal(kline_data.get('c', '0')),
+                        'volume': Decimal(kline_data.get('v', '0')),
+                        'is_closed': kline_data.get('x', False)  # K 线是否完成
+                    }
+                    
+                    # 保存当前 K 线（用于指标计算）
+                    self.current_kline = kline
+                    
+                    # 触发 K 线更新回调
+                    for callback in self.callbacks:
+                        await callback('kline', kline)
             else:
                 # 可能是深度快照（没有 'e' 字段）
                 if 'lastUpdateId' in data and 'bids' in data and 'asks' in data:
