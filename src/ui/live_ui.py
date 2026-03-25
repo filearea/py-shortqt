@@ -112,7 +112,9 @@ class LiveTradingUI:
         return f"行情：{ws_market} 订单：{ws_user}"
     
     def _render_orderbook(self) -> Table:
-        """渲染订单簿（自适应档位，最多 20 档，最新价居中）"""
+        """渲染订单簿（自适应档位，最多 20 档，最新价居中，挂单价格标记）"""
+        from decimal import Decimal
+        
         ob_table = Table(show_header=False, box=None, padding=(0, 1))
         ob_table.add_column("价格", justify="right", width=10)
         ob_table.add_column("数量", justify="right", width=10)
@@ -120,20 +122,46 @@ class LiveTradingUI:
         asks = self.trader.orderbook.get('asks', [])
         bids = self.trader.orderbook.get('bids', [])
         
-        # 自适应档位：根据订单簿区域高度自动调整
-        # 订单簿区域约 25 行，减去最新价 1 行 = 24 行用于买卖盘
-        # 卖盘和买盘各占一半 = 各 12 档
-        # 但最多显示 20 档（卖 10 + 买 10），保证最新价居中
-        max_levels = 10  # 单边最多 10 档
+        # 收集所有用户挂单价格
+        user_order_prices = set()
         
-        # 实际显示档数（取订单簿实际档数和最大档数的较小值）
+        # 开仓挂单
+        if hasattr(self.trader, 'pending_order') and self.trader.pending_order:
+            user_order_prices.add(float(self.trader.pending_order['price']))
+        
+        # 止盈单
+        if hasattr(self.trader, 'tp_order') and self.trader.tp_order:
+            user_order_prices.add(float(self.trader.tp_order.get('price', 0)))
+        
+        # 止损单
+        if hasattr(self.trader, 'sl_order') and self.trader.sl_order:
+            user_order_prices.add(float(self.trader.sl_order.get('price', 0)))
+        
+        # 保底止损单
+        if hasattr(self.trader, 'stop_market_order') and self.trader.stop_market_order:
+            user_order_prices.add(float(self.trader.stop_market_order.get('trigger', 0)))
+        
+        # 提前平仓单
+        if hasattr(self.trader, 'early_close_order') and self.trader.early_close_order:
+            user_order_prices.add(float(self.trader.early_close_order.get('price', 0)))
+        
+        # 移除 0 值
+        user_order_prices.discard(0.0)
+        
+        max_levels = 10  # 单边最多 10 档
         actual_asks = min(max_levels, len(asks))
         actual_bids = min(max_levels, len(bids))
         
         # 卖盘（倒序，从远到近）
         for i in range(actual_asks - 1, -1, -1):
             price, qty = asks[i]
-            ob_table.add_row(f"[red]{price:.2f}[/red]", f"{qty:.3f}")
+            price_float = float(price)
+            
+            # 检查是否是用户挂单价格
+            if price_float in user_order_prices:
+                ob_table.add_row(f"[bold magenta]◀ {price:.2f}[/bold magenta]", f"[bold magenta]{qty:.3f}[/bold magenta]")
+            else:
+                ob_table.add_row(f"[red]{price:.2f}[/red]", f"{qty:.3f}")
         
         # 最新价（居中显示）
         mid_price = f"{self.trader.last_price:.2f}" if self.trader.last_price else "----"
@@ -142,7 +170,13 @@ class LiveTradingUI:
         # 买盘（从近到远）
         for i in range(actual_bids):
             price, qty = bids[i]
-            ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
+            price_float = float(price)
+            
+            # 检查是否是用户挂单价格
+            if price_float in user_order_prices:
+                ob_table.add_row(f"[bold magenta]◀ {price:.2f}[/bold magenta]", f"[bold magenta]{qty:.3f}[/bold magenta]")
+            else:
+                ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
         
         return ob_table
     
