@@ -289,14 +289,14 @@ class LiveTradingBot:
         print("=" * 70)
         
         try:
-            # 使用自适应高度（不强制全屏）
+            # 使用终端实际高度（不强制全屏）
             with Live(
                 self.ui.render(),
                 refresh_per_second=10,
-                screen=True,  # 使用全屏模式，避免堆叠
+                screen=False,  # 不使用全屏，让终端高度生效
                 redirect_stdout=True,
                 redirect_stderr=True,
-                transient=False  # 保留历史输出
+                transient=False
             ) as live:
                 while self.running:
                     try:

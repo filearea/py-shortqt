@@ -34,7 +34,7 @@ class LiveTradingUI:
             Layout(name="header", size=3),
             Layout(name="main"),  # 自适应高度
             Layout(name="footer", size=12),  # 固定日志 12 行
-            Layout(name="indicators", size=14)  # v1.4.0 新增：指标区 14 行
+            Layout(name="indicators", size=8)  # v1.4.0 新增：指标区 8 行（横向布局）
         )
         
         # 头部
@@ -246,77 +246,78 @@ class LiveTradingUI:
         
         return acc_text
     
-    def _render_indicators(self) -> Text:
-        """渲染指标区 - v1.4.0 新增"""
-        from rich.text import Text
-        
-        text = Text()
+    def _render_indicators(self) -> Table:
+        """渲染指标区 - v1.4.0 新增（横向三列布局）"""
+        from rich.table import Table
         
         # 如果没有指标管理器，显示提示信息
         if not self.indicators:
-            text.append("指标模块未初始化", style="dim")
-            return text
+            table = Table(show_header=False, box=None, padding=(0, 2))
+            table.add_column("提示", style="dim")
+            table.add_row("指标模块未初始化")
+            return table
         
         # 获取指标数据
         display_data = self.indicators.get_display_data()
         
-        # 三列布局
+        # 创建三列表格
+        table = Table(show_header=False, box=None, padding=(0, 2), expand=True)
+        table.add_column("波动率", ratio=1, style="cyan")
+        table.add_column("流动性", ratio=1, style="cyan")
+        table.add_column("交易建议", ratio=1)
+        
         vol_lines = display_data['volatility_lines']
         liq_lines = display_data['liquidity_lines']
         score = display_data['score_display']
         
-        # 波动率区（左侧）
-        text.append("波动率\n", style="bold cyan")
-        text.append("─" * 18 + "\n", style="dim")
+        # 波动率列
+        vol_text = Text()
+        vol_text.append("波动率\n", style="bold cyan")
+        vol_text.append("─" * 20 + "\n", style="dim")
         for line in vol_lines:
-            # 解析状态标记
             if '🟡' in line or '🔴' in line:
-                text.append(line + "\n", style="yellow")
+                vol_text.append(line + "\n", style="yellow")
             else:
-                text.append(line + "\n")
+                vol_text.append(line + "\n")
         
-        text.append("\n")
-        
-        # 流动性区（中间）
-        text.append("流动性\n", style="bold cyan")
-        text.append("─" * 18 + "\n", style="dim")
+        # 流动性列
+        liq_text = Text()
+        liq_text.append("流动性\n", style="bold cyan")
+        liq_text.append("─" * 20 + "\n", style="dim")
         for line in liq_lines:
             if '🟡' in line or '🔴' in line:
-                text.append(line + "\n", style="yellow")
+                liq_text.append(line + "\n", style="yellow")
             else:
-                text.append(line + "\n")
+                liq_text.append(line + "\n")
         
-        text.append("\n")
+        # 信号灯列
+        score_text = Text()
+        score_text.append("交易建议\n", style="bold cyan")
+        score_text.append("─" * 20 + "\n", style="dim")
+        score_text.append(f"  {score['emoji']}  \n", style=f"bold {score['color']}", justify="center")
         
-        # 综合评分区（右侧）
-        text.append("交易建议\n", style="bold cyan")
-        text.append("─" * 18 + "\n", style="dim")
-        
-        # 信号灯（大字号模拟）
-        emoji = score['emoji']
-        text.append(f"  {emoji}  \n", style=f"bold {score['color']}")
-        
-        # 文字建议
         rec_text = score['recommendation']
         if score['color'] == 'green':
-            text.append(rec_text + "\n", style="bold green")
+            score_text.append(rec_text + "\n", style="bold green", justify="center")
         elif score['color'] == 'yellow':
-            text.append(rec_text + "\n", style="bold yellow")
+            score_text.append(rec_text + "\n", style="bold yellow", justify="center")
         else:
-            text.append(rec_text + "\n", style="bold red")
+            score_text.append(rec_text + "\n", style="bold red", justify="center")
         
-        # 评分
-        text.append(f"评分：{score['score']}/100\n", style="dim")
+        score_text.append(f"评分：{score['score']}/100\n", style="dim", justify="center")
         
         # 告警（如果有）
         alerts = display_data.get('alerts', [])
         if alerts:
-            text.append("\n")
-            text.append("⚠ 告警:\n", style="bold red")
-            for alert in alerts[:2]:  # 最多显示 2 条
-                text.append(f"  • {alert['message']}\n", style="red")
+            score_text.append("\n", style="dim")
+            score_text.append("⚠ 告警:\n", style="bold red")
+            for alert in alerts[:2]:
+                score_text.append(f"  • {alert['message']}\n", style="red")
         
-        return text
+        # 添加行
+        table.add_row(vol_text, liq_text, score_text)
+        
+        return table
     
     def _render_log(self) -> Text:
         """渲染日志（带颜色高亮）"""
