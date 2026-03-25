@@ -46,6 +46,25 @@ class BinanceClient:
         
         return self._handle_response(response)
     
+    def get_klines(self, symbol: str, interval: str, limit: int = 100) -> list:
+        """
+        获取 K 线数据（公开接口，无需签名）
+        
+        Args:
+            symbol: 交易对（如 ETHUSDC）
+            interval: 时间间隔（1m, 5m, 1h 等）
+            limit: 返回数量（最多 1500）
+        
+        Returns:
+            K 线数据列表 [[timestamp, open, high, low, close, volume, ...], ...]
+        """
+        params = {
+            'symbol': symbol,
+            'interval': interval,
+            'limit': limit
+        }
+        return self._get('/fapi/v1/klines', params)
+    
     def _post(self, path: str, params: dict = None, signed: bool = False) -> dict:
         """POST 请求"""
         url = f"{self.base_url}{path}"

@@ -34,7 +34,7 @@ class LiveTradingUI:
             Layout(name="header", size=3),
             Layout(name="main"),  # 自适应高度
             Layout(name="footer", size=12),  # 固定日志 12 行
-            Layout(name="indicators", size=10)  # v1.4.0 新增：指标区 10 行
+            Layout(name="indicators", size=14)  # v1.4.0 新增：指标区 14 行
         )
         
         # 头部
