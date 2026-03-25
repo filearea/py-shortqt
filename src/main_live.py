@@ -280,11 +280,27 @@ class LiveTradingBot:
             print("\n  程序将在后台继续尝试连接...")
             # 不退出程序，让 WebSocket 在后台继续重试
         
+        # 3. v1.4.0 新增：补全缺失的历史数据（WebSocket 连接后）
+        print("\n" + "=" * 70)
+        print("正在补全缺失的历史数据（过去 14 天）...")
+        print("=" * 70)
+        try:
+            from src.data_collector import collect_historical_data
+            # 使用 asyncio 运行同步函数，避免阻塞
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: collect_historical_data([self.symbol], days=14)
+            )
+            print("[OK] 历史数据补全完成")
+        except Exception as e:
+            print(f"[WARN] 历史数据补全失败：{e}")
+            print("  程序将继续运行，数据将在后台收集")
+        
         print("=" * 70)
         print("操作：↑做多  |  ↓做空  |  ←撤单  |  →平仓  |  Z 市价全平  |  S 设置  |  H 同步  |  Q 退出")
         print("=" * 70)
         
-        # 3. 主循环
+        # 5. 主循环
         print("\n进入主循环...")
         print("=" * 70)
         
@@ -610,5 +626,6 @@ if __name__ == "__main__":
         asyncio.run(main(args.account))
     except KeyboardInterrupt:
         print("\n已中断")
+
 
 
