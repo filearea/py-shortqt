@@ -120,13 +120,18 @@ class LiveTradingUI:
         asks = self.trader.orderbook.get('asks', [])
         bids = self.trader.orderbook.get('bids', [])
         
-        # 计算可用高度（总高度 - 头部 3 行 - 日志 12 行 - 指标 6 行 - 边框等 4 行 = 约 20 行）
-        # 卖盘 + 买盘 + 最新价 = 总行数
-        # 假设最多 20 档，则卖 10 + 买 10 + 最新价 1 = 21 行
-        max_levels = 10  # 单边最多显示 10 档
+        # 自适应档位：根据订单簿区域高度自动调整
+        # 订单簿区域约 25 行，减去最新价 1 行 = 24 行用于买卖盘
+        # 卖盘和买盘各占一半 = 各 12 档
+        # 但最多显示 20 档（卖 10 + 买 10），保证最新价居中
+        max_levels = 10  # 单边最多 10 档
+        
+        # 实际显示档数（取订单簿实际档数和最大档数的较小值）
+        actual_asks = min(max_levels, len(asks))
+        actual_bids = min(max_levels, len(bids))
         
         # 卖盘（倒序，从远到近）
-        for i in range(min(max_levels, len(asks)) - 1, -1, -1):
+        for i in range(actual_asks - 1, -1, -1):
             price, qty = asks[i]
             ob_table.add_row(f"[red]{price:.2f}[/red]", f"{qty:.3f}")
         
@@ -135,7 +140,7 @@ class LiveTradingUI:
         ob_table.add_row(f"[bold yellow]▶ {mid_price} ◀[/bold yellow]", "")
         
         # 买盘（从近到远）
-        for i in range(min(max_levels, len(bids))):
+        for i in range(actual_bids):
             price, qty = bids[i]
             ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
         
