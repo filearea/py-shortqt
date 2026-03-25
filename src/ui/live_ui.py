@@ -48,7 +48,20 @@ class LiveTradingUI:
             Layout(name="account", ratio=1)
         )
         
-        main_layout["orderbook"].update(Panel(self._render_orderbook(), title="订单簿"))
+        # 计算订单簿区域可用高度
+        # 总高度 - 头部 3 行 - 日志 12 行 - 指标 6 行 - Panel 边框 4 行 = 订单簿区域高度
+        # 订单簿区域高度 - 最新价 1 行 = 买卖盘总行数
+        # 买卖盘各占一半
+        try:
+            from rich.console import Console
+            console = Console()
+            total_height = console.height if console.height else 45
+            orderbook_height = total_height - 3 - 12 - 6 - 4  # 约 20 行
+            max_levels = max(5, min(20, (orderbook_height - 1) // 2))  # 至少 5 档，最多 20 档
+        except:
+            max_levels = 10  # 默认 10 档
+        
+        main_layout["orderbook"].update(Panel(self._render_orderbook(max_levels), title="订单簿"))
         main_layout["account"].update(Panel(self._render_account(), title="账户"))
         layout["main"].update(main_layout)
         
@@ -111,8 +124,8 @@ class LiveTradingUI:
         
         return f"行情：{ws_market} 订单：{ws_user}"
     
-    def _render_orderbook(self) -> Table:
-        """渲染订单簿（自适应档位，最多 20 档，最新价居中，挂单价格标记）"""
+    def _render_orderbook(self, max_levels: int = 10) -> Table:
+        """渲染订单簿（动态调整档位，最新价永远居中，挂单价格标记）"""
         from decimal import Decimal
         
         ob_table = Table(show_header=False, box=None, padding=(0, 1))
@@ -148,7 +161,7 @@ class LiveTradingUI:
         # 移除 0 值
         user_order_prices.discard(0.0)
         
-        max_levels = 10  # 单边最多 10 档
+        # 动态调整档位：卖盘和买盘数量相等，确保最新价居中
         actual_asks = min(max_levels, len(asks))
         actual_bids = min(max_levels, len(bids))
         
