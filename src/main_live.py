@@ -112,30 +112,6 @@ class LiveTradingBot:
         
         self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
     
-    async def _init_historical_klines(self):
-        """v1.4.0 新增：初始化历史 K 线数据"""
-        try:
-            print("\n初始化历史 K 线数据...")
-            # 通过 REST API 获取最近 200 根 1 分钟 K 线
-            klines = self.trader.api.get_klines(self.symbol, '1m', limit=200)
-            
-            for kline_data in klines:
-                # 转换为 K 线字典
-                kline = {
-                    'timestamp': kline_data[0],
-                    'open': Decimal(str(kline_data[1])),
-                    'high': Decimal(str(kline_data[2])),
-                    'low': Decimal(str(kline_data[3])),
-                    'close': Decimal(str(kline_data[4])),
-                    'volume': Decimal(str(kline_data[5])),
-                    'is_closed': True
-                }
-                self.indicators.update_kline(kline)
-            
-            print(f"✓ 已加载 {len(klines)} 根历史 K 线")
-        except Exception as e:
-            print(f"⚠ 历史 K 线初始化失败：{e}")
-    
     async def on_market_data(self, event_type: str, data: dict):
         """市场数据回调 - v1.4.0 新增 K 线处理"""
         try:
@@ -232,9 +208,7 @@ class LiveTradingBot:
                         'leverage': self.trader.actual_leverage
                     })
                     
-                    # v1.4.0 新增：初始化历史 K 线数据（获取最近 200 根 1 分钟 K 线）
-                    await self._init_historical_klines()
-                    
+                    # v1.4.0: K 线数据通过 WebSocket 自然积累，避免 REST API 频率限制
                     break
                 else:
                     if retry < max_retries - 1:
