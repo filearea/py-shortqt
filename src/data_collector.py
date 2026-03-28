@@ -179,7 +179,8 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
     ensure_dirs()
     
     now = datetime.now()
-    start_date = now - timedelta(days=days)
+    # 从 N 天前的 00:00 开始，而不是从现在减去天数
+    start_date = (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
     
     # 按天获取
     current_date = start_date

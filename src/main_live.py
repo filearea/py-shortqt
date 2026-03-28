@@ -35,6 +35,8 @@ from src.loggers import get_logger, LogManager
 from src.loggers.market import MarketLogger
 from src.config.manager import ConfigManager
 from src.indicators import IndicatorsManager
+from src.recorder import RealtimeRecorder
+from src.metrics_recorder import MetricsRecorder
 from src import __version__
 
 try:
@@ -65,6 +67,9 @@ class LiveTradingBot:
         self.log_manager.system.info(f"使用账户：{account_name}")
         self.log_manager.system.info(f"调试模式：{LOG_DEBUG_MODE}, 日志级别：{LOG_LEVEL}")
         
+        # 错误日志列表（用于 TUI 显示）
+        self.error_log = []
+        
         # 兼容旧日志（保留给 LiveTrader 使用）
         self.logger = TradeLogger(project_root / "logs")
         
@@ -74,11 +79,22 @@ class LiveTradingBot:
         # 初始化市场日志记录器（v1.4.0 新增）
         self.market_logger = MarketLogger(project_root / "logs")
         
+        # 初始化实时数据记录器（v1.4.1 新增）
+        self.recorder = RealtimeRecorder(symbol=self.symbol, orderbook_interval=60)  # 1 分钟
+        self.log_manager.system.info(f"实时数据记录器已初始化（K 线实时保存，订单簿间隔：{self.recorder.orderbook_interval}秒）")
+        
+        # 初始化指标数据记录器（v1.4.2 新增）
+        self.metrics_recorder = MetricsRecorder(symbol=self.symbol, save_interval=30)  # 30 秒
+        self.log_manager.system.info(f"指标数据记录器已初始化（每{self.metrics_recorder.save_interval}秒保存一次指标快照）")
+        
         # 初始化配置管理器
+        self.log_manager.system.info("正在初始化配置管理器...")
         self.config_manager = ConfigManager(project_root / "config" / "runtime.json")
         
         # 获取杠杆配置
+        self.log_manager.system.info("正在读取杠杆配置...")
         api_lev, actual_lev = self.config_manager.get_leverage_config()
+        self.log_manager.system.info(f"杠杆配置：API={api_lev}x, 实际={actual_lev}x")
         
         # 初始化实盘交易器
         self.trader = LiveTrader(
@@ -98,6 +114,9 @@ class LiveTradingBot:
         
         # 将 listener 赋值给 trader，用于 UI 显示连接状态
         self.trader.listener = self.listener
+        
+        # 传递 error_log 给 trader（TUI 显示）
+        self.trader.error_log = self.error_log
         
         # UI
         tp = self.config_manager.get_take_profit_price(Decimal('2150'))
@@ -120,7 +139,15 @@ class LiveTradingBot:
             # 通过 REST API 获取最近 499 根（约 8 小时）（8 小时数据） 1 分钟 K 线（带速率限制）
             klines = self.trader.api.get_klines(self.symbol, '1m', limit=limit)
             
+            if not klines:
+                self.log_manager.system.warning("历史 K 线获取为空，跳过初始化")
+                return
+            
+            count = 0
             for kline_data in klines:
+                if len(kline_data) < 6 or any(x is None for x in kline_data[:6]):
+                    continue
+                
                 kline = {
                     'timestamp': kline_data[0],
                     'open': Decimal(str(kline_data[1])),
@@ -131,12 +158,22 @@ class LiveTradingBot:
                     'is_closed': True
                 }
                 self.indicators.update_kline(kline)
+                count += 1
+            
+            self.log_manager.system.info(f'历史 K 线初始化完成：{count}根')
+        
         except Exception as e:
-            # 如果 API 被封禁，静默失败，等 WebSocket 自然积累
-            pass
+            # 如果 API 获取失败，记录日志（不中断程序）
+            error_msg = f"历史 K 线初始化失败：{e}"
+            self.log_manager.system.warning(error_msg)
+            self.log_manager.system.debug(f"初始化失败详情：{str(e)}")
+            # 添加到错误日志列表（TUI 显示）
+            self.error_log.append({'time': datetime.now(), 'msg': error_msg})
+            if len(self.error_log) > 10:  # 最多保留 10 条
+                self.error_log.pop(0)
     
     async def on_market_data(self, event_type: str, data: dict):
-        """市场数据回调 - v1.4.0 新增 K 线处理"""
+        """市场数据回调 - v1.4.1 新增实时数据记录"""
         try:
             if event_type == 'ticker':
                 price = data['price']
@@ -147,6 +184,12 @@ class LiveTradingBot:
             elif event_type == 'depth':
                 bids = data.get('bids', [])
                 asks = data.get('asks', [])
+                
+                # 调试：首次收到深度数据时打印日志
+                if not hasattr(self, '_depth_received'):
+                    self._depth_received = True
+                    self.log_manager.system.info(f"[调试] 首次收到深度数据：bids={len(bids)}, asks={len(asks)}")
+                
                 self.trader.update_orderbook(bids, asks)
                 
                 # 更新指标管理器的订单簿数据（v1.4.0 新增）
@@ -154,12 +197,40 @@ class LiveTradingBot:
                 bids_decimal = [(Decimal(str(b[0])), Decimal(str(b[1]))) for b in bids]
                 asks_decimal = [(Decimal(str(a[0])), Decimal(str(a[1]))) for a in asks]
                 self.indicators.update_orderbook(bids_decimal, asks_decimal)
+                
+                # v1.4.1 新增：定时保存订单簿快照
+                self.recorder.save_orderbook(bids_decimal, asks_decimal)
+                
+                # 记录订单簿保存日志（首次保存时）
+                if hasattr(self, '_orderbook_saved_count'):
+                    self._orderbook_saved_count += 1
+                    if self._orderbook_saved_count == 1:
+                        self.log_manager.system.info(f"[Recorder] 订单簿已保存：bids={len(bids_decimal)}, asks={len(asks_decimal)}")
+                    elif self._orderbook_saved_count % 10 == 0:
+                        self.log_manager.system.info(f"[Recorder] 订单簿已保存 {self._orderbook_saved_count} 次")
+                else:
+                    self._orderbook_saved_count = 1
             
             elif event_type == 'kline':
                 # v1.4.0 新增：更新 K 线数据到指标管理器
+                # 检查数据完整性
+                if not data or data.get('close') is None:
+                    return
+                
                 self.indicators.update_kline(data)
-        except Exception:
-            pass
+                
+                # v1.4.1 新增：实时保存 K 线数据
+                self.recorder.save_kline(data)
+                
+                # v1.4.2 新增：每 30 秒保存指标快照
+                self.metrics_recorder.save_snapshot(self.indicators, self.trader)
+        except Exception as e:
+            error_msg = f"市场数据处理异常：{e}"
+            self.log_manager.system.debug(error_msg)
+            # 添加到错误日志列表（TUI 显示）
+            self.error_log.append({'time': datetime.now(), 'msg': error_msg})
+            if len(self.error_log) > 10:
+                self.error_log.pop(0)
     
     async def place_order(self, side: str):
         """开仓"""
@@ -515,6 +586,12 @@ class LiveTradingBot:
             self.trader.sync_account()
             print(f"[关闭日志] 当前余额：{self.trader.available_balance:.4f} USDC")
             
+            # 输出数据记录统计
+            print(f"\n[数据记录统计]")
+            stats = self.recorder.get_stats()
+            print(f"  K 线保存：{stats['klines_saved']} 根")
+            print(f"  订单簿快照：{stats['orderbooks_saved']} 次")
+            
             print(f"[关闭日志] 正在写入 shutdown 余额日志...")
             try:
                 self.logger.log_balance('shutdown', self.trader.available_balance, {
@@ -524,6 +601,18 @@ class LiveTradingBot:
                 print(f"[关闭日志] shutdown 余额日志已写入")
             except Exception as e:
                 print(f"[关闭日志] 写入失败：{e}")
+            
+            # 刷新数据记录器缓存
+            if hasattr(self, 'recorder') and self.recorder:
+                self.recorder.flush_all()
+            
+            # 输出指标记录器统计
+            if hasattr(self, 'metrics_recorder') and self.metrics_recorder:
+                stats = self.metrics_recorder.get_stats()
+                print(f"\n[指标数据统计]")
+                print(f"  已保存：{stats['records_saved']} 条快照")
+                print(f"  保存间隔：{stats['save_interval']}秒")
+                print(f"  数据目录：{stats['data_dir']}")
         
         # 正常退出时也清理（Q 键退出时 running=False，但仍需清理）
         if not self.running:

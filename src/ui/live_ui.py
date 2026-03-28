@@ -1,8 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-实盘交易 UI
+实盘交易 UI - v1.4.1 优化布局
 """
 
+import re
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
@@ -28,13 +29,13 @@ class LiveTradingUI:
         self.indicators = indicators  # v1.4.0 新增：指标管理器
     
     def render(self) -> Layout:
-        """渲染界面 - v1.4.0"""
+        """渲染界面 - v1.4.0 验收布局"""
         layout = Layout()
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="main"),  # 自适应高度
             Layout(name="footer", size=12),  # 固定日志 12 行
-            Layout(name="indicators", size=8)  # v1.4.0 新增：指标区 8 行（四行布局 + 分类评分）
+            Layout(name="indicators", size=5)  # 指标区 5 行（2 行边框 + 3 行数据）
         )
         
         # 头部
@@ -49,17 +50,19 @@ class LiveTradingUI:
         )
         
         # 计算订单簿区域可用高度
-        # 总高度 - 头部 3 行 - 日志 12 行 - 指标 6 行 - Panel 边框 4 行 = 订单簿区域高度
+        # 总高度 - 头部 3 行 - 日志 12 行 - 指标 5 行 - Panel 边框 4 行 = 订单簿区域高度
         # 订单簿区域高度 - 最新价 1 行 = 买卖盘总行数
         # 买卖盘各占一半
         try:
             from rich.console import Console
             console = Console()
             total_height = console.height if console.height else 45
-            orderbook_height = total_height - 3 - 12 - 6 - 4  # 约 20 行
-            max_levels = max(5, min(20, (orderbook_height - 1) // 2))  # 至少 5 档，最多 20 档
+            orderbook_height = total_height - 3 - 12 - 5 - 4
+            # 计算每边显示的档数
+            levels_per_side = max(5, (orderbook_height - 1) // 2)
+            max_levels = min(levels_per_side, 200)  # 最多 200 档
         except:
-            max_levels = 10  # 默认 10 档
+            max_levels = 15  # 默认 15 档
         
         main_layout["orderbook"].update(Panel(self._render_orderbook(max_levels), title="订单簿"))
         main_layout["account"].update(Panel(self._render_account(), title="账户"))
@@ -68,7 +71,7 @@ class LiveTradingUI:
         # 底部日志
         layout["footer"].update(Panel(self._render_log(), title="日志"))
         
-        # v1.4.0 新增：指标区
+        # v1.4.0 新增：指标区（放在日志上面，紧凑布局）
         layout["indicators"].update(Panel(self._render_indicators(), title="盘面指标"))
         
         return layout
@@ -124,7 +127,7 @@ class LiveTradingUI:
         
         return f"行情：{ws_market} 订单：{ws_user}"
     
-    def _render_orderbook(self, max_levels: int = 10) -> Table:
+    def _render_orderbook(self, max_levels: int = 15) -> Table:
         """渲染订单簿（动态调整档位，最新价永远居中，挂单价格标记）"""
         from decimal import Decimal
         
@@ -161,12 +164,12 @@ class LiveTradingUI:
         # 移除 0 值
         user_order_prices.discard(0.0)
         
-        # 动态调整档位：卖盘和买盘数量相等，确保最新价居中
-        actual_asks = min(max_levels, len(asks))
-        actual_bids = min(max_levels, len(bids))
+        # 订单簿排序：最新价永远居中，卖盘在上，买盘在下，数量相等
+        # 使用传入的 max_levels，取买卖盘中较小的数量
+        display_levels = min(len(bids), len(asks), max_levels)
         
-        # 卖盘（倒序，从远到近）
-        for i in range(actual_asks - 1, -1, -1):
+        # 卖盘（倒序：从远到近，价格从高到低）- 显示在最新价上方
+        for i in range(display_levels - 1, -1, -1):
             price, qty = asks[i]
             price_float = float(price)
             
@@ -177,11 +180,14 @@ class LiveTradingUI:
                 ob_table.add_row(f"[red]{price:.2f}[/red]", f"{qty:.3f}")
         
         # 最新价（居中显示）
-        mid_price = f"{self.trader.last_price:.2f}" if self.trader.last_price else "----"
-        ob_table.add_row(f"[bold yellow]  {mid_price}  [/bold yellow]", "")
+        if self.trader.last_price:
+            mid_price = f"{self.trader.last_price:.2f}"
+            ob_table.add_row(f"[bold yellow]  {mid_price}  [/bold yellow]", "")
+        else:
+            ob_table.add_row(f"[bold yellow]  ----  [/bold yellow]", "")
         
-        # 买盘（从近到远）
-        for i in range(actual_bids):
+        # 买盘（正序：从近到远，价格从高到低）- 显示在最新价下方
+        for i in range(display_levels):
             price, qty = bids[i]
             price_float = float(price)
             
@@ -190,6 +196,8 @@ class LiveTradingUI:
                 ob_table.add_row(f"[bold magenta]◀ {price:.2f}[/bold magenta]", f"[bold magenta]{qty:.3f}[/bold magenta]")
             else:
                 ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
+        
+        return ob_table
         
         return ob_table
     
@@ -298,7 +306,7 @@ class LiveTradingUI:
         return acc_text
     
     def _render_indicators(self) -> Table:
-        """渲染指标区 - v1.4.0 新增（纵向三行布局）"""
+        """渲染指标区 - v1.4.3 三行布局"""
         from rich.table import Table
         
         # 如果没有指标管理器，显示提示信息
@@ -311,7 +319,7 @@ class LiveTradingUI:
         # 获取指标数据
         display_data = self.indicators.get_display_data()
         
-        # 创建单列表格（三行）
+        # 创建单列表格（三行布局）
         table = Table(show_header=False, box=None, padding=(0, 1), expand=True)
         table.add_column("指标", ratio=1)
         
@@ -325,7 +333,7 @@ class LiveTradingUI:
         vol_parts = []
         for line in vol_lines:
             # 清理格式，只保留核心数据
-            clean_line = line.replace('🟡', '').replace('🔴', '').replace('[正常]', '').strip()
+            clean_line = line.replace('🟡', '').replace('🔴', '').replace('[正常]', '').replace('[WARN]', '').strip()
             if clean_line:
                 vol_parts.append(clean_line)
         vol_row.append(" | ".join(vol_parts[:5]))  # 最多显示 5 个
@@ -334,12 +342,12 @@ class LiveTradingUI:
         if any('🟡' in l or '🔴' in l for l in vol_lines):
             vol_row.append(" 🟡", style="yellow")
         
-        # 第二行：流动性（横向展示）
+        # 第二行：流动性
         liq_row = Text()
         liq_row.append("流动性：", style="bold cyan")
         liq_parts = []
         for line in liq_lines:
-            clean_line = line.replace('🟡', '').replace('🔴', '').replace('[正常]', '').replace('[充足]', '').strip()
+            clean_line = line.replace('🟡', '').replace('🔴', '').replace('[正常]', '').replace('[充足]', '').replace('[WARN]', '').strip()
             if clean_line:
                 liq_parts.append(clean_line)
         liq_row.append(" | ".join(liq_parts[:3]))  # 最多显示 3 个
@@ -347,34 +355,41 @@ class LiveTradingUI:
         if any('🟡' in l or '🔴' in l for l in liq_lines):
             liq_row.append(" 🟡", style="yellow")
         
-        # 第三行：交易建议（信号灯 + 综合评分）
+        # 第三行：综合评分 + 分类评分
         score_row = Text()
-        score_row.append("建议：", style="bold cyan")
-        score_row.append(f" {score['emoji']} ", style=f"bold {score['color']}")
-        score_row.append(f"{score['recommendation']} ", style=f"bold {score['color']}")
-        score_row.append(f"| 综合：{score['score']:.1f}/100", style="dim")
+        score_row.append("综合：", style="bold cyan")
+        score_row.append(f"{score['score']:.1f}/100 ", style=f"bold {score['color']}")
+        score_row.append(f"{score['emoji']} {score['recommendation']}  |  ", style=f"bold {score['color']}")
         
-        # 第四行：分类评分（新增）
         category_scores = score.get('category_scores', {})
-        cat_row = Text()
-        cat_row.append("  波动率：", style="dim")
-        cat_row.append(f"{category_scores.get('volatility', 50.0):.1f} ", style="cyan")
-        cat_row.append("| 流动性：", style="dim")
-        cat_row.append(f"{category_scores.get('liquidity', 50.0):.1f} ", style="cyan")
-        cat_row.append("| 动量：", style="dim")
-        cat_row.append(f"{category_scores.get('momentum', 50.0):.1f}", style="cyan")
+        score_row.append("分类：", style="dim")
+        score_row.append(f"波动率:{category_scores.get('volatility', 50.0):.1f} ", style="cyan")
+        score_row.append(f"| 流动性:{category_scores.get('liquidity', 50.0):.1f} ", style="cyan")
+        score_row.append(f"| 动量:{category_scores.get('momentum', 50.0):.1f}", style="cyan")
         
         # 添加行
         table.add_row(vol_row)
         table.add_row(liq_row)
         table.add_row(score_row)
-        table.add_row(cat_row)  # 新增分类评分行
         
         return table
 
     def _render_log(self) -> Text:
-        """渲染日志（带颜色高亮）"""
+        """渲染日志（带颜色高亮 + 错误显示）"""
         log_text = Text()
+        
+        # 显示最近的错误日志（如果有）- 红色背景高亮
+        if hasattr(self.trader, 'error_log') and self.trader.error_log:
+            errors = self.trader.error_log[-5:]  # 显示最近 5 条错误
+            log_text.append("⚠️ 最近错误：\n", style="bold red on black")
+            for error in reversed(errors):
+                time_str = error.get('time', '')
+                if hasattr(time_str, 'strftime'):
+                    time_str = time_str.strftime('%H:%M:%S')
+                msg = error.get('msg', str(error))
+                log_text.append(f"  [{time_str}] ", style="dim")
+                log_text.append(f"{msg}\n", style="red")
+            log_text.append("\n")
         
         # 显示最近的操作日志
         if hasattr(self.trader, 'action_log') and self.trader.action_log:

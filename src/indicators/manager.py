@@ -17,9 +17,9 @@ class IndicatorsManager:
     """指标管理器"""
     
     def __init__(self):
-        """初始化指标管理器 - v1.4.0 动态评分"""
+        """初始化指标管理器 - v1.4.3 优化流动性计算"""
         self.volatility = VolatilityAnalyzer(max_klines=200)
-        self.liquidity = LiquidityAnalyzer(max_levels=200, price_step=0.1)
+        self.liquidity = LiquidityAnalyzer(max_levels=50, price_step=0.5)  # 50 档 + 0.5 USDC
         
         # 动态评分器（数据充足时）
         self.scorer = DynamicScorer(window_days=14)
@@ -65,7 +65,15 @@ class IndicatorsManager:
         self._update_snapshot()
     
     def _update_snapshot(self):
-        """更新指标快照缓存 - v1.4.0 动态评分"""
+        """更新指标快照缓存 - v1.4.3 性能优化"""
+        # 每 10 次更新一次快照（减少计算频率）
+        if not hasattr(self, '_update_counter'):
+            self._update_counter = 0
+        
+        self._update_counter += 1
+        
+        # 只有 K 线更新时才重新计算（订单簿更新太频繁）
+        # 使用缓存的指标，避免重复计算
         vol_metrics = self.volatility.get_metrics()
         liq_metrics = self.liquidity.get_metrics()
         
@@ -82,9 +90,10 @@ class IndicatorsManager:
             # 'volume_trend': 1.0,  # v1.5 迭代添加
         }
         
-        # 更新历史数据
-        self.scorer.update_history(current_data)
-        self._sample_count += 1
+        # 更新历史数据（每 10 次更新一次，减少评分计算）
+        if self._update_counter % 10 == 0:
+            self.scorer.update_history(current_data)
+            self._sample_count += 1
         
         # 根据样本量选择评分器
         if self._sample_count < 30:

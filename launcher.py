@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-py-shortqt v1.3.0 启动器
+py-shortqt v1.4.0 启动器
+动态指标系统 | 实时数据记录
 """
 
 import json

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-py-shortqt v1.1.1 - 统一启动入口
-支持模拟模式和实盘模式
+py-shortqt v1.4.0 - 统一启动入口
+支持模拟模式/实盘模式 | 动态指标系统
 """
 
 import asyncio
@@ -27,11 +27,11 @@ from config.settings import USE_LIVE_TRADING, TESTNET
 def print_banner():
     """打印欢迎横幅"""
     print("=" * 70)
-    print("py-shortqt v1.1.1 - Maker Scalper 剥头皮交易系统")
+    print("py-shortqt v1.4.0 - Maker Scalper 剥头皮交易系统")
     print("=" * 70)
     print()
     print("作者：魔力塔互动娱乐")
-    print("版本：v1.1.1 实盘版")
+    print("版本：v1.4.0 实盘版 | 动态指标系统")
     print()
 
 

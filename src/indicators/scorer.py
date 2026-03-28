@@ -77,35 +77,20 @@ class DynamicScorer:
     
     def _percentile_score(self, current_value: float, historical_data: List[float], 
                           higher_is_better: bool = True) -> float:
-        """基于历史百分位数评分（0-100 分）"""
+        """基于历史百分位数评分（0-100 分）- 优化版"""
         if not historical_data:
             return 50.0  # 默认中等分数
         
-        # 检查分布形态
-        if len(historical_data) >= 30:
-            stat, p_value = stats.shapiro(historical_data[:5000])  # 限制样本数
-            
-            if p_value > 0.05:
-                # 正态分布：用 Z-score 标准化
-                mean = sum(historical_data) / len(historical_data)
-                std = (sum((x - mean) ** 2 for x in historical_data) / len(historical_data)) ** 0.5
-                if std > 0:
-                    z_score = (current_value - mean) / std
-                    # Z-score 转百分位
-                    from scipy.stats import norm
-                    percentile = norm.cdf(z_score) * 100
-                else:
-                    percentile = 50.0
-            else:
-                # 偏态分布：用百分位数
-                sorted_data = sorted(historical_data)
-                count_below = sum(1 for x in sorted_data if x <= current_value)
-                percentile = count_below / len(sorted_data) * 100
-        else:
-            # 样本不足：简单百分位
-            sorted_data = sorted(historical_data)
-            count_below = sum(1 for x in sorted_data if x <= current_value)
-            percentile = count_below / len(sorted_data) * 100
+        # 过滤 None 值
+        historical_data = [x for x in historical_data if x is not None]
+        
+        if not historical_data:
+            return 50.0
+        
+        # 简化：只用简单百分位（跳过正态分布检验，减少计算）
+        sorted_data = sorted(historical_data)
+        count_below = sum(1 for x in sorted_data if x <= current_value)
+        percentile = count_below / len(sorted_data) * 100
         
         if higher_is_better:
             score = percentile  # 越高分数越高
@@ -219,9 +204,9 @@ class DynamicScorer:
             mom_score * 0.30
         )
         
-        # 5. 交易建议
+        # 5. 交易建议（统一两个字，避免 UI 闪动）
         if total_score >= 75:
-            recommendation = "适合交易"
+            recommendation = "正常"
             signal_emoji = "🟢"
             signal_color = "green"
         elif total_score >= 50:
@@ -229,7 +214,7 @@ class DynamicScorer:
             signal_emoji = "🟡"
             signal_color = "yellow"
         else:
-            recommendation = "暂停交易"
+            recommendation = "暂停"
             signal_emoji = "🔴"
             signal_color = "red"
         
