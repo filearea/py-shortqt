@@ -114,6 +114,7 @@ class LossProtectionManager:
             return
         
         # 浮亏，执行保护
+        print(f'[浮亏保护 DEBUG] 检测到浮亏 {unrealized_pnl:.6f} USDT，准备执行保护！')
         if self.trader.log_manager:
             self.trader.log_manager.system.info(f'[浮亏保护] 检测到浮亏 {unrealized_pnl:.6f} USDT，执行保护')
         await self._execute_protection(current_price)
@@ -125,9 +126,11 @@ class LossProtectionManager:
         Args:
             current_price: 当前价格
         """
+        print(f'[浮亏保护 DEBUG] _execute_protection 被调用！开仓价={self.entry_price}, 当前价={current_price}, 止盈单 ID={self.tp_order_id}')
         try:
             # 计算保本止盈价（开仓价）
             protection_price = self.entry_price
+            print(f'[浮亏保护 DEBUG] 准备撤销原止盈单 ID={self.tp_order_id}')
             
             # 撤销原止盈单
             if self.tp_order_id:
