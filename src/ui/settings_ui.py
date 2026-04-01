@@ -60,6 +60,20 @@ class SettingsUI:
                      'min': 0.5, 'max': 30, 'step': 0.5, 'unit': 's'},
                 ]
             },
+            {
+                'name': '智能止损',
+                'fields': [
+                    {'key': 'trailing_stop.enabled', 'label': '启用移动止损', 'type': 'bool'},
+                    {'key': 'trailing_stop.grid_count', 'label': '移动止损格数', 'type': 'int',
+                     'min': 3, 'max': 20, 'step': 1, 'unit': '格',
+                     'visible_cond': lambda c: c.get('trailing_stop', {}).get('enabled', False)},
+                    
+                    {'key': 'loss_protection.enabled', 'label': '启用浮亏保护', 'type': 'bool'},
+                    {'key': 'loss_protection.trigger_minutes', 'label': '浮亏保护触发时间', 'type': 'int',
+                     'min': 1, 'max': 60, 'step': 1, 'unit': '分钟',
+                     'visible_cond': lambda c: c.get('loss_protection', {}).get('enabled', False)},
+                ]
+            },
             {'name': '备份管理', 'fields': []}
         ]
     
@@ -69,13 +83,15 @@ class SettingsUI:
             lines = []
             
             if self.editing:
-                lines.append("[bold cyan]⚙️ 编辑中[/bold cyan]  Enter 确认  Esc 取消  S 保存退出")
+                lines.append("[bold cyan]⚙️ 编辑中[/bold cyan]  Enter 确认  Esc 取消  Tab 换页  S 保存退出")
             else:
-                lines.append("[bold cyan]⚙️ 设置面板[/bold cyan]  ↑↓切换  ←→调整  Enter 编辑  S 保存退出")
+                lines.append("[bold cyan]⚙️ 设置面板[/bold cyan]  ↑↓切换  ←→调整  Enter 编辑  Tab 换页  S 保存退出")
             lines.append("")
             
             if self.current_tab == 0:
                 lines.extend(self._render_trading_tab_lines())
+            elif self.current_tab == 1:
+                lines.extend(self._render_smart_stop_tab_lines())
             else:
                 lines.extend(self._render_backup_tab_lines())
             
@@ -220,6 +236,54 @@ class SettingsUI:
         
         return lines
     
+    def _render_smart_stop_tab_lines(self) -> list:
+        """渲染智能止损标签页"""
+        config = self.config_manager.get_config()
+        lines = []
+        
+        # 获取智能止损的字段
+        smart_stop_fields = self.tabs[1]['fields']
+        
+        for i, field in enumerate(smart_stop_fields):
+            is_selected = (i == self.current_field)
+            value = self._get_nested_value(config, field['key'])
+            
+            if field['type'] == 'bool':
+                label = "✓ 是" if value else "○ 否"
+                
+                if is_selected:
+                    if self.editing:
+                        option_strs = [f"[green]●是[/green]" if value else "○是", "●否" if not value else "○否"]
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] {' '.join(option_strs)}  ←→切换  Enter 确认")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][←→切换][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {label}")
+            
+            elif field['type'] == 'int':
+                # 检查可见性条件
+                if 'visible_cond' in field:
+                    if not field['visible_cond'](config):
+                        continue
+                
+                unit = field.get('unit', '')
+                
+                if is_selected:
+                    if self.editing:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{self.input_buffer}_[/green]  [dim][数字输入 Enter 确认][/dim]")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{value}{unit}[/green]  [dim][←→调整 或 Enter 输入][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {value}{unit}")
+        
+        # 底部说明
+        lines.append("")
+        lines.append("─" * 50)
+        lines.append("[dim]移动止损：开仓价到止盈价均分 N 格，第 1 格观察，第 2 格开始触发[/dim]")
+        lines.append("[dim]浮亏保护：开仓后 N 分钟检测浮亏，自动下移止盈到开仓价[/dim]")
+        
+        return lines
+    
     def _render_backup_tab_lines(self) -> list:
         """渲染备份管理标签页"""
         lines = []
@@ -289,6 +353,8 @@ class SettingsUI:
         
         if self.current_tab == 0:
             return self._handle_trading_tab_key(key)
+        elif self.current_tab == 1:
+            return self._handle_smart_stop_tab_key(key)
         else:
             return self._handle_backup_tab_key(key)
     
@@ -444,6 +510,117 @@ class SettingsUI:
             elif key == 'b':
                 self.config_manager.backup_config()
                 return 'backed_up'
+        
+        return 'continue'
+    
+    def _handle_smart_stop_tab_key(self, key: str) -> str:
+        """处理智能止损标签页的按键"""
+        config = self.config_manager.get_config()
+        smart_stop_fields = self.tabs[1]['fields']
+        
+        max_field = len(smart_stop_fields) - 1
+        if self.current_field > max_field:
+            self.current_field = max_field
+        if self.current_field < 0:
+            self.current_field = 0
+        
+        field = smart_stop_fields[self.current_field]
+        
+        if self.editing:
+            if field['type'] == 'bool':
+                if key == 'left' or key == 'right':
+                    current = self._get_nested_value(config, field['key'])
+                    new_value = not (current or False)
+                    self._set_nested_value(config, field['key'], new_value)
+                    self.config_manager.config = config
+                    self.modified = True
+                elif key == 'enter':
+                    self.editing = False
+                    self.input_buffer = ""
+            
+            elif field['type'] == 'int':
+                if key == 'enter':
+                    if self.input_buffer:
+                        try:
+                            new_value = int(self.input_buffer)
+                            new_value = max(field.get('min', 0), min(field.get('max', 999), new_value))
+                            self._set_nested_value(config, field['key'], new_value)
+                            self.config_manager.config = config
+                            self.modified = True
+                        except ValueError:
+                            pass
+                    self.editing = False
+                    self.input_buffer = ""
+                elif key.isdigit():
+                    self.input_buffer += key
+                elif key == 'backspace':
+                    if self.input_buffer:
+                        self.input_buffer = self.input_buffer[:-1]
+                elif key == 'left':
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 1)
+                        current -= step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self.input_buffer = str(current)
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
+                elif key == 'right':
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 1)
+                        current += step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self.input_buffer = str(current)
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
+        else:
+            if key == 'up':
+                self.current_field = max(0, self.current_field - 1)
+            elif key == 'down':
+                self.current_field = min(max_field, self.current_field + 1)
+            elif key == 'enter':
+                if field['type'] == 'int':
+                    current = self._get_nested_value(config, field['key'])
+                    self.input_buffer = str(current) if current is not None else ""
+                else:
+                    self.input_buffer = ""
+                self.editing = True
+                return 'enter_edit'
+            elif key == 'left':
+                if field['type'] == 'bool':
+                    current = self._get_nested_value(config, field['key'])
+                    new_value = not (current or False)
+                    self._set_nested_value(config, field['key'], new_value)
+                    self.config_manager.config = config
+                    self.modified = True
+                elif field['type'] == 'int':
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 1)
+                        current -= step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
+            elif key == 'right':
+                if field['type'] == 'bool':
+                    current = self._get_nested_value(config, field['key'])
+                    new_value = not (current or False)
+                    self._set_nested_value(config, field['key'], new_value)
+                    self.config_manager.config = config
+                    self.modified = True
+                elif field['type'] == 'int':
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 1)
+                        current += step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
         
         return 'continue'
     
