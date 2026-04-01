@@ -160,20 +160,20 @@ class TradeLogger:
         log_entry = {
             'timestamp': timestamp,
             'order_type': order_type,
-            **order_data
+            **convert_decimal(order_data)
         }
         self.orders_log.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
         self.orders_log.flush()
     
-    def log_position(self, side: str, entry_price: float, size: float, current_pnl: float = 0):
+    def log_position(self, side: str, entry_price: Decimal, size: Decimal, current_pnl: Decimal = Decimal('0')):
         """记录持仓信息"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         log_entry = {
             'timestamp': timestamp,
             'side': side,
-            'entry_price': entry_price,
-            'size': size,
-            'current_pnl': current_pnl
+            'entry_price': float(entry_price),
+            'size': float(size),
+            'current_pnl': float(current_pnl)
         }
         self.positions_log.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
         self.positions_log.flush()
