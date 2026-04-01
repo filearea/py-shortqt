@@ -174,6 +174,12 @@ class LiveTradingBot:
     
     async def on_market_data(self, event_type: str, data: dict):
         """市场数据回调 - v1.5.0 新增移动止损和浮亏保护"""
+        # v1.5.0 强制调试输出
+        if event_type == 'ticker' and self.trader.position:
+            price = data.get('price')
+            print(f'[DEBUG on_market_data] 收到 ticker, 价格={price}, 持仓={self.trader.position is not None}')
+            if self.trader.trailing_stop_manager:
+                print(f'[DEBUG] 移动止损启用={self.trader.trailing_stop_manager.enabled}, 开仓价={self.trader.trailing_stop_manager.entry_price}')
         try:
             if event_type == 'ticker':
                 price = data['price']
