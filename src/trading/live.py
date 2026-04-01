@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 实盘交易模块 - 币安 Futures 实盘交易
-v1.1.1 - 完整止盈止损版本（修复数量计算）
+v1.5.0 - 新增移动止损 + 浮亏保护
 """
 
 import asyncio
@@ -14,6 +14,8 @@ from typing import Optional, Dict, List
 from src.api.binance_client import BinanceClient, BinanceAPIError
 from src.api.user_stream_ws import UserStreamWebSocket
 from src.logger import TradeLogger
+from src.trading.trailing_stop import TrailingStopManager
+from src.trading.loss_protection import LossProtectionManager
 
 
 class LiveTrader:
@@ -59,6 +61,10 @@ class LiveTrader:
         # 操作日志
         self.action_log: List[Dict] = []
         
+        # v1.5.0 新增：移动止损和浮亏保护管理器
+        self.trailing_stop_manager: Optional[TrailingStopManager] = None
+        self.loss_protection_manager: Optional[LossProtectionManager] = None
+        
         self.running = False
         self.connected = False
     
@@ -83,6 +89,20 @@ class LiveTrader:
             await self._start_user_stream()
             self.api.cancel_all_orders(self.symbol)
             print("✓ 已撤销所有遗留挂单")
+            
+            # v1.5.0 新增：初始化移动止损和浮亏保护管理器
+            if self.config_manager:
+                trailing_config = self.config_manager.get_trailing_stop_config()
+                loss_protection_config = self.config_manager.get_loss_protection_config()
+                
+                self.trailing_stop_manager = TrailingStopManager(self, None, trailing_config)
+                self.loss_protection_manager = LossProtectionManager(self, None, loss_protection_config)
+                
+                if trailing_config.get('enabled'):
+                    print(f"✓ 移动止损已启用：{trailing_config.get('grid_count')}格")
+                if loss_protection_config.get('enabled'):
+                    print(f"✓ 浮亏保护已启用：{loss_protection_config.get('trigger_minutes')}分钟触发")
+            
             self._add_action("初始化", "实盘初始化成功")
             self.connected = True
             print("=" * 70)

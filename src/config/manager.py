@@ -272,3 +272,19 @@ class ConfigManager:
     def get_order_timeout(self) -> float:
         """获取订单超时时间"""
         return self.config.get('order_timeout_seconds', 2.00)
+    
+    # v1.5.0 新增：移动止损和浮亏保护配置
+    
+    def get_trailing_stop_config(self) -> dict:
+        """获取移动止损配置"""
+        return self.config.get('trailing_stop', {
+            'enabled': False,
+            'grid_count': 5
+        })
+    
+    def get_loss_protection_config(self) -> dict:
+        """获取浮亏保护配置"""
+        return self.config.get('loss_protection', {
+            'enabled': False,
+            'trigger_minutes': 5
+        })
