@@ -108,14 +108,23 @@ class TrailingStopManager:
         Args:
             current_price: 当前最新价
         """
+        # v1.5.0 调试日志
+        if self.trader.log_manager:
+            self.trader.log_manager.system.debug(f"[移动止损] 启用={self.enabled}, 开仓价={self.entry_price}, 当前价={current_price}, 网格={len(self.grid_prices)}")
+        
         if not self.enabled:
             return
         
         if not self.entry_price or not self.grid_prices:
+            if self.trader.log_manager:
+                self.trader.log_manager.system.debug("[移动止损] 跳过：entry_price 或 grid_prices 为空")
             return
         
         # 确定当前价格超过了第几格
         current_level = self._get_current_level(current_price)
+        
+        if self.trader.log_manager:
+            self.trader.log_manager.system.debug(f"[移动止损] 超过格数={current_level}")
         
         if current_level == 0:
             # 价格还未超过第 1 格，不操作
@@ -123,9 +132,13 @@ class TrailingStopManager:
         
         # 第 1 格仅观察，不触发
         if current_level == 1:
+            if self.trader.log_manager:
+                self.trader.log_manager.system.debug("[移动止损] 第 1 格仅观察，不触发")
             return
         
         # 从第 2 格开始触发
+        if self.trader.log_manager:
+            self.trader.log_manager.system.info(f"[移动止损] 第{current_level}格触发，创建止损单")
         await self._update_stop_order_for_level(current_level)
     
     def _get_current_level(self, price: Decimal) -> int:
