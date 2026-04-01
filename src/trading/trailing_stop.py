@@ -79,9 +79,11 @@ class TrailingStopManager:
                 grid_price = entry_price - (grid_step * i)
             self.grid_prices.append(grid_price)
         
-        # v1.5.0 调试日志：打印网格价格
+        # v1.5.0 调试日志：打印网格价格（强制输出）
+        grid_str = f'[移动止损] 网格价格：{[str(p) for p in self.grid_prices]}'
+        print(grid_str)  # 强制输出到控制台
         if self.trader.log_manager:
-            self.trader.log_manager.system.info(f'[移动止损] 网格价格：{[str(p) for p in self.grid_prices]}')
+            self.trader.log_manager.system.info(grid_str)
         
         return self.grid_prices
     
@@ -154,19 +156,16 @@ class TrailingStopManager:
         """
         if self.side == 'LONG':
             # 多单：价格从下往上
-            if self.trader.log_manager:
-                self.trader.log_manager.system.debug(f'[移动止损] 多单检查：当前价={price}, 网格={len(self.grid_prices)}')
+            print(f'[移动止损] 多单检查：当前价={price}, 网格={len(self.grid_prices)}')
             for i, grid_price in enumerate(self.grid_prices, 1):
-                if self.trader.log_manager:
-                    self.trader.log_manager.system.debug(f'[移动止损] 格{i}: {grid_price}, 当前价{price} {"<" if price < grid_price else ">="} {grid_price}')
+                cmp = "<" if price < grid_price else ">="
+                print(f'[移动止损] 格{i}: {grid_price}, 当前价{price} {cmp} {grid_price}')
                 if price < grid_price:
                     result = i - 1
-                    if self.trader.log_manager:
-                        self.trader.log_manager.system.info(f'[移动止损] 超过格数={result}')
+                    print(f'[移动止损] 超过格数={result}')
                     return result
             result = len(self.grid_prices)
-            if self.trader.log_manager:
-                self.trader.log_manager.system.info(f'[移动止损] 超过所有格={result}')
+            print(f'[移动止损] 超过所有格={result}')
             return result
         else:  # SHORT
             # 空单：价格从上往下

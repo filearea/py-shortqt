@@ -136,16 +136,6 @@ class TradeLogger:
         """记录交易动作"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         
-        # v1.5.0 修复：将 Decimal 转换为 float
-        def convert_decimal(obj):
-            if isinstance(obj, Decimal):
-                return float(obj)
-            elif isinstance(obj, dict):
-                return {k: convert_decimal(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_decimal(v) for v in obj]
-            return obj
-        
         log_entry = {
             'timestamp': timestamp,
             'action': action,
