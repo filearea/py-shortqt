@@ -12,6 +12,17 @@ import time
 import json
 
 
+def convert_decimal(obj):
+    """将 Decimal 转换为 float，用于 JSON 序列化"""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_decimal(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimal(v) for v in obj]
+    return obj
+
+
 def safe_float(val, default=0.0):
     """安全转换为 float"""
     if val is None:
