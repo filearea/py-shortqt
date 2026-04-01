@@ -522,6 +522,12 @@ class LiveTrader:
             
             self.position = None
             
+            # v1.5.0 新增：清理移动止损和浮亏保护状态
+            if self.trailing_stop_manager:
+                asyncio.create_task(self.trailing_stop_manager.on_position_closed())
+            if self.loss_protection_manager:
+                self.loss_protection_manager.on_position_closed()
+            
             print("✓ 其他订单已撤销，持仓已清空")
         
         except Exception as e:
@@ -836,6 +842,24 @@ class LiveTrader:
                 traceback.print_exc()
             
             print("\n✓ 止盈止损单全部下达完成")
+            
+            # v1.5.0 新增：初始化移动止损和浮亏保护
+            if self.trailing_stop_manager:
+                await self.trailing_stop_manager.on_position_opened(
+                    entry_price=entry_price,
+                    take_profit_price=tp_price,
+                    side=side,
+                    position_size=size
+                )
+            
+            if self.loss_protection_manager:
+                self.loss_protection_manager.set_entry_info(
+                    entry_price=entry_price,
+                    side=side,
+                    tp_price=tp_price,
+                    sl_price=sl_trigger if 'sl_trigger' in locals() else None,
+                    tp_order_id=self.tp_order['orderId'] if self.tp_order else None
+                )
         
         except BinanceAPIError as e:
             print(f"\n✗ 止盈止损下单失败：[{e.code}] {e.msg}")
