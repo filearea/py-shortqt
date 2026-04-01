@@ -427,6 +427,8 @@ class LiveTradingBot:
                                 key_char = 'backspace'
                             elif key == b'\x1b':  # Esc
                                 key_char = 'escape'
+                            elif key == b'\x09':  # Tab
+                                key_char = 'tab'
                             
                             # 在设置界面中
                             if self.in_settings:
