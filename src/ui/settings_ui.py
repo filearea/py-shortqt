@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-TUI 设置界面 - v1.2.0 修复版
+TUI 设置界面 - v1.5.0
 """
 
 from rich.panel import Panel
 from decimal import Decimal
 from typing import Any, Tuple, List
+from src import __version__
 
 
 class SettingsUI:
@@ -113,7 +114,7 @@ class SettingsUI:
             lines.append(self._render_footer_lines())
             
             content = "\n".join(lines)
-            return Panel(content, title="py-shortqt v1.2.0")
+            return Panel(content, title=f"py-shortqt v{__version__}")
         except Exception as e:
             return Panel(f"[red]渲染错误：{e}[/red]", title="错误")
     
