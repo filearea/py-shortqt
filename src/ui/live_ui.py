@@ -242,6 +242,21 @@ class LiveTradingUI:
                 liq = self.trader.stop_market_order.get('liquidation', 0)
                 acc_text.append(f"保底：{sm:.2f} (强平{liq:.2f})\n", style="bold red")  # 价格 2 位
             
+            # v1.5.0 新增：移动止损和浮亏保护状态
+            if self.trader.trailing_stop_manager:
+                ts_status = self.trader.trailing_stop_manager.get_status()
+                if ts_status.get('status') == '已激活':
+                    acc_text.append(f"移动止损：{ts_status.get('active_levels')}/{ts_status.get('grid_count')}格\n", style="cyan")
+            
+            if self.trader.loss_protection_manager:
+                lp_status = self.trader.loss_protection_manager.get_status()
+                if lp_status.get('status') == '已保护':
+                    acc_text.append(f"浮亏保护：已触发 @ {lp_status.get('protection_time')}\n", style="yellow")
+                elif lp_status.get('status') == '检测中':
+                    pnl_status = lp_status.get('pnl_status', '未知')
+                    remaining_time = lp_status.get('remaining_time', '00:00')
+                    acc_text.append(f"浮亏保护：{pnl_status} ({remaining_time})\n", style="dim")
+            
             # 浮动盈亏
             if self.trader.last_price:
                 entry = pos['entry_price']
