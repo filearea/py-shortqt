@@ -82,10 +82,13 @@ class SettingsUI:
         try:
             lines = []
             
+            # 根据当前标签页显示标题
+            tab_name = self.tabs[self.current_tab]['name']
+            
             if self.editing:
-                lines.append("[bold cyan]⚙️ 编辑中[/bold cyan]  Enter 确认  Esc 取消  Tab 换页  S 保存退出")
+                lines.append(f"[bold cyan]⚙️ {tab_name}[/bold cyan]  Enter 确认  Esc 取消  Tab 换页  S 保存退出")
             else:
-                lines.append("[bold cyan]⚙️ 设置面板[/bold cyan]  ↑↓切换  ←→调整  Enter 编辑  Tab 换页  S 保存退出")
+                lines.append(f"[bold cyan]⚙️ {tab_name}[/bold cyan]  ↑↓切换  ←→调整  Enter 编辑  Tab 换页  S 保存退出")
             lines.append("")
             
             if self.current_tab == 0:
