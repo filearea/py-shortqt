@@ -58,6 +58,11 @@ class LossProtectionManager:
             sl_price: 止损价
             tp_order_id: 止盈单 ID
         """
+        # v1.5.0 调试日志
+        if self.trader.log_manager:
+            elapsed_min = (datetime.now() - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0
+            self.trader.log_manager.system.debug(f'[浮亏保护] 启用={self.enabled}, 已过={elapsed_min:.2f}分钟，需要={self.trigger_minutes}分钟，盈亏={unrealized_pnl:.6f}')
+        
         if not self.enabled:
             return
         
@@ -104,9 +109,13 @@ class LossProtectionManager:
         # 检查是否浮亏
         if unrealized_pnl >= 0:
             # 浮盈，不触发保护
+            if self.trader.log_manager:
+                self.trader.log_manager.system.debug('[浮亏保护] 浮盈状态，不触发')
             return
         
         # 浮亏，执行保护
+        if self.trader.log_manager:
+            self.trader.log_manager.system.info(f'[浮亏保护] 检测到浮亏 {unrealized_pnl:.6f} USDT，执行保护')
         await self._execute_protection(current_price)
     
     async def _execute_protection(self, current_price: Decimal):

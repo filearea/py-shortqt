@@ -167,8 +167,8 @@ class LiveTradingBot:
             error_msg = f"历史 K 线初始化失败：{e}"
             self.log_manager.system.warning(error_msg)
             self.log_manager.system.debug(f"初始化失败详情：{str(e)}")
-            # 添加到错误日志列表（TUI 显示）
-            self.error_log.append({'time': datetime.now(), 'msg': error_msg})
+            # 添加到错误日志列表（TUI 显示）- v1.5.0 修复：Decimal 转字符串
+            self.error_log.append({'time': datetime.now(), 'msg': str(e)})
             if len(self.error_log) > 10:  # 最多保留 10 条
                 self.error_log.pop(0)
     
@@ -239,8 +239,8 @@ class LiveTradingBot:
         except Exception as e:
             error_msg = f"市场数据处理异常：{e}"
             self.log_manager.system.debug(error_msg)
-            # 添加到错误日志列表（TUI 显示）
-            self.error_log.append({'time': datetime.now(), 'msg': error_msg})
+            # 添加到错误日志列表（TUI 显示）- v1.5.0 修复：Decimal 转字符串
+            self.error_log.append({'time': datetime.now(), 'msg': str(e)})
             if len(self.error_log) > 10:
                 self.error_log.pop(0)
     
