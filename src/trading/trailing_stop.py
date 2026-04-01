@@ -79,6 +79,10 @@ class TrailingStopManager:
                 grid_price = entry_price - (grid_step * i)
             self.grid_prices.append(grid_price)
         
+        # v1.5.0 调试日志：打印网格价格
+        if self.trader.log_manager:
+            self.trader.log_manager.system.info(f'[移动止损] 网格价格：{[str(p) for p in self.grid_prices]}')
+        
         return self.grid_prices
     
     def get_trigger_price_for_level(self, level: int) -> Optional[Decimal]:
@@ -150,16 +154,36 @@ class TrailingStopManager:
         """
         if self.side == 'LONG':
             # 多单：价格从下往上
+            if self.trader.log_manager:
+                self.trader.log_manager.system.debug(f'[移动止损] 多单检查：当前价={price}, 网格={len(self.grid_prices)}')
             for i, grid_price in enumerate(self.grid_prices, 1):
+                if self.trader.log_manager:
+                    self.trader.log_manager.system.debug(f'[移动止损] 格{i}: {grid_price}, 当前价{price} {"<" if price < grid_price else ">="} {grid_price}')
                 if price < grid_price:
-                    return i - 1
-            return len(self.grid_prices)
+                    result = i - 1
+                    if self.trader.log_manager:
+                        self.trader.log_manager.system.info(f'[移动止损] 超过格数={result}')
+                    return result
+            result = len(self.grid_prices)
+            if self.trader.log_manager:
+                self.trader.log_manager.system.info(f'[移动止损] 超过所有格={result}')
+            return result
         else:  # SHORT
             # 空单：价格从上往下
+            if self.trader.log_manager:
+                self.trader.log_manager.system.debug(f'[移动止损] 空单检查：当前价={price}, 网格={len(self.grid_prices)}')
             for i, grid_price in enumerate(self.grid_prices, 1):
+                if self.trader.log_manager:
+                    self.trader.log_manager.system.debug(f'[移动止损] 格{i}: {grid_price}, 当前价{price} {">" if price > grid_price else "<="} {grid_price}')
                 if price > grid_price:
-                    return i - 1
-            return len(self.grid_prices)
+                    result = i - 1
+                    if self.trader.log_manager:
+                        self.trader.log_manager.system.info(f'[移动止损] 超过格数={result}')
+                    return result
+            result = len(self.grid_prices)
+            if self.trader.log_manager:
+                self.trader.log_manager.system.info(f'[移动止损] 超过所有格={result}')
+            return result
     
     async def _update_stop_order_for_level(self, current_level: int):
         """
