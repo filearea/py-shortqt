@@ -173,13 +173,25 @@ class LiveTradingBot:
                 self.error_log.pop(0)
     
     async def on_market_data(self, event_type: str, data: dict):
-        """市场数据回调 - v1.4.1 新增实时数据记录"""
+        """市场数据回调 - v1.5.0 新增移动止损和浮亏保护"""
         try:
             if event_type == 'ticker':
                 price = data['price']
                 self.trader.update_price(price)
                 # 记录价格
                 self.logger.record_price(price)
+                
+                # v1.5.0 新增：更新移动止损和浮亏保护
+                if self.trader.position and self.trader.trailing_stop_manager:
+                    await self.trader.trailing_stop_manager.update_trailing_stop(price)
+                
+                if self.trader.position and self.trader.loss_protection_manager:
+                    # 计算未实现盈亏
+                    if self.trader.position['side'] == 'LONG':
+                        pnl = (price - self.trader.position['entry_price']) * self.trader.position['size']
+                    else:
+                        pnl = (self.trader.position['entry_price'] - price) * self.trader.position['size']
+                    await self.trader.loss_protection_manager.check_and_protect(price, pnl)
             
             elif event_type == 'depth':
                 bids = data.get('bids', [])
