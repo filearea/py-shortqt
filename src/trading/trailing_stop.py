@@ -31,6 +31,7 @@ class TrailingStopManager:
         self.config = config
         self.enabled = config.get('enabled', False)
         self.grid_count = max(3, config.get('grid_count', 5))  # 至少 3 格
+        self.symbol = trader.symbol  # v1.5.0 修复：保存 symbol
         
         # 状态
         self.entry_price: Optional[Decimal] = None  # 开仓价
@@ -79,11 +80,7 @@ class TrailingStopManager:
                 grid_price = entry_price - (grid_step * i)
             self.grid_prices.append(grid_price)
         
-        # v1.5.0 调试日志：打印网格价格（强制输出）
-        grid_str = f'[移动止损] 网格价格：{[str(p) for p in self.grid_prices]}'
-        print(grid_str)  # 强制输出到控制台
-        if self.trader.log_manager:
-            self.trader.log_manager.system.info(grid_str)
+        # 网格价格计算完成（不打印详细日志）
         
         return self.grid_prices
     
@@ -114,23 +111,16 @@ class TrailingStopManager:
         Args:
             current_price: 当前最新价
         """
-        # v1.5.0 调试日志
-        if self.trader.log_manager:
-            self.trader.log_manager.system.debug(f"[移动止损] 启用={self.enabled}, 开仓价={self.entry_price}, 当前价={current_price}, 网格={len(self.grid_prices)}")
+        # v1.5.0 修复：移除高频日志
         
         if not self.enabled:
             return
         
         if not self.entry_price or not self.grid_prices:
-            if self.trader.log_manager:
-                self.trader.log_manager.system.debug("[移动止损] 跳过：entry_price 或 grid_prices 为空")
             return
         
         # 确定当前价格超过了第几格
         current_level = self._get_current_level(current_price)
-        
-        if self.trader.log_manager:
-            self.trader.log_manager.system.debug(f"[移动止损] 超过格数={current_level}")
         
         if current_level == 0:
             # 价格还未超过第 1 格，不操作
@@ -138,13 +128,9 @@ class TrailingStopManager:
         
         # 第 1 格仅观察，不触发
         if current_level == 1:
-            if self.trader.log_manager:
-                self.trader.log_manager.system.debug("[移动止损] 第 1 格仅观察，不触发")
             return
         
-        # 从第 2 格开始触发
-        if self.trader.log_manager:
-            self.trader.log_manager.system.info(f"[移动止损] 第{current_level}格触发，创建止损单")
+        # 从第 2 格开始触发（日志在 _create_stop_order 中记录）
         await self._update_stop_order_for_level(current_level)
     
     def _get_current_level(self, price: Decimal) -> int:
@@ -156,33 +142,16 @@ class TrailingStopManager:
         """
         if self.side == 'LONG':
             # 多单：价格从下往上
-            print(f'[移动止损] 多单检查：当前价={price}, 网格={len(self.grid_prices)}')
             for i, grid_price in enumerate(self.grid_prices, 1):
-                cmp = "<" if price < grid_price else ">="
-                print(f'[移动止损] 格{i}: {grid_price}, 当前价{price} {cmp} {grid_price}')
                 if price < grid_price:
-                    result = i - 1
-                    print(f'[移动止损] 超过格数={result}')
-                    return result
-            result = len(self.grid_prices)
-            print(f'[移动止损] 超过所有格={result}')
-            return result
+                    return i - 1
+            return len(self.grid_prices)
         else:  # SHORT
             # 空单：价格从上往下
-            if self.trader.log_manager:
-                self.trader.log_manager.system.debug(f'[移动止损] 空单检查：当前价={price}, 网格={len(self.grid_prices)}')
             for i, grid_price in enumerate(self.grid_prices, 1):
-                if self.trader.log_manager:
-                    self.trader.log_manager.system.debug(f'[移动止损] 格{i}: {grid_price}, 当前价{price} {">" if price > grid_price else "<="} {grid_price}')
                 if price > grid_price:
-                    result = i - 1
-                    if self.trader.log_manager:
-                        self.trader.log_manager.system.info(f'[移动止损] 超过格数={result}')
-                    return result
-            result = len(self.grid_prices)
-            if self.trader.log_manager:
-                self.trader.log_manager.system.info(f'[移动止损] 超过所有格={result}')
-            return result
+                    return i - 1
+            return len(self.grid_prices)
     
     async def _update_stop_order_for_level(self, current_level: int):
         """
@@ -221,14 +190,14 @@ class TrailingStopManager:
         min_level = min(self.active_orders.keys())
         order_id = self.active_orders[min_level]
         
-        # 撤销订单
+        # 撤销订单（cancel_algo_order 是同步函数）
         try:
-            await self.trader.api.cancel_algo_order(self.symbol, order_id)
+            self.trader.api.cancel_algo_order(self.trader.symbol, order_id)
             del self.active_orders[min_level]
         except Exception as e:
             # 撤销失败，记录日志但不中断
             if self.trader.log_manager:
-                self.trader.log_manager.system.debug(f"[移动止损] 滚动撤销失败：{e}")
+                self.trader.log_manager.system.info(f"[移动止损] 滚动撤销失败：{e}")
     
     async def _create_stop_order(self, level: int, trigger_price: Decimal):
         """
@@ -245,33 +214,39 @@ class TrailingStopManager:
             else:  # SHORT
                 side = 'BUY'
             
-            # 创建条件止损单
-            order = await self.trader.api.create_algo_order(
-                symbol=self.symbol,
+            # 创建条件止损单（place_algo_order 是同步函数，不需要 await）
+            order = self.trader.api.place_algo_order(
+                symbol=self.trader.symbol,
                 side=side,
                 type='STOP',
-                trigger_price=str(trigger_price),
+                triggerPrice=str(trigger_price),
                 quantity=str(self.position_size),
-                price_match='QUEUE',  # 同向价一，Maker 成交
-                position_side=self.side,
-                working_type='CONTRACT_PRICE'
+                priceMatch='QUEUE',  # 同向价一，Maker 成交
+                positionSide=self.side,
+                workingType='CONTRACT_PRICE'
             )
             
-            order_id = order['orderId']
+            # 币安 Algo Order 返回的是 algoId，不是 orderId
+            order_id = order.get('orderId') or order.get('algoId')
+            if not order_id:
+                if self.trader.log_manager:
+                    self.trader.log_manager.system.error(f"[移动止损] 创建条件单失败，返回数据：{order}")
+                return
+            
             self.active_orders[level] = order_id
             self.total_triggers += 1
             self.last_trigger_level = level
             
-            # 记录日志
+            # 记录关键日志
             if self.trader.log_manager:
                 self.trader.log_manager.system.info(
-                    f"[移动止损] 第{level}格触发，创建止损单 @ {trigger_price} (order_id={order_id})"
+                    f"[移动止损] 第{level}格触发，止损单 @ {trigger_price}"
                 )
         
         except Exception as e:
             # 创建失败，记录日志
             if self.trader.log_manager:
-                self.trader.log_manager.system.debug(f"[移动止损] 创建止损单失败：{e}")
+                self.trader.log_manager.system.info(f"[移动止损] 创建止损单失败：{e}")
     
     async def on_position_opened(self, entry_price: Decimal, take_profit_price: Decimal, 
                                   side: str, position_size: Decimal):
@@ -298,19 +273,15 @@ class TrailingStopManager:
         # 重置状态
         self.active_orders.clear()
         self.total_triggers = 0
-        self.last_trigger_level = 0
         
-        if self.trader.log_manager:
-            self.trader.log_manager.system.info(
-                f"[移动止损] 已初始化：{self.grid_count}格，间距={(self.take_profit_price - self.entry_price) / self.grid_count:.2f}"
-            )
+        self.last_trigger_level = 0
     
     async def on_position_closed(self):
         """平仓回调 - 清理移动止损"""
         # 撤销所有活动止损单
         for level, order_id in list(self.active_orders.items()):
             try:
-                await self.trader.api.cancel_algo_order(self.symbol, order_id)
+                self.trader.api.cancel_algo_order(self.trader.symbol, order_id)
             except:
                 pass
         

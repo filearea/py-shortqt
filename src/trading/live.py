@@ -24,14 +24,14 @@ class LiveTrader:
     def __init__(self, api_key: str, api_secret: str, symbol: str, 
                  leverage_limit: int = 100, actual_leverage: int = 25,
                  testnet: bool = False, logger: TradeLogger = None,
-                 config_manager=None):
+                 config_manager=None, log_manager=None):
         self.symbol = symbol
         self.leverage_limit = leverage_limit
         self.actual_leverage = actual_leverage
         self.testnet = testnet
         self.logger = logger
         self.config_manager = config_manager
-        self.log_manager: LogManager = None  # 由外部注入
+        self.log_manager: LogManager = log_manager  # 由 main_live.py 传入
         
         self.api = BinanceClient(api_key, api_secret, testnet)
         self.listener = None  # 行情 WebSocket 监听器（从外部传入）

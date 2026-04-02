@@ -27,19 +27,35 @@ class MetricsRecorder:
         if current_time - self._last_save < self.save_interval:
             return
         try:
-            metrics = indicators_manager.get_metrics()
-            score_data = indicators_manager.get_score()
-            snapshot = {'timestamp': datetime.now().isoformat(), 'symbol': self.symbol, 'metrics': {}, 'score': score_data.get('score', 0), 'signal': score_data.get('signal', 'unknown')}
-            if 'volatility' in metrics:
-                vol = metrics['volatility']
-                snapshot['metrics']['volatility'] = {'amplitude_1m': float(vol.get('amplitude_1m', 0)), 'amplitude_5m': float(vol.get('amplitude_5m', 0)), 'amplitude_1h': float(vol.get('amplitude_1h', 0)), 'change_rate': float(vol.get('change_rate', 0)), 'atr_14': float(vol.get('atr_14', 0))}
-            if 'liquidity' in metrics:
-                liq = metrics['liquidity']
-                snapshot['metrics']['liquidity'] = {'spread': float(liq.get('spread', 0)), 'spread_rate': float(liq.get('spread_rate', 0)), 'depth': float(liq.get('depth', 0)), 'imbalance': float(liq.get('imbalance', 0))}
+            # v1.5.0 修复：使用 get_snapshot() 替代 get_metrics()
+            snapshot_data = indicators_manager.get_snapshot()
+            
+            # snapshot_data 格式：{'volatility': {...}, 'liquidity': {...}, 'score': {...}}
+            # 提取 score 数据
+            score_data = snapshot_data.get('score', {})
+            
+            snapshot = {
+                'timestamp': datetime.now().isoformat(),
+                'symbol': self.symbol,
+                'metrics': {
+                    'volatility': snapshot_data.get('volatility', {}),
+                    'liquidity': snapshot_data.get('liquidity', {})
+                },
+                'score': score_data.get('quality_score', 0),
+                'signal': score_data.get('recommendation', 'unknown'),
+                'signal_emoji': score_data.get('signal_emoji', '')
+            }
+            
             if trader:
-                position = trader.get_position()
+                position = trader.position
                 if position:
-                    snapshot['position'] = {'side': position.get('side', 'NONE'), 'size': str(position.get('size', 0)), 'entry_price': str(position.get('entry_price', 0)), 'unrealized_pnl': str(position.get('unrealized_pnl', 0))}
+                    snapshot['position'] = {
+                        'side': position.get('side', 'NONE'),
+                        'size': str(position.get('size', 0)),
+                        'entry_price': str(position.get('entry_price', 0)),
+                        'unrealized_pnl': str(position.get('unrealized_pnl', 0))
+                    }
+            
             self._metrics_cache.append(snapshot)
             self._last_save = current_time
             self._records_saved += 1

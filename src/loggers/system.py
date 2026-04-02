@@ -37,9 +37,9 @@ class SystemLogger:
         )
         file_handler.setLevel(logging.DEBUG)
         
-        # 控制台 handler（只显示 WARNING 及以上）
+        # 控制台 handler（显示 INFO 及以上）
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.WARNING)
+        console_handler.setLevel(logging.INFO)
         
         # 格式
         file_format = logging.Formatter(
@@ -62,9 +62,8 @@ class SystemLogger:
         self.logger.setLevel(level)
     
     def debug(self, msg: str):
-        """DEBUG 级别日志"""
-        if self.debug_mode:
-            self.logger.debug(msg)
+        """DEBUG 级别日志 - 总是写入文件"""
+        self.logger.debug(msg)
     
     def info(self, msg: str):
         """INFO 级别日志"""

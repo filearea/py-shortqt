@@ -82,7 +82,8 @@ class MarketLogger:
         }
         
         # 写入日志
-        self.file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        # v1.5.0 修复：添加 default=str 处理 Decimal 类型
+        self.file.write(json.dumps(log_entry, ensure_ascii=False, default=str) + "\n")
         self.file.flush()
     
     def log_alert(self, alert_type: str, message: str, metrics: dict = None):
@@ -104,7 +105,8 @@ class MarketLogger:
             'metrics': metrics or {}
         }
         
-        self.file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        # v1.5.0 修复：添加 default=str 处理 Decimal 类型
+        self.file.write(json.dumps(log_entry, ensure_ascii=False, default=str) + "\n")
         self.file.flush()
     
     def close(self):

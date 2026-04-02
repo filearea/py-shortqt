@@ -10,7 +10,7 @@ import os
 import argparse
 from pathlib import Path
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 设置 UTF-8 和窗口尺寸
 if sys.platform == 'win32':
@@ -105,7 +105,8 @@ class LiveTradingBot:
             actual_leverage=actual_lev,  # 使用配置中的实际杠杆
             testnet=TESTNET,
             logger=self.logger,
-            config_manager=self.config_manager  # 传入配置管理器
+            config_manager=self.config_manager,  # 传入配置管理器
+            log_manager=self.log_manager  # v1.5.0 修复：直接传入 log_manager
         )
         
         # 初始化行情 WebSocket
@@ -134,9 +135,40 @@ class LiveTradingBot:
         self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
     
     def _init_historical_klines(self, limit: int = 499):
-        """v1.4.0: 获取历史 K 线（币安支持最多 1500 根）（带速率限制）"""
+        """v1.4.0: 获取历史 K 线（币安支持最多 1500 根）（带速率限制）
+        v1.5.0 修复：智能获取，避免重复
+        """
         try:
-            # 通过 REST API 获取最近 499 根（约 8 小时）（8 小时数据） 1 分钟 K 线（带速率限制）
+            # 检查本地是否有今天的数据
+            from src.data_collector import get_file_path, load_existing_data, KLINES_DIR
+            today = datetime.now().strftime("%Y-%m-%d")
+            file_path = get_file_path(KLINES_DIR, self.symbol, today)
+            
+            if file_path.exists():
+                # 从本地文件加载今天的 K 线（最近 500 根）
+                existing_data = load_existing_data(file_path)
+                if existing_data:
+                    # 取最近 500 根
+                    recent_klines = existing_data[-500:]
+                    count = 0
+                    for kline_data in recent_klines:
+                        kline = {
+                            'timestamp': kline_data['timestamp'],
+                            'open': Decimal(str(kline_data['open'])),
+                            'high': Decimal(str(kline_data['high'])),
+                            'low': Decimal(str(kline_data['low'])),
+                            'close': Decimal(str(kline_data['close'])),
+                            'volume': Decimal(str(kline_data['volume'])),
+                            'is_closed': True
+                        }
+                        self.indicators.update_kline(kline)
+                        count += 1
+                    
+                    self.log_manager.system.info(f'历史 K 线初始化完成（本地）：{count}根')
+                    return
+            
+            # 本地无数据，从 API 获取
+            self.log_manager.system.info(f'本地无数据，从 API 获取最近 {limit}根 K 线...')
             klines = self.trader.api.get_klines(self.symbol, '1m', limit=limit)
             
             if not klines:
@@ -160,7 +192,7 @@ class LiveTradingBot:
                 self.indicators.update_kline(kline)
                 count += 1
             
-            self.log_manager.system.info(f'历史 K 线初始化完成：{count}根')
+            self.log_manager.system.info(f'历史 K 线初始化完成（API）：{count}根')
         
         except Exception as e:
             # 如果 API 获取失败，记录日志（不中断程序）
@@ -174,12 +206,7 @@ class LiveTradingBot:
     
     async def on_market_data(self, event_type: str, data: dict):
         """市场数据回调 - v1.5.0 新增移动止损和浮亏保护"""
-        # v1.5.0 强制调试输出
-        if event_type == 'ticker' and self.trader.position:
-            price = data.get('price')
-            print(f'[DEBUG on_market_data] 收到 ticker, 价格={price}, 持仓={self.trader.position is not None}')
-            if self.trader.trailing_stop_manager:
-                print(f'[DEBUG] 移动止损启用={self.trader.trailing_stop_manager.enabled}, 开仓价={self.trader.trailing_stop_manager.entry_price}')
+        # 移除调试日志，避免 TUI 抖动
         try:
             if event_type == 'ticker':
                 price = data['price']
@@ -191,12 +218,16 @@ class LiveTradingBot:
                 if self.trader.position and self.trader.trailing_stop_manager:
                     await self.trader.trailing_stop_manager.update_trailing_stop(price)
                 
-                if self.trader.position and self.trader.loss_protection_manager:
+                # v1.5.0 修复：移除高频日志，避免 TUI 抖动
+                # 只在 check_and_protect 内部记录关键日志
+                if self.trader.position and self.trader.loss_protection_manager.enabled:
                     # 计算未实现盈亏
                     if self.trader.position['side'] == 'LONG':
                         pnl = (price - self.trader.position['entry_price']) * self.trader.position['size']
                     else:
                         pnl = (self.trader.position['entry_price'] - price) * self.trader.position['size']
+                    
+                    # 调用 check_and_protect（内部会记录必要日志）
                     await self.trader.loss_protection_manager.check_and_protect(price, pnl)
             
             elif event_type == 'depth':
@@ -218,16 +249,6 @@ class LiveTradingBot:
                 
                 # v1.4.1 新增：定时保存订单簿快照
                 self.recorder.save_orderbook(bids_decimal, asks_decimal)
-                
-                # 记录订单簿保存日志（首次保存时）
-                if hasattr(self, '_orderbook_saved_count'):
-                    self._orderbook_saved_count += 1
-                    if self._orderbook_saved_count == 1:
-                        self.log_manager.system.info(f"[Recorder] 订单簿已保存：bids={len(bids_decimal)}, asks={len(asks_decimal)}")
-                    elif self._orderbook_saved_count % 10 == 0:
-                        self.log_manager.system.info(f"[Recorder] 订单簿已保存 {self._orderbook_saved_count} 次")
-                else:
-                    self._orderbook_saved_count = 1
             
             elif event_type == 'kline':
                 # v1.4.0 新增：更新 K 线数据到指标管理器
@@ -305,9 +326,17 @@ class LiveTradingBot:
     
     async def run(self):
         """运行主循环"""
-        print("=" * 70)
-        print("py-shortqt v1.2.0 - 实盘交易模式")
-        print("=" * 70)
+        # v1.5.0 修复：在 TUI 启动前记录关键日志
+        msg = "=" * 70
+        print(msg)
+        self.log_manager.system.info(msg)
+        
+        msg = "py-shortqt v1.2.0 - 实盘交易模式"
+        print(msg)
+        self.log_manager.system.info(msg)
+        
+        print(msg)
+        self.log_manager.system.info(msg)
         
         # 1. 初始化实盘连接（带重试机制）
         max_retries = 3
@@ -321,8 +350,12 @@ class LiveTradingBot:
                     })
                     
                     # v1.4.0: 获取 499 根（约 8 小时）历史 K 线（8 小时数据，带速率限制）
+                    # v1.5.0 修复：在后台线程中执行，避免阻塞主线程
                     await asyncio.sleep(1)  # 等待 1 秒，避免与初始化请求冲突
-                    self._init_historical_klines(limit=300)
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: self._init_historical_klines(limit=300)
+                    )
                     
                     break
                 else:
@@ -394,11 +427,11 @@ class LiveTradingBot:
         print("=" * 70)
         
         try:
-            # 使用全屏模式
+            # v1.5.0 修复：降低刷新频率，避免抖动
             with Live(
                 self.ui.render(),
-                refresh_per_second=10,
-                screen=True,  # 全屏模式
+                refresh_per_second=2,  # 降低到 2Hz
+                screen=True,
                 redirect_stdout=True,
                 redirect_stderr=True,
                 transient=False

@@ -187,25 +187,59 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
     total_klines = 0
     last_request_time = 0
     
+    # 一天应该有 1440 根 1 分钟 K 线
+    EXPECTED_KLINES_PER_DAY = 1440
+    
     while current_date <= now:
         date_str = current_date.strftime("%Y-%m-%d")
         file_path = get_file_path(KLINES_DIR, symbol, date_str)
         
-        # 检查是否已存在
+        # 检查是否已存在且完整
         if file_path.exists():
-            existing_count = sum(1 for _ in open(file_path, 'r', encoding='utf-8'))
-            print(f"[OK] {date_str}: 已存在 ({existing_count}根)")
-            current_date += timedelta(days=1)
-            continue
+            existing_data = load_existing_data(file_path)
+            existing_count = len(existing_data)
+            
+            # 判断是否需要补全
+            # 如果是今天，数据可能不完整，需要补全
+            is_today = (current_date.date() == now.date())
+            is_complete = existing_count >= EXPECTED_KLINES_PER_DAY
+            
+            if not is_today and is_complete:
+                print(f"[OK] {date_str}: 已完整 ({existing_count}根)")
+                current_date += timedelta(days=1)
+                continue
+            elif not is_today and existing_count > 0:
+                print(f"[WARN] {date_str}: 数据不完整 ({existing_count}/{EXPECTED_KLINES_PER_DAY}根)，需要补全")
+            elif is_today:
+                print(f"[INFO] {date_str}: 今天的数据 ({existing_count}根)，检查是否需要补全")
+            else:
+                print(f"[WARN] {date_str}: 无数据")
         
         # 计算当天起始时间
         start_time = int(current_date.timestamp() * 1000)
         end_time = int((current_date + timedelta(days=1)).timestamp() * 1000)
         
-        # 获取当天所有 K 线
-        day_klines = []
-        current_start = start_time
+        # 如果是今天，end_time 设为当前时间
+        if is_today:
+            end_time = int(now.timestamp() * 1000)
         
+        # 检查已有数据，获取最后一条 K 线的时间
+        last_timestamp = None
+        if file_path.exists() and existing_data:
+            last_timestamp = existing_data[-1].get('timestamp')
+            print(f"[INFO] {date_str}: 最后一条 K 线时间：{datetime.fromtimestamp(last_timestamp/1000)}")
+        
+        # 获取缺失的 K 线
+        day_klines = []
+        current_start = last_timestamp + 60000 if last_timestamp else start_time
+        
+        # 如果已经有完整数据，跳过
+        if current_start >= end_time:
+            print(f"[OK] {date_str}: 数据已完整")
+            current_date += timedelta(days=1)
+            continue
+        
+        # 循环获取缺失的 K 线
         while current_start < end_time:
             # API 限流
             last_request_time = rate_limit_sleep(last_request_time, WEIGHT_PER_KLINES)
@@ -228,11 +262,13 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
         
         # 保存数据
         if day_klines:
-            save_data(file_path, day_klines, append=False)
+            # 如果文件已存在，追加模式；否则写入模式
+            append_mode = file_path.exists()
+            save_data(file_path, day_klines, append=append_mode)
             total_klines += len(day_klines)
-            print(f"[OK] {date_str}: 获取 {len(day_klines)}根")
+            print(f"[OK] {date_str}: 补全 {len(day_klines)}根 (总计：{existing_count + len(day_klines) if file_path.exists() else len(day_klines)}根)")
         else:
-            print(f"[WARN] {date_str}: 无数据")
+            print(f"[INFO] {date_str}: 无需补全")
         
         current_date += timedelta(days=1)
     

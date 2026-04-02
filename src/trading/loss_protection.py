@@ -29,7 +29,9 @@ class LossProtectionManager:
         self.symbol_info = symbol_info
         self.config = config
         self.enabled = config.get('enabled', False)
-        self.trigger_minutes = max(1, min(60, config.get('trigger_minutes', 5)))  # 1-60 分钟
+        # v1.5.0 修复：支持小数分钟（例如 0.5 分钟 = 30 秒）
+        self.trigger_minutes = max(0.5, min(60, float(config.get('trigger_minutes', 5))))  # 0.5-60 分钟
+        self.symbol = trader.symbol  # v1.5.0 修复：保存 symbol
         
         # 状态
         self.entry_time: Optional[datetime] = None  # 开仓时间
@@ -58,10 +60,10 @@ class LossProtectionManager:
             sl_price: 止损价
             tp_order_id: 止盈单 ID
         """
-        # v1.5.0 调试日志
-        if self.trader.log_manager:
-            elapsed_min = (datetime.now() - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0
-            self.trader.log_manager.system.debug(f'[浮亏保护] 启用={self.enabled}, 已过={elapsed_min:.2f}分钟，需要={self.trigger_minutes}分钟，盈亏={unrealized_pnl:.6f}')
+        # v1.5.0 修复：重新读取配置（支持 TUI 修改后生效）
+        if self.trader.config_manager:
+            config = self.trader.config_manager.get_config().get('loss_protection', {})
+            self.trigger_minutes = max(0.5, min(60, float(config.get('trigger_minutes', 5))))
         
         if not self.enabled:
             return
@@ -86,6 +88,8 @@ class LossProtectionManager:
             current_price: 当前价格
             unrealized_pnl: 未实现盈亏（USDT）
         """
+        # v1.5.0 修复：移除高频日志，只记录关键事件
+        
         if not self.enabled:
             return
         
@@ -109,39 +113,34 @@ class LossProtectionManager:
         # 检查是否浮亏
         if unrealized_pnl >= 0:
             # 浮盈，不触发保护
-            if self.trader.log_manager:
-                self.trader.log_manager.system.debug('[浮亏保护] 浮盈状态，不触发')
             return
         
         # 浮亏，执行保护
-        print(f'[浮亏保护 DEBUG] 检测到浮亏 {unrealized_pnl:.6f} USDT，准备执行保护！')
-        if self.trader.log_manager:
-            self.trader.log_manager.system.info(f'[浮亏保护] 检测到浮亏 {unrealized_pnl:.6f} USDT，执行保护')
         await self._execute_protection(current_price)
     
     async def _execute_protection(self, current_price: Decimal):
         """
-        执行保护动作：将止盈单下移到开仓价
+        执行保护动作：将限价止盈单的价格修改为开仓价
         
         Args:
             current_price: 当前价格
         """
-        print(f'[浮亏保护 DEBUG] _execute_protection 被调用！开仓价={self.entry_price}, 当前价={current_price}, 止盈单 ID={self.tp_order_id}')
+        # 检查是否已执行保护
+        if self.protected:
+            return
+        
         try:
             # 计算保本止盈价（开仓价）
             protection_price = self.entry_price
-            print(f'[浮亏保护 DEBUG] 准备撤销原止盈单 ID={self.tp_order_id}')
             
             # 撤销原止盈单
             if self.tp_order_id:
                 try:
-                    await self.trader.api.cancel_algo_order(self.symbol, self.tp_order_id)
-                except Exception as e:
-                    # 撤销失败，可能是已成交或已撤销
-                    if self.trader.log_manager:
-                        self.trader.log_manager.system.debug(f"[浮亏保护] 撤销原止盈单失败：{e}")
+                    self.trader.api.cancel_order(self.trader.symbol, self.tp_order_id)
+                except:
+                    pass  # 撤销失败可能是已成交
             
-            # 创建新的止盈单 @ 开仓价
+            # 创建新的限价止盈单 @ 开仓价
             if self.side == 'LONG':
                 side = 'SELL'
             else:  # SHORT
@@ -154,16 +153,16 @@ class LossProtectionManager:
             
             position_size = position['size']
             
-            # 创建止盈单
-            order = await self.trader.api.create_algo_order(
-                symbol=self.symbol,
+            # 创建限价单（不是条件单，place_order 是同步函数）
+            # 注意：双向持仓模式不需要传 reduceOnly
+            order = self.trader.api.place_order(
+                symbol=self.trader.symbol,
                 side=side,
-                type='TAKE_PROFIT',
-                trigger_price=str(protection_price),
+                type='LIMIT',
+                price=str(protection_price),  # 开仓价
                 quantity=str(position_size),
-                price_match='OPPONENT',  # 对手价，确保快速成交
-                position_side=self.side,
-                working_type='CONTRACT_PRICE'
+                positionSide=self.side
+                # 双向持仓模式不传 reduceOnly
             )
             
             # 更新止盈单 ID
@@ -171,16 +170,16 @@ class LossProtectionManager:
             self.protected = True
             self.protection_time = datetime.now()
             
-            # 记录日志
+            # 记录关键日志
             if self.trader.log_manager:
                 self.trader.log_manager.system.info(
-                    f"[浮亏保护] 已触发！止盈单下移至开仓价 {protection_price} (order_id={self.tp_order_id})"
+                    f"[浮亏保护] 已触发！止盈单下移至开仓价 {protection_price}"
                 )
         
         except Exception as e:
-            # 执行失败，记录日志
-            if self.trader.log_manager:
-                self.trader.log_manager.system.debug(f"[浮亏保护] 执行保护失败：{e}")
+            # 执行失败，不记录日志（避免刷屏）
+            # 失败可能是订单被拒绝、网络问题等，下次检查时会重试
+            pass
     
     def on_position_closed(self):
         """平仓回调 - 清理状态"""

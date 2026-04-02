@@ -70,8 +70,8 @@ class SettingsUI:
                      'visible_cond': lambda c: c.get('trailing_stop', {}).get('enabled', False)},
                     
                     {'key': 'loss_protection.enabled', 'label': '启用浮亏保护', 'type': 'bool'},
-                    {'key': 'loss_protection.trigger_minutes', 'label': '浮亏保护触发时间', 'type': 'int',
-                     'min': 1, 'max': 60, 'step': 1, 'unit': '分钟',
+                    {'key': 'loss_protection.trigger_minutes', 'label': '浮亏保护触发时间', 'type': 'float',
+                     'min': 0.5, 'max': 60, 'step': 0.5, 'unit': '分钟',
                      'visible_cond': lambda c: c.get('loss_protection', {}).get('enabled', False)},
                 ]
             },
@@ -264,7 +264,7 @@ class SettingsUI:
                 else:
                     lines.append(f"  {field['label']}: {label}")
             
-            elif field['type'] == 'int':
+            elif field['type'] in ['int', 'float']:
                 # 检查可见性条件
                 if 'visible_cond' in field:
                     if not field['visible_cond'](config):
@@ -542,11 +542,14 @@ class SettingsUI:
                     self.editing = False
                     self.input_buffer = ""
             
-            elif field['type'] == 'int':
+            elif field['type'] in ['int', 'float']:
                 if key == 'enter':
                     if self.input_buffer:
                         try:
-                            new_value = int(self.input_buffer)
+                            if field['type'] == 'int':
+                                new_value = int(self.input_buffer)
+                            else:  # float
+                                new_value = float(self.input_buffer)
                             new_value = max(field.get('min', 0), min(field.get('max', 999), new_value))
                             self._set_nested_value(config, field['key'], new_value)
                             self.config_manager.config = config
@@ -555,7 +558,7 @@ class SettingsUI:
                             pass
                     self.editing = False
                     self.input_buffer = ""
-                elif key.isdigit():
+                elif key.isdigit() or key == '.':
                     self.input_buffer += key
                 elif key == 'backspace':
                     if self.input_buffer:

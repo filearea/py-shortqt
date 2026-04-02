@@ -35,7 +35,16 @@ class ConfigManager:
             "api": 100,
             "actual": 25
         },
-        "order_timeout_seconds": 2.00
+        "order_timeout_seconds": 2.00,
+        # v1.5.0 新增：移动止损和浮亏保护默认配置
+        "trailing_stop": {
+            "enabled": True,
+            "grid_count": 10
+        },
+        "loss_protection": {
+            "enabled": True,
+            "trigger_minutes": 5
+        }
     }
     
     def __init__(self, config_path: str = "config/runtime.json"):

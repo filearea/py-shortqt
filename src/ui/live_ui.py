@@ -30,12 +30,15 @@ class LiveTradingUI:
     
     def render(self) -> Layout:
         """渲染界面 - v1.4.0 验收布局"""
+        # v1.5.0 修复：固定 layout 结构，避免抖动
         layout = Layout()
+        
+        # 固定各部分高度，避免重新计算
         layout.split_column(
             Layout(name="header", size=3),
-            Layout(name="main"),  # 自适应高度
-            Layout(name="footer", size=12),  # 固定日志 12 行
-            Layout(name="indicators", size=5)  # 指标区 5 行（2 行边框 + 3 行数据）
+            Layout(name="main"),  # 剩余空间
+            Layout(name="footer", size=12),
+            Layout(name="indicators", size=5)
         )
         
         # 头部
