@@ -76,3 +76,6 @@ htmlcov/
 同步到桌面.bat
 *.bat
 !启动.bat
+
+# Agent 内部文档（不公开）
+docs/agents_docs/
