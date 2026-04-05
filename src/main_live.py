@@ -79,9 +79,9 @@ class LiveTradingBot:
         # 初始化市场日志记录器（v1.4.0 新增）
         self.market_logger = MarketLogger(project_root / "logs")
         
-        # 初始化实时数据记录器（v1.4.1 新增）
-        self.recorder = RealtimeRecorder(symbol=self.symbol, orderbook_interval=60)  # 1 分钟
-        self.log_manager.system.info(f"实时数据记录器已初始化（K 线实时保存，订单簿间隔：{self.recorder.orderbook_interval}秒）")
+        # 初始化实时数据记录器（v1.5.3 改造：K 线改为定时 API 拉取）
+        self.recorder = RealtimeRecorder(symbol=self.symbol, orderbook_interval=60)
+        self.log_manager.system.info(f"实时数据记录器已初始化（K 线定时 API 拉取，订单簿间隔：{self.recorder.orderbook_interval}秒）")
         
         # 初始化指标数据记录器（v1.4.2 新增）
         self.metrics_recorder = MetricsRecorder(symbol=self.symbol, save_interval=30)  # 30 秒
@@ -115,6 +115,11 @@ class LiveTradingBot:
         
         # 将 listener 赋值给 trader，用于 UI 显示连接状态
         self.trader.listener = self.listener
+        
+        # v1.5.3: 注入 api_client 并启动 K 线定时拉取
+        self.recorder.api_client = self.trader.api
+        self.recorder.start_kline_timer()
+        self.log_manager.system.info("K 线定时拉取已启动（每分钟从 API 获取完整数据）")
         
         # 传递 error_log 给 trader（TUI 显示）
         self.trader.error_log = self.error_log
