@@ -85,6 +85,21 @@ class RealtimeRecorder:
             self.today = date_str
             self.klines_file = KLINES_DIR / self.symbol / f"{self.today}.jsonl"
         
+        # 检查文件最后一条的时间戳（双重防重）
+        if self.klines_file.exists():
+            try:
+                with open(self.klines_file, 'r', encoding='utf-8') as f:
+                    last_line = None
+                    for line in f:
+                        if line.strip():
+                            last_line = line
+                    if last_line:
+                        last_data = json.loads(last_line)
+                        if last_data.get('timestamp', 0) >= ts:
+                            return  # 已存在，跳过
+            except Exception:
+                pass  # 读取失败，继续写入
+        
         kline_data = {
             'timestamp': k[0],
             'open': float(k[1]),

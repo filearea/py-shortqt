@@ -152,12 +152,27 @@ class LiveTradingBot:
                 self.log_manager.system.warning("历史 K 线获取为空，跳过初始化")
                 return
             
+            # 获取文件最后一条的时间戳（防重复）
+            today = datetime.now().strftime("%Y-%m-%d")
+            kline_file = KLINES_DIR / self.symbol / f"{today}.jsonl"
+            last_ts = 0
+            if kline_file.exists():
+                with open(kline_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip():
+                            data = json.loads(line)
+                            last_ts = data.get('timestamp', 0)
+            
             count = 0
             for k in klines:
                 if len(k) < 6:
                     continue
                 
                 ts = k[0]
+                # 跳过已存在的时间戳
+                if ts <= last_ts:
+                    continue
+                
                 date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
                 
                 # 写入文件（v1.5.3 完整格式）
