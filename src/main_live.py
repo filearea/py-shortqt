@@ -173,16 +173,15 @@ class LiveTradingBot:
             
             count = 0
             kline_file.parent.mkdir(parents=True, exist_ok=True)
+            # 跳过最后一条（未关闭，等定时器拉取关闭后的数据）
+            closed_klines = today_klines[:-1] if today_klines else []
             with open(kline_file, 'a', encoding='utf-8') as f:
-                for k in today_klines:
+                for k in closed_klines:
                     if len(k) < 11:
                         continue
                     ts = k[0]
-                    # 跳过已存在的 + 跳过最后一条（可能未关闭）
                     if ts <= last_ts:
                         continue
-                    if k == klines[-1]:
-                        continue  # 最后一条可能未关闭，跳过
                     
                     kline_data = {
                         'timestamp': k[0],
@@ -199,9 +198,9 @@ class LiveTradingBot:
                     f.write(json.dumps(kline_data, ensure_ascii=False) + '\n')
                     count += 1
             
-            # 加载到指标管理器（用于 TUI 显示）
-            for k in today_klines:
-                if len(k) < 6 or k == klines[-1]:
+            # 加载到指标管理器（用于 TUI 显示，同样跳过最后一条未关闭的）
+            for k in closed_klines:
+                if len(k) < 6:
                     continue
                 kline = {
                     'timestamp': k[0],
@@ -215,10 +214,10 @@ class LiveTradingBot:
                 self.indicators.update_kline(kline)
             
             # 更新 recorder 的防重时间戳
-            if today_klines and len(today_klines) > 1:
-                self.recorder._last_kline_ts = today_klines[-2][0]
+            if closed_klines:
+                self.recorder._last_kline_ts = closed_klines[-1][0]
             
-            self.log_manager.system.info(f'历史 K 线初始化完成：写入 {count} 根，指标加载 {len(today_klines)-1} 根')
+            self.log_manager.system.info(f'历史 K 线初始化完成：写入 {count} 根，指标加载 {len(closed_klines)} 根（跳过最后一条未关闭）')
         
         except Exception as e:
             error_msg = f"历史 K 线初始化失败：{e}"
