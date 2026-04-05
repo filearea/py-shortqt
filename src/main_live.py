@@ -518,7 +518,7 @@ class LiveTradingBot:
                                         
                                         # 更新 UI 的杠杆显示
                                         tp = self.config_manager.get_take_profit_price(Decimal('2150'))
-                                        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager)
+                                        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager, self.indicators)
                                         
                                         # 更新 trader 的杠杆设置
                                         self.trader.leverage_limit = api_lev
