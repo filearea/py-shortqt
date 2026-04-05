@@ -13,9 +13,16 @@ def main():
     project_root = Path(__file__).parent
     config_file = project_root / "config" / "accounts.json"
     
-    # 读取版本号
+    # 读取版本号（兼容 UTF-8/UTF-16 编码）
     version_file = project_root / "VERSION"
-    version = version_file.read_text().strip() if version_file.exists() else "unknown"
+    if version_file.exists():
+        try:
+            version = version_file.read_text(encoding='utf-8').strip()
+        except UnicodeDecodeError:
+            # 如果是 UTF-16 BOM，尝试用 utf-16 读取
+            version = version_file.read_text(encoding='utf-16').strip()
+    else:
+        version = "unknown"
     
     print()
     print("=" * 40)
