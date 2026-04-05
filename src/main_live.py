@@ -141,20 +141,28 @@ class LiveTradingBot:
         self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
     
     def _init_historical_klines(self, limit: int = 499):
-        """v1.5.3 改造：直接从 API 获取历史 K 线（完整 11 字段），同时写入文件"""
+        """v1.5.4 改造：拉取当天全部 K 线，对比后写入"""
         try:
             from src.data_collector import KLINES_DIR
             
-            self.log_manager.system.info(f'从 API 获取历史 K 线（{limit}根）...')
-            klines = self.trader.api.get_klines(self.symbol, '1m', limit=limit)
+            # 计算今天 00:00 的毫秒时间戳
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            start_ms = int(today.timestamp() * 1000)
             
+            self.log_manager.system.info(f'从 API 获取今日全部 K 线（{today.strftime("%Y-%m-%d")} 00:00 起）...')
+            
+            # 币安最多返回 1500 根，当天最多 1440 根，一次拉完
+            klines = self.trader.api.get_klines(self.symbol, '1m', limit=1500)
             if not klines:
                 self.log_manager.system.warning("历史 K 线获取为空，跳过初始化")
                 return
             
-            # 获取文件最后一条的时间戳（防重复）
-            today = datetime.now().strftime("%Y-%m-%d")
-            kline_file = KLINES_DIR / self.symbol / f"{today}.jsonl"
+            # 只保留今天的数据
+            today_klines = [k for k in klines if k[0] >= start_ms]
+            
+            # 获取文件已有的最后一条时间戳（防重复）
+            date_str = today.strftime("%Y-%m-%d")
+            kline_file = KLINES_DIR / self.symbol / f"{date_str}.jsonl"
             last_ts = 0
             if kline_file.exists():
                 with open(kline_file, 'r', encoding='utf-8') as f:
@@ -164,38 +172,39 @@ class LiveTradingBot:
                             last_ts = data.get('timestamp', 0)
             
             count = 0
-            for k in klines:
-                if len(k) < 6:
-                    continue
-                
-                ts = k[0]
-                # 跳过已存在的时间戳
-                if ts <= last_ts:
-                    continue
-                
-                date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-                
-                # 写入文件（v1.5.3 完整格式）
-                kline_file = KLINES_DIR / self.symbol / f"{date_str}.jsonl"
-                kline_file.parent.mkdir(parents=True, exist_ok=True)
-                kline_data = {
-                    'timestamp': k[0],
-                    'open': float(k[1]),
-                    'high': float(k[2]),
-                    'low': float(k[3]),
-                    'close': float(k[4]),
-                    'volume': float(k[5]),
-                    'turnover': float(k[7]),
-                    'trades': int(k[8]),
-                    'buy_volume': float(k[9]),
-                    'buy_turnover': float(k[10])
-                }
-                with open(kline_file, 'a', encoding='utf-8') as f:
+            kline_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(kline_file, 'a', encoding='utf-8') as f:
+                for k in today_klines:
+                    if len(k) < 11:
+                        continue
+                    ts = k[0]
+                    # 跳过已存在的 + 跳过最后一条（可能未关闭）
+                    if ts <= last_ts:
+                        continue
+                    if k == klines[-1]:
+                        continue  # 最后一条可能未关闭，跳过
+                    
+                    kline_data = {
+                        'timestamp': k[0],
+                        'open': float(k[1]),
+                        'high': float(k[2]),
+                        'low': float(k[3]),
+                        'close': float(k[4]),
+                        'volume': float(k[5]),
+                        'turnover': float(k[7]),
+                        'trades': int(k[8]),
+                        'buy_volume': float(k[9]),
+                        'buy_turnover': float(k[10])
+                    }
                     f.write(json.dumps(kline_data, ensure_ascii=False) + '\n')
-                
-                # 加载到指标管理器（用于 TUI 显示）
+                    count += 1
+            
+            # 加载到指标管理器（用于 TUI 显示）
+            for k in today_klines:
+                if len(k) < 6 or k == klines[-1]:
+                    continue
                 kline = {
-                    'timestamp': ts,
+                    'timestamp': k[0],
                     'open': Decimal(k[1]),
                     'high': Decimal(k[2]),
                     'low': Decimal(k[3]),
@@ -204,9 +213,12 @@ class LiveTradingBot:
                     'is_closed': True
                 }
                 self.indicators.update_kline(kline)
-                count += 1
             
-            self.log_manager.system.info(f'历史 K 线初始化完成：{count}根（API 完整数据）')
+            # 更新 recorder 的防重时间戳
+            if today_klines and len(today_klines) > 1:
+                self.recorder._last_kline_ts = today_klines[-2][0]
+            
+            self.log_manager.system.info(f'历史 K 线初始化完成：写入 {count} 根，指标加载 {len(today_klines)-1} 根')
         
         except Exception as e:
             error_msg = f"历史 K 线初始化失败：{e}"
