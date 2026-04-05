@@ -140,40 +140,9 @@ class LiveTradingBot:
         self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
     
     def _init_historical_klines(self, limit: int = 499):
-        """v1.4.0: 获取历史 K 线（币安支持最多 1500 根）（带速率限制）
-        v1.5.0 修复：智能获取，避免重复
-        """
+        """v1.5.3 改造：直接从 API 获取历史 K 线（完整 11 字段），同时写入文件"""
         try:
-            # 检查本地是否有今天的数据
-            from src.data_collector import get_file_path, load_existing_data, KLINES_DIR
-            today = datetime.now().strftime("%Y-%m-%d")
-            file_path = get_file_path(KLINES_DIR, self.symbol, today)
-            
-            if file_path.exists():
-                # 从本地文件加载今天的 K 线（最近 500 根）
-                existing_data = load_existing_data(file_path)
-                if existing_data:
-                    # 取最近 500 根
-                    recent_klines = existing_data[-500:]
-                    count = 0
-                    for kline_data in recent_klines:
-                        kline = {
-                            'timestamp': kline_data['timestamp'],
-                            'open': Decimal(str(kline_data['open'])),
-                            'high': Decimal(str(kline_data['high'])),
-                            'low': Decimal(str(kline_data['low'])),
-                            'close': Decimal(str(kline_data['close'])),
-                            'volume': Decimal(str(kline_data['volume'])),
-                            'is_closed': True
-                        }
-                        self.indicators.update_kline(kline)
-                        count += 1
-                    
-                    self.log_manager.system.info(f'历史 K 线初始化完成（本地）：{count}根')
-                    return
-            
-            # 本地无数据，从 API 获取
-            self.log_manager.system.info(f'本地无数据，从 API 获取最近 {limit}根 K 线...')
+            self.log_manager.system.info(f'从 API 获取历史 K 线（{limit}根）...')
             klines = self.trader.api.get_klines(self.symbol, '1m', limit=limit)
             
             if not klines:
@@ -181,33 +150,50 @@ class LiveTradingBot:
                 return
             
             count = 0
-            for kline_data in klines:
-                if len(kline_data) < 6 or any(x is None for x in kline_data[:6]):
+            for k in klines:
+                if len(k) < 6:
                     continue
                 
+                ts = k[0]
+                date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+                
+                # 写入文件（v1.5.3 完整格式）
+                kline_file = KLINES_DIR / self.symbol / f"{date_str}.jsonl"
+                kline_file.parent.mkdir(parents=True, exist_ok=True)
+                kline_data = {
+                    'timestamp': k[0],
+                    'open': float(k[1]),
+                    'high': float(k[2]),
+                    'low': float(k[3]),
+                    'close': float(k[4]),
+                    'volume': float(k[5]),
+                    'turnover': float(k[7]),
+                    'trades': int(k[8]),
+                    'buy_volume': float(k[9]),
+                    'buy_turnover': float(k[10])
+                }
+                with open(kline_file, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(kline_data, ensure_ascii=False) + '\n')
+                
+                # 加载到指标管理器（用于 TUI 显示）
                 kline = {
-                    'timestamp': kline_data[0],
-                    'open': Decimal(str(kline_data[1])),
-                    'high': Decimal(str(kline_data[2])),
-                    'low': Decimal(str(kline_data[3])),
-                    'close': Decimal(str(kline_data[4])),
-                    'volume': Decimal(str(kline_data[5])),
+                    'timestamp': ts,
+                    'open': Decimal(k[1]),
+                    'high': Decimal(k[2]),
+                    'low': Decimal(k[3]),
+                    'close': Decimal(k[4]),
+                    'volume': Decimal(k[5]),
                     'is_closed': True
                 }
                 self.indicators.update_kline(kline)
                 count += 1
             
-            self.log_manager.system.info(f'历史 K 线初始化完成（API）：{count}根')
+            self.log_manager.system.info(f'历史 K 线初始化完成：{count}根（API 完整数据）')
         
         except Exception as e:
-            # 如果 API 获取失败，记录日志（不中断程序）
             error_msg = f"历史 K 线初始化失败：{e}"
             self.log_manager.system.warning(error_msg)
-            self.log_manager.system.debug(f"初始化失败详情：{str(e)}")
-            # 添加到错误日志列表（TUI 显示）- v1.5.0 修复：Decimal 转字符串
             self.error_log.append({'time': datetime.now(), 'msg': str(e)})
-            if len(self.error_log) > 10:  # 最多保留 10 条
-                self.error_log.pop(0)
     
     async def on_market_data(self, event_type: str, data: dict):
         """市场数据回调 - v1.5.0 新增移动止损和浮亏保护"""
