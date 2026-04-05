@@ -142,6 +142,8 @@ class LiveTradingBot:
     def _init_historical_klines(self, limit: int = 499):
         """v1.5.3 改造：直接从 API 获取历史 K 线（完整 11 字段），同时写入文件"""
         try:
+            from src.data_collector import KLINES_DIR
+            
             self.log_manager.system.info(f'从 API 获取历史 K 线（{limit}根）...')
             klines = self.trader.api.get_klines(self.symbol, '1m', limit=limit)
             
