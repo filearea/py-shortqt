@@ -28,6 +28,19 @@ class RealtimeRecorder:
         self._orderbooks_saved = 0
     
     def save_kline(self, kline: Dict[str, Any]):
+        """保存 K 线数据（v1.5.1 修复：未关闭 K 线更新最后一条，避免重复）"""
+        is_closed = kline.get('is_closed', False)
+        timestamp = kline.get('timestamp')
+        
+        # 如果缓存中有未关闭的 K 线且时间戳相同，更新最后一条而不是追加
+        if self._klines_cache and not is_closed:
+            last_kline = self._klines_cache[-1]
+            if last_kline.get('timestamp') == timestamp:
+                # 更新最后一条 K 线
+                self._klines_cache[-1] = kline
+                return
+        
+        # 新 K 线或已关闭的 K 线，追加到缓存
         self._klines_cache.append(kline)
         if len(self._klines_cache) >= 100:
             self._flush_klines()
