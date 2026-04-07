@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-移动止损管理器 - v1.5.0
+移动止损管理器 - v1.5.3
 
 功能：
 - 在开仓价与目标止盈价之间均分 N 格
@@ -9,8 +9,8 @@
 - 支持滚动策略（格数 > 8 时自动滚动）
 """
 
-from decimal import Decimal
-from typing import Optional, Dict, List
+from decimal import Decimal, ROUND_DOWN
+from typing import Optional, Dict, List, Set
 from datetime import datetime
 
 
@@ -45,6 +45,9 @@ class TrailingStopManager:
         # 活动订单 {grid_level: order_id}
         self.active_orders: Dict[int, int] = {}
         
+        # 失败记录（防止同一 level 反复重试）
+        self._failed_levels: Set[int] = set()
+        
         # 统计
         self.total_triggers = 0  # 总触发次数
         self.last_trigger_level = 0  # 最后触发格数
@@ -71,13 +74,18 @@ class TrailingStopManager:
         # 均分 N 格
         grid_step = total_range / self.grid_count
         
-        # 生成网格价格
+        # 价格精度：ETHUSDC 为 2 位小数（tick_size=0.01）
+        price_quant = Decimal('0.01')
+        
+        # 生成网格价格（截断精度）
         self.grid_prices = []
         for i in range(1, self.grid_count + 1):
             if side == 'LONG':
                 grid_price = entry_price + (grid_step * i)
             else:  # SHORT
                 grid_price = entry_price - (grid_step * i)
+            # v1.5.3 修复：截断价格精度，避免 [-1111] Precision error
+            grid_price = grid_price.quantize(price_quant, rounding=ROUND_DOWN)
             self.grid_prices.append(grid_price)
         
         # 网格价格计算完成（不打印详细日志）
@@ -172,6 +180,10 @@ class TrailingStopManager:
             # 已有止损单，不需要重复创建
             return
         
+        # v1.5.3 修复：跳过之前失败的 level，防止反复重试刷日志
+        if target_level in self._failed_levels:
+            return
+        
         # 需要创建新的止损单
         # 检查是否达到币安限制（最多 8 个移动止损单）
         if len(self.active_orders) >= 8:
@@ -214,13 +226,17 @@ class TrailingStopManager:
             else:  # SHORT
                 side = 'BUY'
             
+            # v1.5.3 修复：价格和数量精度截断
+            price_str = str(trigger_price.quantize(Decimal('0.01'), rounding=ROUND_DOWN))
+            qty_str = str(self.position_size.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
+            
             # 创建条件止损单（place_algo_order 是同步函数，不需要 await）
             order = self.trader.api.place_algo_order(
                 symbol=self.trader.symbol,
                 side=side,
                 type='STOP',
-                triggerPrice=str(trigger_price),
-                quantity=str(self.position_size),
+                triggerPrice=price_str,
+                quantity=qty_str,
                 priceMatch='QUEUE',  # 同向价一，Maker 成交
                 positionSide=self.side,
                 workingType='CONTRACT_PRICE'
@@ -244,9 +260,10 @@ class TrailingStopManager:
                 )
         
         except Exception as e:
-            # 创建失败，记录日志
+            # v1.5.3 修复：记录失败 level，防止反复重试
+            self._failed_levels.add(level)
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(f"[移动止损] 创建止损单失败：{e}")
+                self.trader.log_manager.system.info(f"[移动止损] 创建止损单失败（level={level}，已标记跳过）：{e}")
     
     async def on_position_opened(self, entry_price: Decimal, take_profit_price: Decimal, 
                                   side: str, position_size: Decimal):
@@ -272,6 +289,7 @@ class TrailingStopManager:
         
         # 重置状态
         self.active_orders.clear()
+        self._failed_levels.clear()
         self.total_triggers = 0
         
         self.last_trigger_level = 0
@@ -286,6 +304,7 @@ class TrailingStopManager:
                 pass
         
         self.active_orders.clear()
+        self._failed_levels.clear()
         self.entry_price = None
         self.take_profit_price = None
         self.side = None

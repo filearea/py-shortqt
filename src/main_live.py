@@ -149,7 +149,13 @@ class LiveTradingBot:
             today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             start_ms = int(today.timestamp() * 1000)
             
+            # 计算当前分钟的起始时间戳（只写入已关闭的 K 线）
+            now = datetime.now()
+            current_minute_start = now.replace(second=0, microsecond=0)
+            current_minute_ms = int(current_minute_start.timestamp() * 1000)
+            
             self.log_manager.system.info(f'从 API 获取今日全部 K 线（{today.strftime("%Y-%m-%d")} 00:00 起）...')
+            self.log_manager.system.info(f'当前时间：{now.strftime("%H:%M:%S")}，只写入 {current_minute_start.strftime("%H:%M")} 之前的已关闭 K 线')
             
             # 币安最多返回 1500 根，当天最多 1440 根，一次拉完
             klines = self.trader.api.get_klines(self.symbol, '1m', limit=1500)

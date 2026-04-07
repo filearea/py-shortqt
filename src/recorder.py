@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-实时数据记录器 - v1.5.3
+实时数据记录器 - v1.5.5
 K 线改为定时 API 拉取（每分钟 1 次），数据更完整
+v1.5.5: 修复 K 线缺口 + 订单簿日期切分
 """
 import json
 import time
@@ -47,19 +48,32 @@ class RealtimeRecorder:
         self._kline_timer_running = False
 
     def _kline_poll_loop(self):
-        """K 线轮询线程：每 60 秒拉取一次"""
-        # 启动后等 5 秒，让 WebSocket 先连上
-        time.sleep(5)
+        """K 线轮询线程：对齐到每分钟第 2 秒拉取"""
+        # 启动后等到下一分钟的第 2 秒
+        now = time.time()
+        seconds_in_minute = now % 60
+        if seconds_in_minute < 2:
+            time.sleep(2 - seconds_in_minute)
+        else:
+            time.sleep(62 - seconds_in_minute)
+        
         while self._kline_timer_running:
             try:
                 self._fetch_and_save_kline()
             except Exception:
                 pass
-            # 等到下一分钟的第 2 秒（确保 K 线已关闭）
+            # 精确对齐到下一分钟的第 2 秒
             now = time.time()
             seconds_in_minute = now % 60
-            wait = 62 - seconds_in_minute if seconds_in_minute < 62 else 2
-            time.sleep(wait)
+            if seconds_in_minute < 2:
+                wait = 2 - seconds_in_minute
+            else:
+                wait = 62 - seconds_in_minute
+            # 分段 sleep，每秒检查一次退出标志
+            end_time = now + wait
+            while self._kline_timer_running and time.time() < end_time:
+                remaining = end_time - time.time()
+                time.sleep(min(remaining, 1.0))
 
     def _fetch_and_save_kline(self):
         """从 API 拉取最近 2 条 K 线，保存已关闭的那条"""
@@ -125,11 +139,22 @@ class RealtimeRecorder:
         # K 线数据写入已改为定时 API 拉取，此方法保留接口兼容
         pass
 
+    def _check_date_rollover(self):
+        """检查日期是否变化，切换订单簿文件"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today != self.today:
+            self.today = today
+            self.klines_file = KLINES_DIR / self.symbol / f"{self.today}.jsonl"
+            self.orderbook_file = ORDERBOOK_DIR / self.symbol / f"{self.today}.jsonl"
+
     def save_orderbook(self, bids: List, asks: List):
         """保存订单簿快照"""
         current_time = time.time()
         if current_time - self._last_orderbook_save < self.orderbook_interval:
             return
+        
+        # v1.5.5: 检查日期切换
+        self._check_date_rollover()
         
         snapshot = {
             'timestamp': datetime.now().isoformat(),
