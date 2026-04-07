@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-实盘交易主入口 - v1.2.0
+实盘交易主入口 - v1.5.3
 支持 TUI 设置模块
 """
 
@@ -12,6 +12,11 @@ import json
 from pathlib import Path
 from decimal import Decimal
 from datetime import datetime, timedelta
+
+# v1.5.3 修复：清除代理环境变量，避免代理故障导致连接失败
+# 如需要代理，请在 binance_client.py 中显式配置
+os.environ.pop('HTTP_PROXY', None)
+os.environ.pop('HTTPS_PROXY', None)
 
 # 设置 UTF-8 和窗口尺寸
 if sys.platform == 'win32':
