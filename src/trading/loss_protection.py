@@ -45,6 +45,10 @@ class LossProtectionManager:
         self.protected = False  # 是否已执行保护
         self.protection_time: Optional[datetime] = None  # 保护执行时间
         self.last_check_time: Optional[datetime] = None  # 最后检测时间
+
+        # 持仓超时止损单（独立于移动止损，平仓时统一清理）
+        self._breakeven_stop_id: Optional[int] = None  # 场景2：保本止损单
+        self._grid1_stop_id: Optional[int] = None  # 场景3：网格1止损单
     
     def set_entry_info(self, entry_price: Decimal, side: str, 
                        tp_price: Optional[Decimal] = None, 
@@ -110,80 +114,186 @@ class LossProtectionManager:
         # 记录最后检测时间
         self.last_check_time = now
         
-        # 检查是否浮亏
-        if unrealized_pnl >= 0:
-            # 浮盈，不触发保护
-            return
-        
-        # 浮亏，执行保护
-        await self._execute_protection(current_price)
+        # 浮亏 → 场景1：保本止盈
+        if unrealized_pnl < 0:
+            await self._execute_loss_protection(current_price)
+        else:
+            # 浮盈 → 场景2：保本止损单 + 场景3：网格1止损单
+            await self._execute_profit_protection(current_price)
     
-    async def _execute_protection(self, current_price: Decimal):
+    async def _execute_loss_protection(self, current_price: Decimal):
         """
-        执行保护动作：将限价止盈单的价格修改为开仓价
-        
-        Args:
-            current_price: 当前价格
+        场景1：浮亏时执行保本止盈（将原限价止盈单改为开仓价）
         """
-        # 检查是否已执行保护
         if self.protected:
             return
-        
+
         try:
-            # 计算保本止盈价（开仓价）
             protection_price = self.entry_price
-            
+
             # 撤销原止盈单
             if self.tp_order_id:
                 try:
                     self.trader.api.cancel_order(self.trader.symbol, self.tp_order_id)
                 except:
-                    pass  # 撤销失败可能是已成交
-            
-            # 创建新的限价止盈单 @ 开仓价
-            if self.side == 'LONG':
-                side = 'SELL'
-            else:  # SHORT
-                side = 'BUY'
-            
-            # 获取仓位数量
+                    pass
+
             position = self.trader.position
             if not position or position.get('size', Decimal('0')) == 0:
                 return
-            
+
             position_size = position['size']
-            
-            # 创建限价单（不是条件单，place_order 是同步函数）
-            # 注意：双向持仓模式不需要传 reduceOnly
+
             order = self.trader.api.place_order(
                 symbol=self.trader.symbol,
-                side=side,
+                side='SELL' if self.side == 'LONG' else 'BUY',
                 type='LIMIT',
-                price=str(protection_price),  # 开仓价
+                price=str(protection_price),
                 quantity=str(position_size),
                 positionSide=self.side
-                # 双向持仓模式不传 reduceOnly
             )
-            
-            # 更新止盈单 ID
+
             self.tp_order_id = order['orderId']
             self.protected = True
             self.protection_time = datetime.now()
 
-            # 记录关键日志
             if self.trader.log_manager:
                 self.trader.log_manager.system.info(
-                    f"[浮亏保护] 已触发！止盈单下移至开仓价 {protection_price}"
+                    f"[持仓超时] 浮亏保本 → 止盈单下移至开仓价 {protection_price}"
                 )
-            self.trader._add_action("浮亏保护", f"止盈单下移至开仓价 {protection_price}")
-        
-        except Exception as e:
-            # 执行失败，不记录日志（避免刷屏）
-            # 失败可能是订单被拒绝、网络问题等，下次检查时会重试
+            self.trader._add_action("持仓超时", f"浮亏保本：止盈单下移至开仓价 {protection_price}")
+
+        except Exception:
             pass
+
+    async def _execute_profit_protection(self, current_price: Decimal):
+        """
+        场景2：浮盈时创建保本止损单（触发价=开仓价）
+        场景3：浮盈+移动止损启用+无活动订单+价格在网格1~2之间 → 额外创建网格1止损单
+        """
+        if self.protected:
+            return
+
+        try:
+            position = self.trader.position
+            if not position or position.get('size', Decimal('0')) == 0:
+                self.protected = True
+                self.protection_time = datetime.now()
+                return
+
+            position_size = position['size']
+            side = 'SELL' if self.side == 'LONG' else 'BUY'
+
+            # --- 场景2：保本止损单（始终创建） ---
+            await self._create_breakeven_stop_order(side, position_size)
+
+            # --- 场景3：网格1止损单（条件满足时额外创建） ---
+            ts_manager = getattr(self.trader, 'trailing_stop_manager', None)
+            if ts_manager and ts_manager.enabled and len(ts_manager.active_orders) == 0:
+                # 判断价格是否在网格1和网格2之间
+                in_range = False
+                grid1_price = None
+                if len(ts_manager.grid_prices) >= 2:
+                    grid1_price = ts_manager.grid_prices[0]
+                    grid2_price = ts_manager.grid_prices[1]
+                    if self.side == 'LONG':
+                        in_range = grid1_price <= current_price < grid2_price
+                    else:
+                        in_range = grid1_price >= current_price > grid2_price
+                elif len(ts_manager.grid_prices) >= 1:
+                    grid1_price = ts_manager.grid_prices[0]
+                    if self.side == 'LONG':
+                        in_range = current_price >= grid1_price
+                    else:
+                        in_range = current_price <= grid1_price
+
+                if in_range and grid1_price:
+                    await self._create_grid1_stop_order(side, position_size, grid1_price)
+
+            self.protected = True
+            self.protection_time = datetime.now()
+
+        except Exception:
+            self.protected = True
+            self.protection_time = datetime.now()
+
+    async def _create_breakeven_stop_order(self, side: str, position_size: Decimal):
+        """场景2：创建保本止损单（触发价=开仓价，priceMatch='QUEUE'）"""
+        try:
+            trigger_price = self.entry_price
+            from decimal import ROUND_DOWN
+            price_str = str(trigger_price.quantize(Decimal('0.01'), rounding=ROUND_DOWN))
+            qty_str = str(position_size.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
+
+            order = self.trader.api.place_algo_order(
+                symbol=self.trader.symbol,
+                side=side,
+                type='STOP',
+                triggerPrice=price_str,
+                quantity=qty_str,
+                priceMatch='QUEUE',
+                positionSide=self.side,
+                workingType='CONTRACT_PRICE'
+            )
+
+            order_id = order.get('orderId') or order.get('algoId')
+            if order_id:
+                self._breakeven_stop_id = order_id
+
+            if self.trader.log_manager:
+                self.trader.log_manager.system.info(
+                    f"[持仓超时] 浮盈保本 → 创建止损单 @ {trigger_price} (防利润回吐)"
+                )
+            self.trader._add_action("持仓超时", f"浮盈保本：创建止损单 @ {trigger_price} (防利润回吐)")
+
+        except Exception as e:
+            if self.trader.log_manager:
+                self.trader.log_manager.system.info(f"[持仓超时] 创建保本止损单失败：{e}")
+            self.trader._add_action("持仓超时", f"保本止损单创建失败：{e}")
+
+    async def _create_grid1_stop_order(self, side: str, position_size: Decimal, grid1_price: Decimal):
+        """场景3：创建网格1止损单（触发价=网格1，比保本价更有利润）"""
+        try:
+            from decimal import ROUND_DOWN
+            price_str = str(grid1_price.quantize(Decimal('0.01'), rounding=ROUND_DOWN))
+            qty_str = str(position_size.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
+
+            order = self.trader.api.place_algo_order(
+                symbol=self.trader.symbol,
+                side=side,
+                type='STOP',
+                triggerPrice=price_str,
+                quantity=qty_str,
+                priceMatch='QUEUE',
+                positionSide=self.side,
+                workingType='CONTRACT_PRICE'
+            )
+
+            order_id = order.get('orderId') or order.get('algoId')
+            if order_id:
+                self._grid1_stop_id = order_id
+
+            if self.trader.log_manager:
+                self.trader.log_manager.system.info(
+                    f"[持仓超时] 浮盈加强 → 创建网格1止损单 @ {grid1_price}"
+                )
+            self.trader._add_action("持仓超时", f"浮盈加强：创建网格1止损单 @ {grid1_price}")
+
+        except Exception as e:
+            if self.trader.log_manager:
+                self.trader.log_manager.system.info(f"[持仓超时] 创建网格1止损单失败：{e}")
+            self.trader._add_action("持仓超时", f"网格1止损单创建失败：{e}")
     
     def on_position_closed(self):
-        """平仓回调 - 清理状态"""
+        """平仓回调 - 清理状态并撤销持仓超时止损单"""
+        # 撤销持仓超时止损单（独立于移动止损）
+        for stop_id in [self._breakeven_stop_id, self._grid1_stop_id]:
+            if stop_id:
+                try:
+                    self.trader.api.cancel_algo_order(self.trader.symbol, stop_id)
+                except:
+                    pass
+
         self.entry_time = None
         self.entry_price = None
         self.side = None
@@ -193,6 +303,12 @@ class LossProtectionManager:
         self.protected = False
         self.protection_time = None
         self.last_check_time = None
+        self._breakeven_stop_id = None
+        self._grid1_stop_id = None
+
+        if self.trader.log_manager:
+            self.trader.log_manager.system.info("[持仓超时] 已平仓，撤销保本止损单")
+        self.trader._add_action("持仓超时", "已平仓，撤销保本止损单")
     
     def get_status(self) -> Dict:
         """获取状态信息"""
