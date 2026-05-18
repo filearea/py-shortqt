@@ -57,6 +57,10 @@ class LiveTrader:
         # 行情数据
         self.last_price: Optional[Decimal] = None
         self.orderbook: Dict = {'bids': [], 'asks': []}
+
+        # 挂单成交检测（v1.5.5）
+        self._order_placed_at: Optional[float] = None  # 挂单时间戳（秒）
+        self._fill_check_done: bool = False  # 是否已经确认成交并处理过
         
         # 操作日志
         self.action_log: List[Dict] = []
@@ -119,11 +123,26 @@ class LiveTrader:
         """启动用户数据流 WebSocket（可选功能，失败不影响主程序）"""
         try:
             self.listen_key = self.api.get_listen_key()
-            self.user_stream_ws = UserStreamWebSocket(self.listen_key)
+            self.user_stream_ws = UserStreamWebSocket(
+                self.listen_key,
+                api_client=self.api,
+                testnet=self.testnet
+            )
             self.user_stream_ws.add_order_callback(self._on_order_update)
             self.user_stream_task = asyncio.create_task(self.user_stream_ws.connect())
-            await asyncio.sleep(1)
-            print("✓ 用户数据流已启动（用于订单状态更新）")
+
+            # 等待 WebSocket 真正连接成功（最多 10 秒）
+            for i in range(20):
+                if self.user_stream_ws.connected:
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                print("⚠ 用户数据流连接超时，订单回调可能延迟")
+
+            if self.user_stream_ws.connected:
+                print("✓ 用户数据流已连接（用于订单状态更新，30分钟自动保活）")
+            else:
+                print("⚠ 用户数据流连接中，订单状态更新可能有延迟")
         except Exception as e:
             print(f"⚠ 用户数据流启动失败：{e}")
             print("  程序仍可正常运行，但订单状态更新可能有延迟")
@@ -228,6 +247,7 @@ class LiveTrader:
                 # 开仓挂单被撤销（可能是部分成交后超时）
                 self._add_action("开仓撤销", "开仓挂单已撤销")
                 self.pending_order = None
+                self._order_placed_at = None
         
         # 止盈单成交 → 撤销止损单和保底止损单
         elif self.tp_order and self.tp_order.get('orderId') == order_id:
@@ -1022,6 +1042,8 @@ class LiveTrader:
                 'size': Decimal(order['origQty']),
                 'status': order['status']
             }
+            self._order_placed_at = time.time()
+            self._fill_check_done = False
             
             print(f"✓ 挂单成功：{side} QUEUE @ {actual_price:.2f}, 订单 ID: {order['orderId']}")
             self._add_action("开仓挂单", f"{side} {size} QUEUE @ {actual_price:.2f}")
@@ -1279,6 +1301,131 @@ class LiveTrader:
             'bids': [[Decimal(p), Decimal(q)] for p, q in bids[:10]],
             'asks': [[Decimal(p), Decimal(q)] for p, q in asks[:10]]
         }
+
+    async def check_pending_order_filled(self) -> bool:
+        """
+        v1.5.5 整合方案：bookTicker 穿透检测 + REST 确认 + 成交超时
+
+        主循环每帧调用。逻辑：
+        1. bookTicker 价格穿透 → 立即 REST 查订单状态确认
+        2. 未穿透 → 不做任何 REST 请求（零权重消耗）
+        3. 超时后按已成交量处理（部分成交也处理）
+
+        Returns: True 如果检测到成交并触发了后续动作
+        """
+        if self.pending_order is None or self._fill_check_done:
+            return False
+
+        side = self.pending_order['side']
+        order_price = self.pending_order['price']
+        order_id = self.pending_order['orderId']
+        now = time.time()
+
+        # 记录挂单时间
+        if self._order_placed_at is None:
+            self._order_placed_at = now
+
+        # 获取配置中的超时时间
+        if self.config_manager:
+            timeout_seconds = self.config_manager.get_order_timeout()
+        else:
+            timeout_seconds = 2.0
+
+        elapsed = now - self._order_placed_at
+
+        # 1. bookTicker 穿透检测
+        price_penetrated = False
+        if side == 'LONG':
+            # 多单挂买：卖一价 <= 挂单价 → 穿透
+            if self.orderbook.get('asks') and self.orderbook['asks'][0][0] <= order_price:
+                price_penetrated = True
+        else:
+            # 空单挂卖：买一价 >= 挂单价 → 穿透
+            if self.orderbook.get('bids') and self.orderbook['bids'][0][0] >= order_price:
+                price_penetrated = True
+
+        # 2. 穿透或超时 → REST 确认
+        should_check = price_penetrated or elapsed >= timeout_seconds
+
+        if not should_check:
+            return False
+
+        try:
+            order_status = self.api.get_order(self.symbol, order_id)
+            status = order_status.get('status', '')
+            filled_qty = Decimal(order_status.get('executedQty', '0'))
+            avg_price = Decimal(order_status.get('avgPrice', '0'))
+            cum_quote = Decimal(order_status.get('cumQuote', '0'))
+            commission = Decimal(order_status.get('cumCommission', '0'))
+
+            if status == 'FILLED':
+                # 完全成交
+                self._fill_check_done = True
+                commission_asset = order_status.get('commissionAsset', 'USDC')
+                self._on_pending_filled(side, avg_price, filled_qty, commission, commission_asset)
+                return True
+
+            elif status == 'PARTIALLY_FILLED' and filled_qty > 0:
+                # 部分成交
+                if elapsed >= timeout_seconds:
+                    # 超时了，撤销剩余，按已成交量处理
+                    self._fill_check_done = True
+                    commission_asset = order_status.get('commissionAsset', 'USDC')
+                    try:
+                        self.api.cancel_order(self.symbol, order_id)
+                        self._add_action("超时撤销", f"部分成交 {filled_qty}")
+                    except:
+                        pass
+                    self._on_pending_filled(side, avg_price, filled_qty, commission, commission_asset)
+                    return True
+                else:
+                    # 还没超时，继续等待
+                    return False
+
+            elif status in ('CANCELED', 'EXPIRED', 'REJECTED'):
+                # 订单被取消/过期/拒绝
+                self._fill_check_done = True
+                if filled_qty > 0:
+                    # 取消前有部分成交
+                    commission_asset = order_status.get('commissionAsset', 'USDC')
+                    self._on_pending_filled(side, avg_price, filled_qty, commission, commission_asset)
+                else:
+                    self._add_action("挂单取消", f"未成交 ({status})")
+                    self.pending_order = None
+                return True
+
+            # 状态还是 NEW 或 PENDING，继续等待
+            return False
+
+        except Exception as e:
+            # REST 查询失败，不打断流程
+            self._add_action("成交检测失败", str(e))
+            return False
+
+    def _on_pending_filled(self, side: str, entry_price: Decimal,
+                           filled_qty: Decimal, commission: Decimal,
+                           commission_asset: str):
+        """开仓挂单成交回调"""
+        if entry_price == 0:
+            return
+
+        self._add_action("开仓成交", f"{side} @ {entry_price:.2f} x {filled_qty} | 手续费 {commission:.4f} {commission_asset}")
+
+        self.position = {
+            'side': side,
+            'entry_price': entry_price,
+            'size': filled_qty,
+            'time': datetime.now()
+        }
+        self.pending_order = None
+        self._order_placed_at = None
+
+        # 记录信号特征
+        if self.logger:
+            self.logger.record_signal(side, entry_price, self.orderbook)
+
+        # 立即下止盈止损单
+        asyncio.create_task(self._safe_place_tp_sl_orders())
     
     def sync_account(self):
         """同步账户信息"""

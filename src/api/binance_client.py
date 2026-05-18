@@ -307,7 +307,21 @@ class BinanceClient:
         return self._delete('/fapi/v1/allOpenOrders', {
             'symbol': symbol
         }, signed=True)
-    
+
+    def get_order(self, symbol: str, order_id: int) -> dict:
+        """查询订单状态"""
+        return self._get('/fapi/v1/order', {
+            'symbol': symbol,
+            'orderId': order_id
+        }, signed=True)
+
+    def get_fills(self, symbol: str, limit: int = 10) -> list:
+        """查询最近成交记录"""
+        return self._get('/fapi/v1/userTrades', {
+            'symbol': symbol,
+            'limit': limit
+        }, signed=True)
+
     # ==================== 用户数据流====================
     
     def get_listen_key(self) -> str:

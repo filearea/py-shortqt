@@ -12,6 +12,7 @@
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Dict, List, Set
 from datetime import datetime
+import time
 
 
 class TrailingStopManager:
@@ -51,6 +52,11 @@ class TrailingStopManager:
         # 统计
         self.total_triggers = 0  # 总触发次数
         self.last_trigger_level = 0  # 最后触发格数
+
+        # 持仓验证缓存（避免每帧都查 API）
+        self._last_verify_time: float = 0
+        self._last_verify_result: Optional[bool] = None
+        self._verify_cache_seconds: float = 3.0  # 3 秒缓存
     
     def calculate_grid_prices(self, entry_price: Decimal, take_profit_price: Decimal, side: str):
         """
@@ -115,31 +121,117 @@ class TrailingStopManager:
     async def update_trailing_stop(self, current_price: Decimal):
         """
         根据当前价格更新移动止损单
-        
+
         Args:
             current_price: 当前最新价
         """
-        # v1.5.0 修复：移除高频日志
-        
         if not self.enabled:
             return
-        
+
         if not self.entry_price or not self.grid_prices:
             return
-        
+
+        # 先检查交易所真实持仓，防止 WebSocket 丢消息导致状态不一致
+        if not await self._verify_position_exists():
+            return
+
         # 确定当前价格超过了第几格
         current_level = self._get_current_level(current_price)
-        
+
         if current_level == 0:
-            # 价格还未超过第 1 格，不操作
             return
-        
-        # 第 1 格仅观察，不触发
+
         if current_level == 1:
             return
-        
+
         # 从第 2 格开始触发（日志在 _create_stop_order 中记录）
         await self._update_stop_order_for_level(current_level)
+
+    async def _verify_position_exists(self) -> bool:
+        """检查交易所是否还有真实持仓，如果没有就清空本地状态（带缓存）"""
+        now = time.time()
+        # 使用缓存结果
+        if self._last_verify_result is not None and (now - self._last_verify_time) < self._verify_cache_seconds:
+            return self._last_verify_result
+
+        try:
+            positions = self.trader.api.get_position(self.trader.symbol)
+            has_position = False
+            for pos in positions:
+                amt = Decimal(pos.get('positionAmt', '0'))
+                if amt != 0:
+                    has_position = True
+                    break
+
+            if not has_position and self.trader.position is not None:
+                # 交易所无持仓但本地有 -> 止损单可能已成交但 User Stream 没推
+                pos = self.trader.position
+                entry_price = pos.get('entry_price', Decimal('0'))
+                side = pos.get('side', '')
+                size = pos.get('size', Decimal('0'))
+
+                # 查最近成交，计算 PnL
+                close_price = None
+                try:
+                    fills = self.trader.api.get_fills(self.trader.symbol, limit=5)
+                    for fill in reversed(fills):
+                        if side == 'LONG' and fill.get('side') == 'SELL':
+                            close_price = Decimal(fill['price'])
+                            break
+                        elif side == 'SHORT' and fill.get('side') == 'BUY':
+                            close_price = Decimal(fill['price'])
+                            break
+                except Exception:
+                    pass
+
+                # 计算 PnL
+                if close_price and entry_price and size:
+                    if side == 'LONG':
+                        pnl = (close_price - entry_price) * size
+                    else:
+                        pnl = (entry_price - close_price) * size
+                    self.trader._add_action("持仓同步",
+                        f"交易所已无持仓 | PnL: {pnl:+.2f} USDT (成交价 {close_price:.2f})")
+                else:
+                    self.trader._add_action("持仓同步", "交易所已无持仓，清理本地状态")
+
+                if self.trader.log_manager:
+                    if close_price:
+                        self.trader.log_manager.system.info(
+                            f"[持仓同步] 交易所已无持仓 | PnL: {pnl:+.2f} USDT "
+                            f"(开仓 {entry_price:.2f} → 平仓 {close_price:.2f})"
+                        )
+                    else:
+                        self.trader.log_manager.system.info(
+                            "[持仓同步] 交易所已无持仓（可能已被止损/止盈成交），清理本地状态"
+                        )
+
+                # 撤销交易所上所有遗留订单（止盈/止损/保底止损）
+                try:
+                    self.trader.api.cancel_all_open_orders(self.trader.symbol)
+                    self.trader._add_action("持仓同步", "已撤销交易所所有遗留订单")
+                except Exception as e:
+                    self.trader._add_action("持仓同步", f"撤销遗留订单失败：{e}")
+
+                self.trader.position = None
+                self.trader.tp_order = None
+                self.trader.sl_order = None
+                self.trader.stop_market_order = None
+                self.trader.early_close_order = None
+                self.trader.pending_order = None
+                await self.on_position_closed()
+                self._last_verify_result = False
+                self._last_verify_time = now
+                return False
+
+            self._last_verify_result = has_position
+            self._last_verify_time = now
+            return has_position
+        except Exception as e:
+            # API 调用失败，保守处理：不创建新订单
+            if self.trader.log_manager:
+                self.trader.log_manager.system.debug(f"[移动止损] 持仓验证失败：{e}")
+            return False
     
     def _get_current_level(self, price: Decimal) -> int:
         """
@@ -197,11 +289,11 @@ class TrailingStopManager:
         """滚动止损单（撤销最早的，腾出空间）"""
         if not self.active_orders:
             return
-        
+
         # 找到最早的格数（最小的 level）
         min_level = min(self.active_orders.keys())
         order_id = self.active_orders[min_level]
-        
+
         # 撤销订单（cancel_algo_order 是同步函数）
         try:
             self.trader.api.cancel_algo_order(self.trader.symbol, order_id)
@@ -210,6 +302,7 @@ class TrailingStopManager:
             # 撤销失败，记录日志但不中断
             if self.trader.log_manager:
                 self.trader.log_manager.system.info(f"[移动止损] 滚动撤销失败：{e}")
+            self.trader._add_action("移动止损", f"滚动撤销 level={min_level} 失败")
     
     async def _create_stop_order(self, level: int, trigger_price: Decimal):
         """
@@ -252,18 +345,20 @@ class TrailingStopManager:
             self.active_orders[level] = order_id
             self.total_triggers += 1
             self.last_trigger_level = level
-            
+
             # 记录关键日志
             if self.trader.log_manager:
                 self.trader.log_manager.system.info(
                     f"[移动止损] 第{level}格触发，止损单 @ {trigger_price}"
                 )
-        
+            self.trader._add_action("移动止损", f"第{level}格触发，止损单 @ {trigger_price}")
+
         except Exception as e:
             # v1.5.3 修复：记录失败 level，防止反复重试
             self._failed_levels.add(level)
             if self.trader.log_manager:
                 self.trader.log_manager.system.info(f"[移动止损] 创建止损单失败（level={level}，已标记跳过）：{e}")
+            self.trader._add_action("移动止损", f"第{level}格创建失败，已标记跳过")
     
     async def on_position_opened(self, entry_price: Decimal, take_profit_price: Decimal, 
                                   side: str, position_size: Decimal):
@@ -291,8 +386,9 @@ class TrailingStopManager:
         self.active_orders.clear()
         self._failed_levels.clear()
         self.total_triggers = 0
-        
         self.last_trigger_level = 0
+        self._last_verify_time = 0
+        self._last_verify_result = None
     
     async def on_position_closed(self):
         """平仓回调 - 清理移动止损"""

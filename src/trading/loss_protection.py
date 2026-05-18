@@ -169,12 +169,13 @@ class LossProtectionManager:
             self.tp_order_id = order['orderId']
             self.protected = True
             self.protection_time = datetime.now()
-            
+
             # 记录关键日志
             if self.trader.log_manager:
                 self.trader.log_manager.system.info(
                     f"[浮亏保护] 已触发！止盈单下移至开仓价 {protection_price}"
                 )
+            self.trader._add_action("浮亏保护", f"止盈单下移至开仓价 {protection_price}")
         
         except Exception as e:
             # 执行失败，不记录日志（避免刷屏）

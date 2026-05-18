@@ -5,38 +5,71 @@
 """
 
 import asyncio
+import json
 import websockets
 from typing import Callable, Optional
 
 
 class UserStreamWebSocket:
     """用户数据流 WebSocket 客户端"""
-    
-    def __init__(self, listen_key: str, base_url: str = "wss://fstream.binance.com"):
+
+    LISTEN_KEY_EXPIRE_SECONDS = 3600  # listen key 有效期 60 分钟
+    KEEP_ALIVE_INTERVAL = 1800  # 保活间隔 30 分钟
+
+    def __init__(self, listen_key: str, api_client=None, testnet: bool = False):
         self.listen_key = listen_key
+        self.api_client = api_client  # 用于 keep-alive 调用
+
+        if testnet:
+            base_url = "wss://stream.binancefuture.com"
+        else:
+            base_url = "wss://fstream.binance.com"
+
         self.ws_url = f"{base_url}/ws/{listen_key}"
         self.running = False
         self.connected = False
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
-        
+
         # 回调函数
         self.order_callbacks: list[Callable] = []
         self.account_callbacks: list[Callable] = []
-    
+
+        # 保活任务
+        self._keep_alive_task: Optional[asyncio.Task] = None
+
     def add_order_callback(self, callback: Callable):
         """添加订单更新回调"""
         self.order_callbacks.append(callback)
-    
+
     def add_account_callback(self, callback: Callable):
         """添加账户更新回调"""
         self.account_callbacks.append(callback)
-    
+
+    async def _keep_alive_loop(self):
+        """定时保活 listen key，防止过期"""
+        while self.running:
+            await asyncio.sleep(self.KEEP_ALIVE_INTERVAL)
+            if not self.running:
+                break
+            try:
+                if self.api_client:
+                    self.api_client.keep_alive_listen_key(self.listen_key)
+                    print(f"[UserStream] listenKey 保活成功")
+                else:
+                    print(f"[UserStream] ⚠ 无 api_client，无法保活 listenKey")
+            except Exception as e:
+                print(f"[UserStream] ⚠ listenKey 保活失败：{e}")
+
     async def connect(self):
         """连接 WebSocket"""
         self.running = True
+
+        # 启动保活任务
+        self._keep_alive_task = asyncio.create_task(self._keep_alive_loop())
+
         reconnect_delay = 3  # 初始重连延迟（秒）
         max_reconnect_delay = 30  # 最大重连延迟
-        
+
         while self.running:
             try:
                 async with websockets.connect(self.ws_url, ping_timeout=10, ping_interval=20) as ws:
@@ -44,7 +77,7 @@ class UserStreamWebSocket:
                     self.connected = True
                     print(f"✓ 用户数据流已连接")
                     reconnect_delay = 3  # 连接成功后重置延迟
-                    
+
                     while self.running:
                         try:
                             message = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -58,7 +91,7 @@ class UserStreamWebSocket:
                             # Windows 网络错误（如 WinError 64）
                             print(f"用户数据流网络错误：{e}")
                             break
-            
+
             except OSError as e:
                 # Windows 网络错误（如 WinError 64 指定的网络名不再可用）
                 self.connected = False
@@ -66,12 +99,12 @@ class UserStreamWebSocket:
                 print(f"  {reconnect_delay}秒后重试...")
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
-            
+
             except websockets.exceptions.InvalidStatusCode:
                 self.connected = False
                 print(f"用户数据流连接失败：无效的 Listen Key，可能需要更新")
                 await asyncio.sleep(10)
-            
+
             except Exception as e:
                 self.connected = False
                 print(f"用户数据流错误：{e}")
@@ -110,5 +143,14 @@ class UserStreamWebSocket:
     async def close(self):
         """关闭连接"""
         self.running = False
+
+        # 取消保活任务
+        if self._keep_alive_task and not self._keep_alive_task.done():
+            self._keep_alive_task.cancel()
+            try:
+                await self._keep_alive_task
+            except asyncio.CancelledError:
+                pass
+
         if self.ws:
             await self.ws.close()

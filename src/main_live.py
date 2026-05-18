@@ -634,6 +634,9 @@ class LiveTradingBot:
                         self.log_manager.system.error(f"键盘输入错误：{e}")
                         print(f"\n[键盘输入错误] {e}")
                     
+                    # 成交检测：bookTicker 穿透 → REST 确认（零消耗 unless 穿透）
+                    await self.trader.check_pending_order_filled()
+
                     # 同步账户信息
                     self.trader.sync_account()
                     
