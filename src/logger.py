@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 日志系统 - 记录市场数据、交易动作、信号特征
 日志位置：项目根目录/logs/
@@ -59,7 +59,7 @@ class TradeLogger:
         self.price_history = []
         self.current_signal = None
         
-        print(f"✓ 交易日志目录：{self.log_dir}")
+        print(f"[OK] 交易日志目录：{self.log_dir}")
     
     def record_price(self, price: Decimal):
         """记录价格历史"""
@@ -218,4 +218,4 @@ class TradeLogger:
         self.positions_log.close()
         self.pnl_log.close()
         self.signals_file.close()
-        print(f"✓ 日志已保存至：{self.log_dir}")
+        print(f"[OK] 日志已保存至：{self.log_dir}")

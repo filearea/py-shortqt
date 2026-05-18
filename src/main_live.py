@@ -13,11 +13,6 @@ from pathlib import Path
 from decimal import Decimal
 from datetime import datetime, timedelta
 
-# v1.5.3 修复：清除代理环境变量，避免代理故障导致连接失败
-# 如需要代理，请在 binance_client.py 中显式配置
-os.environ.pop('HTTP_PROXY', None)
-os.environ.pop('HTTPS_PROXY', None)
-
 # 设置 UTF-8 和窗口尺寸
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -353,7 +348,7 @@ class LiveTradingBot:
             except asyncio.TimeoutError:
                 print("WebSocket 任务超时，强制结束")
         
-        print("✓ 资源已清理")
+        print("[OK] 资源已清理")
     
     async def run(self):
         """运行主循环"""
@@ -394,12 +389,12 @@ class LiveTradingBot:
                         print(f"初始化失败，{retry + 1}/{max_retries}，5 秒后重试...")
                         await asyncio.sleep(5)
                     else:
-                        print("\n✗ 实盘初始化失败，退出")
+                        print("\n[ERROR] 实盘初始化失败，退出")
                         return
             except Exception as e:
                 error_msg = str(e)
                 if "too many requests" in error_msg.lower() or "banned" in error_msg.lower():
-                    print(f"\n✗ API 请求频率过高，IP 可能被限制")
+                    print(f"\n[ERROR] API 请求频率过高，IP 可能被限制")
                     print(f"错误：{e}")
                     print("\n建议：")
                     print("1. 等待 1-2 分钟让 IP 解封")
@@ -410,7 +405,7 @@ class LiveTradingBot:
                     print(f"初始化错误：{e}，{retry + 1}/{max_retries}，5 秒后重试...")
                     await asyncio.sleep(5)
                 else:
-                    print(f"\n✗ 实盘初始化失败：{e}，退出")
+                    print(f"\n[ERROR] 实盘初始化失败：{e}，退出")
                     return
         
         # 2. 连接行情 WebSocket
@@ -421,7 +416,7 @@ class LiveTradingBot:
         print("等待连接...")
         for i in range(30):  # 15 秒 = 30 * 0.5 秒
             if self.listener.connected:
-                print("✓ 行情已连接")
+                print("[OK] 行情已连接")
                 break
             await asyncio.sleep(0.5)
         else:
@@ -519,16 +514,16 @@ class LiveTradingBot:
                                         # 二次确认：直接退出，放弃修改
                                         self.in_settings = False
                                         self._pending_confirm_exit = False
-                                        self.trader._add_action("✓ 已放弃修改并退出", "")
+                                        self.trader._add_action("[OK] 已放弃修改并退出", "")
                                     else:
                                         result = self.settings_ui.handle_key('escape')
                                         if result == 'exit':
                                             self.in_settings = False
-                                            self.trader._add_action("✓ 已退出设置", "")
+                                            self.trader._add_action("[OK] 已退出设置", "")
                                         elif result == 'save':
                                             success, errors = self.settings_ui.save_config()
                                             if success:
-                                                self.trader._add_action("✓ 配置已保存", "")
+                                                self.trader._add_action("[OK] 配置已保存", "")
                                                 self.in_settings = False
                                             else:
                                                 for err in errors:
@@ -540,7 +535,7 @@ class LiveTradingBot:
                                     # S 保存并退出
                                     success, errors = self.settings_ui.save_config()
                                     if success:
-                                        msg = "✓ 配置已保存并退出"
+                                        msg = "[OK] 配置已保存并退出"
                                         self.trader._add_action(msg, "")
                                         self.log_manager.system.info(f"设置操作：{msg}")
                                         
@@ -571,7 +566,7 @@ class LiveTradingBot:
                                     if self._pending_reset and key_char == 'd':
                                         # 第二次按 D，直接执行重置
                                         self.config_manager.reset_to_defaults()
-                                        self.trader._add_action("✓ 配置已重置为默认值", "")
+                                        self.trader._add_action("[OK] 配置已重置为默认值", "")
                                         self._pending_reset = False
                                         continue
                                     
@@ -579,11 +574,11 @@ class LiveTradingBot:
                                     result = self.settings_ui.handle_key(key_char)
                                     if result == 'exit':
                                         self.in_settings = False
-                                        self.trader._add_action("✓ 已退出设置", "")
+                                        self.trader._add_action("[OK] 已退出设置", "")
                                     elif result == 'save':
                                         success, errors = self.settings_ui.save_config()
                                         if success:
-                                            self.trader._add_action("✓ 配置已保存并退出", "")
+                                            self.trader._add_action("[OK] 配置已保存并退出", "")
                                             self.in_settings = False
                                         else:
                                             for err in errors:
@@ -596,11 +591,11 @@ class LiveTradingBot:
                                         self.trader._add_action("⚠️ 确认重置", "再次按 D 确认重置为默认值")
                                     elif result == 'backed_up':
                                         backup_path = self.config_manager.backup_config()
-                                        self.trader._add_action("✓ 备份已创建", backup_path)
+                                        self.trader._add_action("[OK] 备份已创建", backup_path)
                                     elif result == 'restored':
-                                        self.trader._add_action("✓ 配置已恢复", "从备份恢复")
+                                        self.trader._add_action("[OK] 配置已恢复", "从备份恢复")
                                     elif result == 'deleted':
-                                        self.trader._add_action("✓ 备份已删除", "")
+                                        self.trader._add_action("[OK] 备份已删除", "")
                                     elif result == 'enter_edit':
                                         self.trader._add_action("ℹ️ 编辑模式", "数字输入或←→调整，Enter 确认")
                                 continue
@@ -621,7 +616,7 @@ class LiveTradingBot:
                                 if not self.try_enter_settings():
                                     pass  # 已在 try_enter_settings 中记录日志
                                 else:
-                                    self.trader._add_action("✓ 已进入设置", "↑↓切换 Enter 编辑 S 保存退出")
+                                    self.trader._add_action("[OK] 已进入设置", "↑↓切换 Enter 编辑 S 保存退出")
                             elif key_char == 'z':
                                 # Z 键：市价全平
                                 if self.trader.position:
@@ -731,7 +726,7 @@ def load_account(account_name: str = None):
     config_file = Path(__file__).parent.parent / "config" / "accounts.json"
     
     if not config_file.exists():
-        print("✗ 未找到 config/accounts.json")
+        print("[ERROR] 未找到 config/accounts.json")
         print("请先配置 API Key")
         return None, None, None
     
@@ -740,7 +735,7 @@ def load_account(account_name: str = None):
     
     accounts = config.get('accounts', [])
     if not accounts:
-        print("✗ 未配置账号")
+        print("[ERROR] 未配置账号")
         return None, None, None
     
     # 根据账户名称查找
@@ -748,7 +743,7 @@ def load_account(account_name: str = None):
         for acc in accounts:
             if acc['name'] == account_name:
                 return acc['api_key'], acc['api_secret'], acc['name']
-        print(f"✗ 未找到账户 '{account_name}'")
+        print(f"[ERROR] 未找到账户 '{account_name}'")
         return None, None, None
     
     # 使用默认账号或第一个账号

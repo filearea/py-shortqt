@@ -12,11 +12,11 @@ import websockets
 
 class BinanceListener:
     """币安 WebSocket 监听器"""
-    
+
     def __init__(self, symbol: str, ws_url: str):
         self.symbol = symbol.lower()
-        # v1.4.0 新增：订阅 K 线数据（1 分钟）
-        self.ws_url = f"{ws_url}/{self.symbol}@aggTrade/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m"
+        # v1.5.5 修复：用 bookTicker 替代 aggTrade，获取最新价格更稳定
+        self.ws_url = f"{ws_url}/{self.symbol}@bookTicker/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m"
         self.last_price = None
         self.orderbook = {'bids': [], 'asks': []}
         self.current_kline = None  # v1.4.0 新增：当前 K 线
@@ -43,11 +43,18 @@ class BinanceListener:
         
         while self.running:
             try:
-                async with websockets.connect(self.ws_url) as ws:
+                connect_kwargs = {
+                    'close_timeout': 5,
+                    'open_timeout': 10
+                }
+                if self.proxy:
+                    connect_kwargs['proxy'] = self.proxy
+
+                async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
                     self.connected = True
-                    print(f"✓ 已连接：{self.ws_url}")
+                    print("[OK] WebSocket 已连接")
                     reconnect_delay = 3  # 连接成功后重置延迟
-                    
+
                     while self.running:
                         message = await asyncio.wait_for(ws.recv(), timeout=30)
                         data = json.loads(message)
@@ -58,11 +65,6 @@ class BinanceListener:
                     print(f"WebSocket 断开，{reconnect_delay}秒后重连...")
                     await asyncio.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
-            except websockets.exceptions.ConnectionClosed:
-                self.connected = False
-                print(f"WebSocket 断开，{reconnect_delay}秒后重连...")
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
@@ -74,44 +76,56 @@ class BinanceListener:
     async def process_message(self, data: dict):
         """处理 WebSocket 消息 - v1.4.0 新增 K 线处理"""
         try:
-            if 'e' in data:
-                if data['e'] == 'aggTrade':
-                    # 实时成交
-                    price = Decimal(data['p'])
-                    self.last_price = price
-                    for callback in self.callbacks:
-                        await callback('ticker', {'price': price})
-                
-                elif data['e'] == 'depthUpdate':
-                    # 深度更新
-                    bids = [[Decimal(p), Decimal(q)] for p, q in data.get('b', [])]
-                    asks = [[Decimal(p), Decimal(q)] for p, q in data.get('a', [])]
-                    if bids:
-                        self.orderbook['bids'] = bids[:10]
-                    if asks:
-                        self.orderbook['asks'] = asks[:10]
-                    for callback in self.callbacks:
-                        await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
-                
-                elif data['e'] == 'kline':
-                    # v1.4.0 新增：K 线数据
-                    kline_data = data.get('k', {})
-                    kline = {
-                        'timestamp': kline_data.get('t', 0),
-                        'open': Decimal(kline_data.get('o', '0')),
-                        'high': Decimal(kline_data.get('h', '0')),
-                        'low': Decimal(kline_data.get('l', '0')),
-                        'close': Decimal(kline_data.get('c', '0')),
-                        'volume': Decimal(kline_data.get('v', '0')),
-                        'is_closed': kline_data.get('x', False)  # K 线是否完成
-                    }
-                    
-                    # 保存当前 K 线（用于指标计算）
-                    self.current_kline = kline
-                    
-                    # 触发 K 线更新回调
-                    for callback in self.callbacks:
-                        await callback('kline', kline)
+            event_type = data.get('e', '')
+
+            # bookTicker 事件（获取最新价格，比aggTrade更稳定）
+            # 格式: {"e":"bookTicker", "u":123, "s":"ETHUSDC", "b":"2113.02", "B":"10.5", "a":"2113.03", "A":"5.2"}
+            if event_type == 'bookTicker':
+                # 用买一价作为最新价格
+                price = Decimal(data['b'])
+                self.last_price = price
+                for callback in self.callbacks:
+                    await callback('ticker', {'price': price})
+                return
+
+            if event_type == 'aggTrade':
+                # 实时成交（保留作兼容）
+                price = Decimal(data['p'])
+                self.last_price = price
+                for callback in self.callbacks:
+                    await callback('ticker', {'price': price})
+
+            elif event_type == 'depthUpdate':
+                # 深度更新
+                bids = [[Decimal(p), Decimal(q)] for p, q in data.get('b', [])]
+                asks = [[Decimal(p), Decimal(q)] for p, q in data.get('a', [])]
+                if bids:
+                    self.orderbook['bids'] = bids[:10]
+                if asks:
+                    self.orderbook['asks'] = asks[:10]
+                for callback in self.callbacks:
+                    await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
+
+            elif event_type == 'kline':
+                # v1.4.0 新增：K 线数据
+                kline_data = data.get('k', {})
+                kline = {
+                    'timestamp': kline_data.get('t', 0),
+                    'open': Decimal(kline_data.get('o', '0')),
+                    'high': Decimal(kline_data.get('h', '0')),
+                    'low': Decimal(kline_data.get('l', '0')),
+                    'close': Decimal(kline_data.get('c', '0')),
+                    'volume': Decimal(kline_data.get('v', '0')),
+                    'is_closed': kline_data.get('x', False)  # K 线是否完成
+                }
+
+                # 保存当前 K 线（用于指标计算）
+                self.current_kline = kline
+
+                # 触发 K 线更新回调
+                for callback in self.callbacks:
+                    await callback('kline', kline)
+
             else:
                 # 可能是深度快照（没有 'e' 字段）
                 if 'lastUpdateId' in data and 'bids' in data and 'asks' in data:
@@ -122,5 +136,6 @@ class BinanceListener:
                     self.orderbook['asks'] = asks[:10]
                     for callback in self.callbacks:
                         await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
-        except Exception:
+        except Exception as e:
+            # 只打印错误信息，不打完整堆栈避免刷屏
             pass

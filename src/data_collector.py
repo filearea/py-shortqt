@@ -97,15 +97,16 @@ def get_date_from_timestamp(timestamp_ms: int) -> str:
 
 # ==================== K 线数据获取 ====================
 
-def fetch_klines(symbol: str, start_time: Optional[int] = None, limit: int = KLINES_LIMIT) -> List[Dict]:
+def fetch_klines(symbol: str, start_time: Optional[int] = None, end_time: Optional[int] = None, limit: int = KLINES_LIMIT) -> List[Dict]:
     """
     获取 K 线数据
-    
+
     Args:
         symbol: 交易对
         start_time: 开始时间（毫秒）
+        end_time: 结束时间（毫秒），用于过滤超出当天的 K 线
         limit: 每次获取数量（最多 1500）
-    
+
     Returns:
         K 线数据列表
     """
@@ -142,7 +143,11 @@ def fetch_klines(symbol: str, start_time: Optional[int] = None, limit: int = KLI
             'buy_volume': float(k[10]),
             'buy_turnover': float(k[11])
         })
-    
+
+    # 按 end_time 过滤，确保只保留当天的数据
+    if end_time:
+        result = [k for k in result if k['timestamp'] < end_time]
+
     return result
 
 def get_last_timestamp(file_path: Path) -> Optional[int]:
@@ -193,17 +198,33 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
     while current_date <= now:
         date_str = current_date.strftime("%Y-%m-%d")
         file_path = get_file_path(KLINES_DIR, symbol, date_str)
-        
+
+        # v1.5.5 修复：先定义这些变量（移到if外面，避免文件不存在时报错）
+        day_start_ms = int(current_date.timestamp() * 1000)
+        day_end_ms = int((current_date + timedelta(days=1)).timestamp() * 1000)
+        is_today = (current_date.date() == now.date())
+        existing_data = []
+        existing_count = 0
+
         # 检查是否已存在且完整
         if file_path.exists():
             existing_data = load_existing_data(file_path)
+
+            # v1.5.5 修复：清洗跨日期数据（旧Bug导致的污染）
+            # 只保留当天时间范围内的K线
+            cleaned_data = [k for k in existing_data if day_start_ms <= k['timestamp'] < day_end_ms]
+            if len(cleaned_data) != len(existing_data):
+                removed_count = len(existing_data) - len(cleaned_data)
+                print(f"[CLEAN] {date_str}: 清洗掉 {removed_count} 根跨日期污染数据")
+                # 重新写入清洗后的数据
+                save_data(file_path, cleaned_data, append=False)
+                existing_data = cleaned_data
+
             existing_count = len(existing_data)
-            
+
             # 判断是否需要补全
-            # 如果是今天，数据可能不完整，需要补全
-            is_today = (current_date.date() == now.date())
             is_complete = existing_count >= EXPECTED_KLINES_PER_DAY
-            
+
             if not is_today and is_complete:
                 print(f"[OK] {date_str}: 已完整 ({existing_count}根)")
                 current_date += timedelta(days=1)
@@ -214,18 +235,20 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
                 print(f"[INFO] {date_str}: 今天的数据 ({existing_count}根)，检查是否需要补全")
             else:
                 print(f"[WARN] {date_str}: 无数据")
-        
+        else:
+            print(f"[WARN] {date_str}: 文件不存在，需要创建")
+
         # 计算当天起始时间
-        start_time = int(current_date.timestamp() * 1000)
-        end_time = int((current_date + timedelta(days=1)).timestamp() * 1000)
-        
+        start_time = day_start_ms
+        end_time = day_end_ms
+
         # 如果是今天，end_time 设为当前时间
         if is_today:
             end_time = int(now.timestamp() * 1000)
-        
+
         # 检查已有数据，获取最后一条 K 线的时间
         last_timestamp = None
-        if file_path.exists() and existing_data:
+        if existing_data:
             last_timestamp = existing_data[-1].get('timestamp')
             print(f"[INFO] {date_str}: 最后一条 K 线时间：{datetime.fromtimestamp(last_timestamp/1000)}")
         
@@ -244,7 +267,7 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
             # API 限流
             last_request_time = rate_limit_sleep(last_request_time, WEIGHT_PER_KLINES)
             
-            klines = fetch_klines(symbol, start_time=current_start, limit=KLINES_LIMIT)
+            klines = fetch_klines(symbol, start_time=current_start, end_time=end_time, limit=KLINES_LIMIT)
             
             if not klines:
                 break
