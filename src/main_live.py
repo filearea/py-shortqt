@@ -266,14 +266,12 @@ class LiveTradingBot:
                     self.log_manager.system.info(f"[调试] 首次收到深度数据：bids={len(bids)}, asks={len(asks)}")
                 
                 self.trader.update_orderbook(bids, asks)
-                
-                # 更新指标管理器的订单簿数据（v1.4.0 新增）
-                from decimal import Decimal
-                bids_decimal = [(Decimal(str(b[0])), Decimal(str(b[1]))) for b in bids]
-                asks_decimal = [(Decimal(str(a[0])), Decimal(str(a[1]))) for a in asks]
+
+                # 复用已转换的深度数据（update_orderbook 已做 Decimal 转换）
+                ob = self.trader.orderbook
+                bids_decimal = [(b[0], b[1]) for b in ob['bids']]
+                asks_decimal = [(a[0], a[1]) for a in ob['asks']]
                 self.indicators.update_orderbook(bids_decimal, asks_decimal)
-                
-                # v1.4.1 新增：定时保存订单簿快照
                 self.recorder.save_orderbook(bids_decimal, asks_decimal)
             
             elif event_type == 'kline':
@@ -453,10 +451,9 @@ class LiveTradingBot:
         print("=" * 70)
         
         try:
-            # v1.5.0 修复：降低刷新频率，避免抖动
             with Live(
                 self.ui.render(),
-                refresh_per_second=2,  # 降低到 2Hz
+                refresh_per_second=10,  # 与深度数据更新频率一致（100ms），满足剥头皮盘感需求
                 screen=True,
                 redirect_stdout=True,
                 redirect_stderr=True,
@@ -464,14 +461,11 @@ class LiveTradingBot:
             ) as live:
                 while self.running:
                     try:
-                        # 先刷新 UI
+                        # 先刷新 UI（Rich Live 内部 refresh_per_second=2 自动节流）
                         if self.in_settings:
                             live.update(self.settings_ui.render())
                         else:
                             live.update(self.ui.render())
-                        
-                        # 强制刷新，避免窗口变化时残留
-                        live.refresh()
                     except Exception as e:
                         self.log_manager.system.error(f"UI 更新错误：{e}")
                         continue
@@ -637,18 +631,18 @@ class LiveTradingBot:
                     # 成交检测：bookTicker 穿透 → REST 确认（零消耗 unless 穿透）
                     await self.trader.check_pending_order_filled()
 
-                    # 同步账户信息
-                    self.trader.sync_account()
-                    
-                    # 定期同步持仓（每 600 帧 = 约 60 秒，如果有挂单则每 100 帧 = 约 10 秒）
+                    # 节流：同步账户和持仓（避免每帧 REST 阻塞事件循环）
                     if not hasattr(self, '_sync_counter'):
                         self._sync_counter = 0
                     self._sync_counter += 1
-                    
-                    # 如果有挂单，更频繁地同步（每 100 帧）
+
+                    # 有挂单：每 100 帧（~5 秒）同步账户 + 持仓
                     if self.trader.pending_order and self._sync_counter % 100 == 0:
+                        self.trader.sync_account()
                         await self.trader.sync_position_from_exchange()
-                    # 否则每 600 帧同步一次
+                    # 无挂单：每 300 帧（~15 秒）同步账户，每 600 帧（~30 秒）同步持仓
+                    elif self._sync_counter % 300 == 0:
+                        self.trader.sync_account()
                     elif self._sync_counter % 600 == 0:
                         await self.trader.sync_position_from_exchange()
                     

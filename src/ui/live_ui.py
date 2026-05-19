@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 实盘交易 UI - v1.4.1 优化布局
 """
@@ -12,6 +12,15 @@ from rich.layout import Layout
 from rich.text import Text
 from decimal import Decimal
 from src import __version__
+
+
+def _pnl_style_from_details(details: str) -> str:
+    """从 details 中提取 PnL 并返回颜色：盈利绿色，亏损红色，0 按盈利"""
+    match = re.search(r'PnL:\s*([+-]?[\d.]+)', details)
+    if match:
+        pnl = float(match.group(1))
+        return 'green' if pnl >= 0 else 'red'
+    return None
 
 
 class LiveTradingUI:
@@ -247,10 +256,35 @@ class LiveTradingUI:
             
             # v1.5.0 新增：移动止损和浮亏保护状态
             if self.trader.trailing_stop_manager:
-                ts_status = self.trader.trailing_stop_manager.get_status()
-                if ts_status.get('status') == '已激活':
-                    acc_text.append(f"移动止损：{ts_status.get('active_levels')}/{ts_status.get('grid_count')}格\n", style="cyan")
-            
+                ts = self.trader.trailing_stop_manager
+                if ts.enabled and ts.entry_price and ts.grid_prices:
+                    # 用 max_level_reached 判断颜色（价格回落不回退）
+                    max_reached = ts.max_level_reached
+                    # 当前位置
+                    current_level = ts._get_current_level(self.trader.last_price) if self.trader.last_price else 0
+                    # 标题行
+                    acc_text.append("移动止损：\n", style="bold cyan")
+                    # 限制显示行数，避免溢出（最多显示 12 格）
+                    max_show = min(len(ts.grid_prices), 12)
+                    for i in range(max_show):
+                        gp = ts.grid_prices[i]
+                        level = i + 1
+                        if level == current_level:
+                            # 当前所在格 — 黄色高亮
+                            marker = "▶"
+                            style = "yellow"
+                        elif level <= max_reached:
+                            # 曾触发但已回落 — 绿色（不回退）
+                            marker = "✓"
+                            style = "green"
+                        else:
+                            # 未触发
+                            marker = "○"
+                            style = "dim"
+                        acc_text.append(f"  {marker} 第{level}格：{gp:.2f}\n", style=style)
+                    if len(ts.grid_prices) > max_show:
+                        acc_text.append(f"  ... 共{len(ts.grid_prices)}格\n", style="dim")
+
             if self.trader.loss_protection_manager:
                 lp_status = self.trader.loss_protection_manager.get_status()
                 if lp_status.get('status') == '已保护':
@@ -395,7 +429,7 @@ class LiveTradingUI:
     def _render_log(self) -> Text:
         """渲染日志（带颜色高亮 + 错误显示）"""
         log_text = Text()
-        
+
         # 显示最近的错误日志（如果有）- 红色背景高亮
         if hasattr(self.trader, 'error_log') and self.trader.error_log:
             errors = self.trader.error_log[-5:]  # 显示最近 5 条错误
@@ -408,7 +442,7 @@ class LiveTradingUI:
                 log_text.append(f"  [{time_str}] ", style="dim")
                 log_text.append(f"{msg}\n", style="red")
             log_text.append("\n")
-        
+
         # 显示最近的操作日志
         if hasattr(self.trader, 'action_log') and self.trader.action_log:
             actions = self.trader.action_log[-10:]  # 显示最近 10 条
@@ -417,10 +451,17 @@ class LiveTradingUI:
                 time_str = action['time'].strftime('%m-%d %H:%M:%S.%f')[:-3] if hasattr(action['time'], 'strftime') else ''
                 action_name = action['action']
                 details = action['details']
-                
-                # 根据日志类型设置颜色
+
+                # --- 优先：含 PnL 的日志，按盈亏着色 ---
+                pnl_style = _pnl_style_from_details(details)
+
+                # 1. 成交类 — 含 PnL 的按盈亏，否则按类型
                 if '成交' in action_name:
-                    if '开仓' in action_name:
+                    if pnl_style:
+                        log_text.append(f"{time_str}  ", style="dim")
+                        log_text.append(f"{action_name}  ", style=f"bold {pnl_style}")
+                        log_text.append(f"{details}\n", style=pnl_style)
+                    elif '开仓' in action_name:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold cyan")
                         log_text.append(f"{details}\n", style="cyan")
@@ -428,35 +469,94 @@ class LiveTradingUI:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold green")
                         log_text.append(f"{details}\n", style="green")
-                    elif '止损' in action_name:
+                    elif '止损' in action_name or '保底止损' in action_name:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold red")
                         log_text.append(f"{details}\n", style="red")
-                    elif '平仓' in action_name or 'PnL' in details:
+                    else:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold yellow")
-                        # PnL 正负颜色
-                        if 'PnL' in details:
-                            if '+' in details:
-                                log_text.append(f"{details}\n", style="green")
-                            elif '-' in details:
-                                log_text.append(f"{details}\n", style="red")
-                            else:
-                                log_text.append(f"{details}\n", style="yellow")
-                        else:
-                            log_text.append(f"{details}\n", style="yellow")
-                elif '挂单' in action_name or '已下' in action_name:
+                        log_text.append(f"{details}\n", style="yellow")
+
+                # 2. 下单类（止盈/止损/保底/开仓/提前平仓）
+                elif '已下' in action_name or '挂单' in action_name:
+                    if '止盈' in action_name:
+                        log_text.append(f"{time_str}  ", style="dim")
+                        log_text.append(f"{action_name}  ", style="bold green")
+                        log_text.append(f"{details}\n", style="green")
+                    elif '止损' in action_name or '保底' in action_name:
+                        log_text.append(f"{time_str}  ", style="dim")
+                        log_text.append(f"{action_name}  ", style="bold red")
+                        log_text.append(f"{details}\n", style="red")
+                    else:
+                        log_text.append(f"{time_str}  ", style="dim")
+                        log_text.append(f"{action_name}  ", style="bold blue")
+                        log_text.append(f"{details}\n", style="blue")
+
+                # 3. 撤销/取消类
+                elif '撤销' in action_name or '取消' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
-                    log_text.append(f"{action_name}  ", style="blue")
-                    log_text.append(f"{details}\n", style="default")
-                elif '撤销' in action_name:
+                    log_text.append(f"{action_name}  ", style="dim yellow")
+                    log_text.append(f"{details}\n", style="dim yellow")
+
+                # 4. 持仓同步/更新类
+                elif '持仓同步' in action_name:
+                    log_text.append(f"{time_str}  ", style="dim")
+                    log_text.append(f"{action_name}  ", style="bold cyan")
+                    log_text.append(f"{details}\n", style=pnl_style if pnl_style else "cyan")
+
+                # 5. 持仓超时（浮亏保护 / 浮盈保本）
+                elif '持仓超时' in action_name:
+                    log_text.append(f"{time_str}  ", style="dim")
+                    log_text.append(f"{action_name}  ", style="bold yellow")
+                    log_text.append(f"{details}\n", style=pnl_style if pnl_style else "yellow")
+
+                # 6. 移动止损
+                elif '移动止损' in action_name:
+                    if '失败' in action_name or '失败' in details:
+                        log_text.append(f"{time_str}  ", style="dim")
+                        log_text.append(f"{action_name}  ", style="bold red")
+                        log_text.append(f"{details}\n", style="red")
+                    else:
+                        log_text.append(f"{time_str}  ", style="dim")
+                        log_text.append(f"{action_name}  ", style="bold cyan")
+                        log_text.append(f"{details}\n", style="cyan")
+
+                # 7. 恢复/保护类（止盈恢复、浮盈保护等）
+                elif '恢复' in action_name or '保护' in action_name or '保本' in action_name:
+                    log_text.append(f"{time_str}  ", style="dim")
+                    log_text.append(f"{action_name}  ", style="bold green")
+                    log_text.append(f"{details}\n", style="green")
+
+                # 8. 错误/失败类
+                elif '错误' in action_name or '失败' in action_name:
+                    log_text.append(f"{time_str}  ", style="dim")
+                    log_text.append(f"{action_name}  ", style="bold red")
+                    log_text.append(f"{details}\n", style="red")
+
+                # 9. 初始化/开始
+                elif '初始化' in action_name or '开始' in action_name:
+                    log_text.append(f"{time_str}  ", style="dim")
+                    log_text.append(f"{action_name}  ", style="bold green")
+                    log_text.append(f"{details}\n", style="green")
+
+                # 10. 检测类
+                elif '检测' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="dim")
-                    log_text.append(f"{details}\n", style="dim")
+                    log_text.append(f"{details}\n", style="default")
+
+                # 11. 异常类
+                elif '异常' in action_name:
+                    log_text.append(f"{time_str}  ", style="dim")
+                    log_text.append(f"{action_name}  ", style="bold red")
+                    log_text.append(f"{details}\n", style="red")
+
+                # 12. 默认
                 else:
                     log_text.append(f"{time_str}  {action_name}  {details}\n")
         else:
             log_text.append("等待操作...\n", style="dim")
-        
+
         return log_text
 

@@ -6,6 +6,7 @@
 import asyncio
 import json
 import os
+import time
 from decimal import Decimal
 import websockets
 
@@ -15,15 +16,17 @@ class BinanceListener:
 
     def __init__(self, symbol: str, ws_url: str):
         self.symbol = symbol.lower()
-        # v1.5.5 修复：用 bookTicker 替代 aggTrade，获取最新价格更稳定
         self.ws_url = f"{ws_url}/{self.symbol}@bookTicker/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m"
         self.last_price = None
         self.orderbook = {'bids': [], 'asks': []}
-        self.current_kline = None  # v1.4.0 新增：当前 K 线
+        self.current_kline = None
         self.callbacks = []
         self.running = False
         self.connected = False
-        
+
+        # bookTicker 节流：最多每 200ms 回调一次（避免事件循环拥塞）
+        self._last_book_ticker_time = 0
+
         # 代理配置
         self.proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
         if self.proxy:
@@ -78,33 +81,30 @@ class BinanceListener:
         try:
             event_type = data.get('e', '')
 
-            # bookTicker 事件（获取最新价格，比aggTrade更稳定）
+            # bookTicker 事件（获取最新价格）
             # 格式: {"e":"bookTicker", "u":123, "s":"ETHUSDC", "b":"2113.02", "B":"10.5", "a":"2113.03", "A":"5.2"}
             if event_type == 'bookTicker':
-                # 用买一价作为最新价格
                 price = Decimal(data['b'])
                 self.last_price = price
-                for callback in self.callbacks:
-                    await callback('ticker', {'price': price})
+                # 节流回调：最多每 200ms 触发一次，避免事件循环拥塞
+                now = time.monotonic()
+                if now - self._last_book_ticker_time >= 0.2:
+                    self._last_book_ticker_time = now
+                    for callback in self.callbacks:
+                        asyncio.create_task(callback('ticker', {'price': price}))
                 return
 
-            if event_type == 'aggTrade':
-                # 实时成交（保留作兼容）
-                price = Decimal(data['p'])
-                self.last_price = price
-                for callback in self.callbacks:
-                    await callback('ticker', {'price': price})
-
             elif event_type == 'depthUpdate':
-                # 深度更新
+                # 深度更新（更新内存 + 非阻塞回调，不阻塞 ws.recv()）
                 bids = [[Decimal(p), Decimal(q)] for p, q in data.get('b', [])]
                 asks = [[Decimal(p), Decimal(q)] for p, q in data.get('a', [])]
                 if bids:
                     self.orderbook['bids'] = bids[:10]
                 if asks:
                     self.orderbook['asks'] = asks[:10]
+                # 触发回调（UI 显示订单簿依赖此回调）
                 for callback in self.callbacks:
-                    await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
+                    asyncio.create_task(callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']}))
 
             elif event_type == 'kline':
                 # v1.4.0 新增：K 线数据
@@ -129,13 +129,13 @@ class BinanceListener:
             else:
                 # 可能是深度快照（没有 'e' 字段）
                 if 'lastUpdateId' in data and 'bids' in data and 'asks' in data:
-                    # 初始深度快照
+                    # 初始深度快照（更新内存 + 回调，只触发一次）
                     bids = [[Decimal(p), Decimal(q)] for p, q in data.get('bids', [])]
                     asks = [[Decimal(p), Decimal(q)] for p, q in data.get('asks', [])]
                     self.orderbook['bids'] = bids[:10]
                     self.orderbook['asks'] = asks[:10]
                     for callback in self.callbacks:
-                        await callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']})
+                        asyncio.create_task(callback('depth', {'bids': self.orderbook['bids'], 'asks': self.orderbook['asks']}))
         except Exception as e:
             # 只打印错误信息，不打完整堆栈避免刷屏
             pass

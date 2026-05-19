@@ -185,6 +185,8 @@ class LiveTrader:
             # 如果程序有持仓但实际没有，清除（彻底平仓）
             elif total_size == 0 and self.position:
                 print(f"\n[持仓同步] 持仓已平仓（程序未感知）")
+                # 主动刷新账户余额后再记录
+                self.sync_account()
                 # 记录平仓后账户余额（用于复合收益率计算）
                 if self.logger:
                     self.logger.log_balance('position_closed', self.available_balance, {
@@ -196,6 +198,10 @@ class LiveTrader:
                 self.tp_order = None
                 self.sl_order = None
                 self.stop_market_order = None
+                if self.trailing_stop_manager:
+                    asyncio.create_task(self.trailing_stop_manager.on_position_closed())
+                if self.loss_protection_manager:
+                    self.loss_protection_manager.on_position_closed()
                 self._add_action("持仓同步", "持仓已清除")
             
             return total_size > 0
@@ -454,6 +460,40 @@ class LiveTrader:
                 # 清空订单状态
                 self._cancel_other_orders(exclude='none')
         
+        # 移动止损订单成交（algo 单不在 tp/sl/stop_market 中，需单独处理）
+        elif self.trailing_stop_manager and order_id in self.trailing_stop_manager.active_orders.values():
+            if order_status == 'FILLED':
+                fill_price = Decimal(order_data.get('ap', '0'))
+                fill_qty = Decimal(order_data.get('z', '0'))
+                commission = Decimal(order_data.get('fc', '0'))
+
+                if self.position:
+                    entry_price = self.position['entry_price']
+                    size = self.position['size']
+                    if self.position['side'] == 'LONG':
+                        pnl = (fill_price - entry_price) * fill_qty - commission
+                    else:
+                        pnl = (entry_price - fill_price) * fill_qty - commission
+
+                    duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
+
+                    print(f"[移动止损成交] 移动止损单已成交！")
+                    print(f"  成交价：{fill_price}, 成交量：{fill_qty}")
+                    print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
+                    self._add_action("移动止损成交", f"PnL: {pnl:+.6f} USDT")
+
+                    if self.logger:
+                        self.logger.update_signal_result('TS', float(pnl), duration)
+                        self.logger.log_balance('position_closed', self.available_balance, {
+                            'reason': 'TS',
+                            'pnl': float(pnl),
+                            'entry_price': float(entry_price),
+                            'close_price': float(fill_price)
+                        })
+
+                # 清理所有订单和持仓状态
+                self._cancel_other_orders(exclude='none')
+
         # 任何订单成交（全部或部分）→ 触发持仓同步
         if order_status in ['FILLED', 'PARTIALLY_FILLED']:
             asyncio.create_task(self._sync_position())
@@ -484,19 +524,26 @@ class LiveTrader:
                 if self.position:
                     # 订单成交时已经打印过 PnL，这里只清空状态
                     print(f"[持仓同步] 持仓已清空，撤销所有挂单...")
-                    
+
+                    # 主动刷新账户余额
+                    self.sync_account()
+
                     # 批量撤销所有订单（普通订单 + 条件单）
                     try:
                         self.api.cancel_all_open_orders(self.symbol)
                         print(f"[批量撤销] 已撤销所有订单")
                     except Exception as e:
                         print(f"[批量撤销失败] {e}")
-                    
+
                     # 清空本地状态
                     self.position = None
                     self.tp_order = None
                     self.sl_order = None
                     self.stop_market_order = None
+                    if self.trailing_stop_manager:
+                        asyncio.create_task(self.trailing_stop_manager.on_position_closed())
+                    if self.loss_protection_manager:
+                        self.loss_protection_manager.on_position_closed()
             
             else:
                 # 有持仓 → 更新状态
@@ -531,7 +578,10 @@ class LiveTrader:
             # 批量撤销所有订单（普通订单 + 条件单）
             print(f"[批量撤销] 撤销所有订单...")
             self.api.cancel_all_open_orders(self.symbol)
-            
+
+            # 主动刷新账户余额
+            self.sync_account()
+
             # 清空本地状态
             if exclude != 'tp':
                 self.tp_order = None
@@ -539,15 +589,15 @@ class LiveTrader:
                 self.sl_order = None
             if exclude != 'stop_market':
                 self.stop_market_order = None
-            
+
             self.position = None
-            
+
             # v1.5.0 新增：清理移动止损和浮亏保护状态
             if self.trailing_stop_manager:
                 asyncio.create_task(self.trailing_stop_manager.on_position_closed())
             if self.loss_protection_manager:
                 self.loss_protection_manager.on_position_closed()
-            
+
             print("✓ 其他订单已撤销，持仓已清空")
         
         except Exception as e:
@@ -1166,7 +1216,12 @@ class LiveTrader:
             self.stop_market_order = None
             self.early_close_order = None
             self.pending_order = None
-            
+
+            if self.trailing_stop_manager:
+                asyncio.create_task(self.trailing_stop_manager.on_position_closed())
+            if self.loss_protection_manager:
+                self.loss_protection_manager.on_position_closed()
+
             return True
         except Exception as e:
             print(f"  ✗ 市价全平失败：{e}")
@@ -1428,7 +1483,7 @@ class LiveTrader:
         asyncio.create_task(self._safe_place_tp_sl_orders())
     
     def sync_account(self):
-        """同步账户信息"""
+        """同步账户信息（REST 调用，应在主循环中节流使用）"""
         try:
             account = self.api.get_account()
             for asset in account.get('assets', []):
