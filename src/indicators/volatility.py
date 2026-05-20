@@ -15,7 +15,7 @@ from typing import List, Dict, Optional
 from collections import deque
 
 
-# 阈值配置（来自文档）
+# 阈值配置（与 calculate_amplitude 返回值一致，ETHUSDC 1min 振幅约 0.03%-0.1%）
 THRESHOLDS = {
     '1min_amplitude': {
         'low': 0.03,      # < 0.03% 低波动
@@ -23,7 +23,7 @@ THRESHOLDS = {
         'normal_max': 0.15,
         'high': 0.3       # > 0.3% 高波动
     },
-    '1h_avg_amplitude': {
+    '1h_amplitude': {
         'ideal_min': 0.08,  # 理想区间 0.08% - 0.15%
         'ideal_max': 0.15
     },
@@ -44,8 +44,10 @@ class VolatilityAnalyzer:
         Args:
             max_klines: 最多保留的 K 线数量（默认 200 根，覆盖 3 小时+）
         """
-        self.klines = deque(maxlen=max_klines)  # 存储 K 线数据
+        self.klines = deque(maxlen=max_klines)  # 存储已收盘 K 线数据
         self.current_kline: Optional[Dict] = None  # 当前未完成的 K 线
+        self._atr_cache: Optional[float] = None
+        self._atr_cached_at_ts: int = 0  # 上次计算 ATR 时的 current_kline 时间戳
     
     def add_kline(self, kline: dict):
         """
@@ -89,7 +91,13 @@ class VolatilityAnalyzer:
         return amplitude
     
     def get_1min_amplitude(self) -> float:
-        """获取当前 1 分钟振幅（实时）"""
+        """获取最近一根已收盘 1 分钟 K 线的振幅"""
+        if len(self.klines) > 0:
+            return self.calculate_amplitude(self.klines[-1])
+        return 0.0
+
+    def get_current_amplitude(self) -> float:
+        """获取当前进行中 K 线的振幅（tick 级变化）"""
         if self.current_kline:
             return self.calculate_amplitude(self.current_kline)
         return 0.0
@@ -114,69 +122,98 @@ class VolatilityAnalyzer:
         amplitude = (highest - lowest) / open_price * 100
         return amplitude
     
-    def get_1h_avg_amplitude(self) -> float:
+    def get_1h_amplitude(self) -> float:
         """
-        获取 1 小时平均振幅（最近 60 根 K 线平均振幅）
+        获取 1 小时真实振幅：(近 60 根最高 - 近 60 根最低) / 60 根前开盘价 × 100%
         """
         if len(self.klines) < 60:
-            # 如果 K 线不足 60 根，用现有的计算
             if len(self.klines) == 0:
                 return 0.0
             klines_to_use = list(self.klines)
         else:
             klines_to_use = list(self.klines)[-60:]
-        
-        amplitudes = [self.calculate_amplitude(k) for k in klines_to_use]
-        avg_amplitude = sum(amplitudes) / len(amplitudes)
-        return avg_amplitude
+
+        highest = max(float(k['high']) for k in klines_to_use)
+        lowest = min(float(k['low']) for k in klines_to_use)
+        open_price = float(klines_to_use[0]['open'])
+
+        if open_price == 0:
+            return 0.0
+
+        amplitude = (highest - lowest) / open_price * 100
+        return amplitude
     
+    def get_1h_atr(self, period: int = 60) -> float:
+        """
+        获取过去 N 根 K 线的平均振幅（ATR 概念）——每根K线振幅的均值
+        """
+        if len(self.klines) < period:
+            if len(self.klines) == 0:
+                return 0.0
+            klines_to_use = list(self.klines)
+            period = len(klines_to_use)
+        else:
+            klines_to_use = list(self.klines)[-period:]
+
+        amplitudes = [self.calculate_amplitude(k) for k in klines_to_use]
+        return sum(amplitudes) / len(amplitudes)
+
     def get_amplitude_change_rate(self) -> float:
         """
-        获取振幅变化率：当前 1 分钟振幅 / 1 小时平均振幅
-        
-        每秒更新，反映波动率的加速/减速
+        获取振幅变化率：上根 1 分钟振幅 / 过去 60 根平均振幅（ATR60）
+
+        反映波动率的加速/减速
         """
         current_amp = self.get_1min_amplitude()
-        avg_amp = self.get_1h_avg_amplitude()
-        
+        avg_amp = self.get_1h_atr(60)
+
         if avg_amp == 0:
             return 1.0  # 默认正常
-        
+
         change_rate = current_amp / avg_amp
         return change_rate
     
     def get_atr(self, period: int = 14) -> Optional[float]:
         """
-        计算 ATR(14)：14 周期平均真实波幅
-        
+        计算 ATR(14)：14 周期平均真实波幅（带缓存，仅在新 K 线收盘时重算）
+
         Args:
             period: ATR 周期，默认 14
-        
+
         Returns:
             ATR 值，如果 K 线不足返回 None
         """
+        current_ts = self.current_kline['timestamp'] if self.current_kline else 0
+
+        if self._atr_cache is not None and self._atr_cached_at_ts == current_ts:
+            return self._atr_cache
+
         kline_list = list(self.klines)
         if len(kline_list) < period + 1:
+            self._atr_cache = None
+            self._atr_cached_at_ts = current_ts
             return None
-        
+
         tr_values = []
         for i in range(1, len(kline_list)):
             high = float(kline_list[i]['high'])
             low = float(kline_list[i]['low'])
             prev_close = float(kline_list[i-1]['close'])
-            
-            # 真实波幅 TR = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+
             tr1 = high - low
             tr2 = abs(high - prev_close)
             tr3 = abs(low - prev_close)
             tr = max(tr1, tr2, tr3)
             tr_values.append(tr)
-        
-        # 取最近 period 个 TR 值的平均
+
         if len(tr_values) < period:
+            self._atr_cache = None
+            self._atr_cached_at_ts = current_ts
             return None
-        
+
         atr = sum(tr_values[-period:]) / period
+        self._atr_cache = atr
+        self._atr_cached_at_ts = current_ts
         return atr
     
     def get_status_label(self, amplitude: float, threshold_key: str) -> str:
@@ -214,7 +251,7 @@ class VolatilityAnalyzer:
             指标字典 {
                 '1min_amplitude': float,
                 '5min_amplitude': float,
-                '1h_avg_amplitude': float,
+                '1h_amplitude': float,
                 'change_rate': float,
                 'atr_14': Optional[float],
                 '1min_status': str,
@@ -223,25 +260,68 @@ class VolatilityAnalyzer:
             }
         """
         amp_1min = self.get_1min_amplitude()
-        amp_1h = self.get_1h_avg_amplitude()
+        amp_1h = self.get_1h_amplitude()
         change_rate = self.get_amplitude_change_rate()
         atr = self.get_atr(14)
         
         return {
             '1min_amplitude': amp_1min,
             '5min_amplitude': self.get_5min_amplitude(),
-            '1h_avg_amplitude': amp_1h,
+            '1h_amplitude': amp_1h,
             'change_rate': change_rate,
             'atr_14': atr,
             '1min_status': self.get_status_label(amp_1min, '1min_amplitude'),
-            '1h_status': self.get_status_label(amp_1h, '1h_avg_amplitude'),
+            '1h_status': self.get_status_label(amp_1h, '1h_amplitude'),
             'change_rate_status': self.get_change_rate_status(change_rate)
         }
     
+    def get_kline_streak(self, lookback: int = 10) -> tuple[int, str]:
+        """
+        统计最近 N 根已收盘 K 线的连续性
+
+        Returns:
+            (最长连续数, 方向 'UP'/'DOWN'/'NONE')
+        """
+        if len(self.klines) < 2:
+            return 0, 'NONE'
+
+        klines_to_use = list(self.klines)[-lookback:]
+        directions = []
+        for k in klines_to_use:
+            if k['close'] > k['open']:
+                directions.append(1)  # 阳线
+            elif k['close'] < k['open']:
+                directions.append(-1)  # 阴线
+            else:
+                directions.append(0)  # 十字星，打断连续
+
+        # 统计最长连续
+        max_streak = 0
+        max_dir = 0
+        cur_streak = 0
+        cur_dir = 0
+
+        for d in directions:
+            if d != 0 and d == cur_dir:
+                cur_streak += 1
+            elif d != 0:
+                cur_dir = d
+                cur_streak = 1
+            else:
+                cur_streak = 0
+                cur_dir = 0
+
+            if cur_streak > max_streak:
+                max_streak = cur_streak
+                max_dir = cur_dir
+
+        direction = 'UP' if max_dir == 1 else ('DOWN' if max_dir == -1 else 'NONE')
+        return max_streak, direction
+
     def get_change_rate_status(self, change_rate: float) -> str:
         """获取振幅变化率状态"""
         thresholds = THRESHOLDS['amplitude_change_rate']
-        
+
         if change_rate < thresholds['ideal_min']:
             return '减速 🟡'
         elif change_rate > thresholds['ideal_max']:

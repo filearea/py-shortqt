@@ -20,6 +20,10 @@ if sys.platform == 'win32':
     # 设置控制台窗口尺寸（120 列 x 45 行）
     os.system('mode con: cols=120 lines=45')
 
+# 配置代理（REST API 和 WebSocket 都走本地代理）
+os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7890'
+os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
+
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -76,6 +80,8 @@ class LiveTradingBot:
         
         # 初始化指标管理器（v1.4.0 新增）
         self.indicators = IndicatorsManager()
+        # 设置交易参数（默认值，后续从配置同步）
+        self.indicators.set_trading_params(tp_points=0.99, sl_points=3.99, leverage=50, balance_usdt=50.0)
         
         # 初始化市场日志记录器（v1.4.0 新增）
         self.market_logger = MarketLogger(project_root / "logs")
@@ -119,8 +125,10 @@ class LiveTradingBot:
         
         # v1.5.3: 注入 api_client 并启动 K 线定时拉取
         self.recorder.api_client = self.trader.api
+        # 新 K 线收盘回调 → 更新指标（替代不可靠的 WebSocket kline 事件）
+        self.recorder.on_new_kline = self.indicators.update_kline
         self.recorder.start_kline_timer()
-        self.log_manager.system.info("K 线定时拉取已启动（每分钟从 API 获取完整数据）")
+        self.log_manager.system.info("K 线定时拉取已启动（每分钟从 API 获取完整数据，收盘时更新指标）")
         
         # 传递 error_log 给 trader（TUI 显示）
         self.trader.error_log = self.error_log
@@ -239,6 +247,10 @@ class LiveTradingBot:
                 self.trader.update_price(price)
                 # 记录价格
                 self.logger.record_price(price)
+
+                # tick级价格流追踪（剥头皮评分用）
+                if self.indicators:
+                    self.indicators.update_tick(price)
                 
                 # v1.5.0 新增：更新移动止损和浮亏保护
                 if self.trader.position and self.trader.trailing_stop_manager:
@@ -259,12 +271,12 @@ class LiveTradingBot:
             elif event_type == 'depth':
                 bids = data.get('bids', [])
                 asks = data.get('asks', [])
-                
-                # 调试：首次收到深度数据时打印日志
+
+                # 首次收到深度数据时打印日志
                 if not hasattr(self, '_depth_received'):
                     self._depth_received = True
                     self.log_manager.system.info(f"[调试] 首次收到深度数据：bids={len(bids)}, asks={len(asks)}")
-                
+
                 self.trader.update_orderbook(bids, asks)
 
                 # 复用已转换的深度数据（update_orderbook 已做 Decimal 转换）
@@ -275,11 +287,11 @@ class LiveTradingBot:
                 self.recorder.save_orderbook(bids_decimal, asks_decimal)
             
             elif event_type == 'kline':
-                # v1.4.0 新增：更新 K 线数据到指标管理器
-                # 检查数据完整性
+                # WebSocket kline 事件（用于 current_kline 跟踪）
+                # 指标更新已由 recorder 的 API 拉取回调驱动
                 if not data or data.get('close') is None:
                     return
-                
+
                 self.indicators.update_kline(data)
                 
                 # v1.4.1 新增：实时保存 K 线数据

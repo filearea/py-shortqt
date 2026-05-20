@@ -7,13 +7,14 @@
 
 from .volatility import VolatilityAnalyzer
 from .liquidity import LiquidityAnalyzer
-from .scorer import DynamicScorer, SimpleScorer
+from .scorer import ScalpingScorer
+from .tick_tracker import TickTracker
 from .manager import IndicatorsManager
 
 __all__ = [
     'VolatilityAnalyzer',
     'LiquidityAnalyzer',
-    'DynamicScorer',
-    'SimpleScorer',
+    'ScalpingScorer',
+    'TickTracker',
     'IndicatorsManager',
 ]

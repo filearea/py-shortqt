@@ -16,7 +16,9 @@ class BinanceListener:
 
     def __init__(self, symbol: str, ws_url: str):
         self.symbol = symbol.lower()
-        self.ws_url = f"{ws_url}/{self.symbol}@bookTicker/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m"
+        # 币安组合流格式：/stream?streams=symbol@stream1/symbol@stream2/...
+        ws_base = ws_url.replace('/ws', '')  # 去掉 /ws 后缀
+        self.ws_url = f"{ws_base}/stream?streams={self.symbol}@bookTicker/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m"
         self.last_price = None
         self.orderbook = {'bids': [], 'asks': []}
         self.current_kline = None
@@ -40,10 +42,10 @@ class BinanceListener:
         """连接 WebSocket"""
         self.running = True
         print(f"[WebSocket] 尝试连接：{self.ws_url}")
-        
+
         reconnect_delay = 3  # 初始重连延迟（秒）
         max_reconnect_delay = 30  # 最大重连延迟
-        
+
         while self.running:
             try:
                 connect_kwargs = {
@@ -53,36 +55,65 @@ class BinanceListener:
                 if self.proxy:
                     connect_kwargs['proxy'] = self.proxy
 
-                async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
-                    self.connected = True
-                    print("[OK] WebSocket 已连接")
-                    reconnect_delay = 3  # 连接成功后重置延迟
+                ws = await asyncio.wait_for(
+                    websockets.connect(self.ws_url, **connect_kwargs),
+                    timeout=15
+                )
+                self.connected = True
+                print("[OK] WebSocket 已连接")
+                reconnect_delay = 3  # 连接成功后重置延迟
 
+                try:
                     while self.running:
                         message = await asyncio.wait_for(ws.recv(), timeout=30)
                         data = json.loads(message)
                         await self.process_message(data)
+                finally:
+                    self.connected = False
+                    # 安全关闭连接（抑制 websockets 内部 AttributeError）
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    raise RuntimeError("WebSocket 连接已断开")
+
             except websockets.exceptions.ConnectionClosed:
                 self.connected = False
-                if self.running:  # 只有在非正常退出时才显示重连
-                    print(f"WebSocket 断开，{reconnect_delay}秒后重连...")
+                if self.running:
+                    print(f"⚠ 行情连接断开，{reconnect_delay}秒后重连...")
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+            except (RuntimeError, asyncio.CancelledError):
+                if self.running:
+                    print(f"⚠ 行情连接断开，{reconnect_delay}秒后重连...")
                     await asyncio.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
             except asyncio.TimeoutError:
-                continue
+                self.connected = False
+                if self.running:
+                    print(f"⚠ 行情连接超时，{reconnect_delay}秒后重连...")
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
             except Exception as e:
                 self.connected = False
-                print(f"WebSocket 错误：{e}，{reconnect_delay}秒后重连...")
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+                if self.running:
+                    print(f"⚠ 行情连接错误：{e}，{reconnect_delay}秒后重连...")
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
     
     async def process_message(self, data: dict):
-        """处理 WebSocket 消息 - v1.4.0 新增 K 线处理"""
+        """处理 WebSocket 消息"""
         try:
             event_type = data.get('e', '')
+            stream_name = data.get('stream', '')
+
+            # 组合流消息格式：{"stream":"ethusdc@kline_1m", "data":{...}}
+            # 需要解包 data 字段
+            if stream_name and 'data' in data:
+                data = data['data']
+                event_type = data.get('e', '')
 
             # bookTicker 事件（获取最新价格）
-            # 格式: {"e":"bookTicker", "u":123, "s":"ETHUSDC", "b":"2113.02", "B":"10.5", "a":"2113.03", "A":"5.2"}
             if event_type == 'bookTicker':
                 price = Decimal(data['b'])
                 self.last_price = price

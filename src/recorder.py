@@ -23,6 +23,7 @@ class RealtimeRecorder:
         self.symbol = symbol
         self.orderbook_interval = orderbook_interval
         self.api_client = api_client  # v1.5.3: 用于 API 拉取 K 线
+        self.on_new_kline = None  # 回调函数，接收 kline dict
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         KLINES_DIR.mkdir(parents=True, exist_ok=True)
         ORDERBOOK_DIR.mkdir(parents=True, exist_ok=True)
@@ -133,6 +134,23 @@ class RealtimeRecorder:
         
         self._last_kline_ts = ts
         self._klines_saved += 1
+
+        # 回调通知新 K 线（供指标管理器更新）
+        if self.on_new_kline:
+            from decimal import Decimal
+            kline_dict = {
+                'timestamp': ts,
+                'open': Decimal(k[1]),
+                'high': Decimal(k[2]),
+                'low': Decimal(k[3]),
+                'close': Decimal(k[4]),
+                'volume': Decimal(k[5]),
+                'is_closed': True,
+            }
+            try:
+                self.on_new_kline(kline_dict)
+            except Exception as e:
+                print(f"[recorder] on_new_kline 回调错误：{e}")
 
     def save_kline(self, kline: Dict[str, Any]):
         """WebSocket K 线回调 — v1.5.3 不再写文件，仅供指标计算"""

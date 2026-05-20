@@ -30,6 +30,10 @@ class UserStreamWebSocket:
         self.connected = False
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
 
+        # 代理配置
+        import os
+        self.proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
+
         # 回调函数
         self.order_callbacks: list[Callable] = []
         self.account_callbacks: list[Callable] = []
@@ -72,7 +76,10 @@ class UserStreamWebSocket:
 
         while self.running:
             try:
-                async with websockets.connect(self.ws_url, ping_timeout=10, ping_interval=20) as ws:
+                connect_kwargs = {'ping_timeout': 10, 'ping_interval': 20}
+                if self.proxy:
+                    connect_kwargs['proxy'] = self.proxy
+                async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
                     self.ws = ws
                     self.connected = True
                     print(f"✓ 用户数据流已连接")

@@ -370,11 +370,13 @@ class LiveTradingUI:
         
         # 获取指标数据
         display_data = self.indicators.get_display_data()
-        
+        snapshot = self.indicators.get_snapshot()
+        liq = snapshot.get('liquidity', {})
+
         # 创建单列表格（三行布局）
         table = Table(show_header=False, box=None, padding=(0, 1), expand=True)
         table.add_column("指标", ratio=1)
-        
+
         vol_lines = display_data['volatility_lines']
         liq_lines = display_data['liquidity_lines']
         score = display_data['score_display']
@@ -394,30 +396,50 @@ class LiveTradingUI:
         if any('🟡' in l or '🔴' in l for l in vol_lines):
             vol_row.append(" 🟡", style="yellow")
         
-        # 第二行：流动性
+        # 第二行：流动性（买卖深度分开颜色渲染）
         liq_row = Text()
         liq_row.append("流动性：", style="bold cyan")
-        liq_parts = []
         for line in liq_lines:
             clean_line = line.replace('🟡', '').replace('🔴', '').replace('[正常]', '').replace('[充足]', '').replace('[WARN]', '').strip()
-            if clean_line:
-                liq_parts.append(clean_line)
-        liq_row.append(" | ".join(liq_parts[:3]))  # 最多显示 3 个
+            if clean_line.startswith('买盘：'):
+                liq_row.append(f" {clean_line} ", style="green")
+            elif clean_line.startswith('卖盘：'):
+                liq_row.append(f" {clean_line} ", style="red")
+            elif clean_line:
+                liq_row.append(f" {clean_line} ", style="cyan")
+
+        # 深度不平衡指示
+        bid_depth = liq.get('bid_depth_surface', 0)
+        ask_depth = liq.get('ask_depth_surface', 0)
+        total_depth = bid_depth + ask_depth
+        if total_depth > 0:
+            imbalance = (bid_depth - ask_depth) / total_depth
+            if imbalance > 0.15:
+                liq_row.append(" 买盘占优 ", style="green")
+            elif imbalance < -0.15:
+                liq_row.append(" 卖盘占优 ", style="red")
         
-        if any('🟡' in l or '🔴' in l for l in liq_lines):
-            liq_row.append(" 🟡", style="yellow")
-        
-        # 第三行：综合评分 + 分类评分
+        # 第三行：综合评分 + 方向 + 分类评分
         score_row = Text()
-        score_row.append("综合：", style="bold cyan")
-        score_row.append(f"{score['score']:.1f}/100 ", style=f"bold {score['color']}")
-        score_row.append(f"{score['emoji']} {score['recommendation']}  |  ", style=f"bold {score['color']}")
-        
+        score_row.append(f"综合：{score['score']:.1f}/100 ", style=f"bold {score['color']}")
+        score_row.append(f"{score['emoji']} {score['recommendation']}  ", style=f"bold {score['color']}")
+
+        # 预计方向
+        direction_label = score.get('direction_label', '')
+        direction = score.get('direction', 'NONE')
+        dir_color = 'green' if direction == 'LONG' else ('red' if direction == 'SHORT' else 'dim')
+        score_row.append(f"{direction_label} ", style=dir_color)
+
+        # 置信度
+        confidence = score.get('confidence', 0)
+        score_row.append(f" 可信度:{confidence:.0%}  ", style="dim")
+
+        # 分类评分
         category_scores = score.get('category_scores', {})
         score_row.append("分类：", style="dim")
-        score_row.append(f"波动率:{category_scores.get('volatility', 50.0):.1f} ", style="cyan")
-        score_row.append(f"| 流动性:{category_scores.get('liquidity', 50.0):.1f} ", style="cyan")
-        score_row.append(f"| 动量:{category_scores.get('momentum', 50.0):.1f}", style="cyan")
+        score_row.append(f"趋势:{category_scores.get('trend', 0):.0f} ", style="yellow")
+        score_row.append(f"| 波动:{category_scores.get('volatility', 0):.0f} ", style="cyan")
+        score_row.append(f"| 深度:{category_scores.get('depth', 0):.0f}", style="cyan")
         
         # 添加行
         table.add_row(vol_row)

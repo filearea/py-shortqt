@@ -1,162 +1,156 @@
 # -*- coding: utf-8 -*-
 """
-指标管理器 - 统一管理所有盘面技术指标
+指标管理器 - 趋势剥头皮版
 
-整合波动率、流动性、评分模块，提供统一的数据接口。
+整合波动率、流动性、tick追踪、评分模块，提供统一的数据接口。
 """
 
+import time
 from decimal import Decimal
 from typing import Dict, List, Tuple, Optional
 
 from .volatility import VolatilityAnalyzer
 from .liquidity import LiquidityAnalyzer
-from .scorer import DynamicScorer, SimpleScorer
+from .scorer import ScalpingScorer
+from .tick_tracker import TickTracker
 
 
 class IndicatorsManager:
     """指标管理器"""
-    
+
     def __init__(self):
-        """初始化指标管理器 - v1.4.3 优化流动性计算"""
         self.volatility = VolatilityAnalyzer(max_klines=200)
-        self.liquidity = LiquidityAnalyzer(max_levels=50, price_step=0.5)  # 50 档 + 0.5 USDC
-        
-        # 动态评分器（数据充足时）
-        self.scorer = DynamicScorer(window_days=14)
-        
-        # 简单评分器（数据不足时）
-        self.simple_scorer = SimpleScorer()
-        
-        # 缓存最新指标
+        self.liquidity = LiquidityAnalyzer(max_levels=50, price_step=0.5)
+        self.tick_tracker = TickTracker(window_seconds=30.0)
+        self.scorer = ScalpingScorer()
+
+        # 动态参数（由交易系统传入）
+        self._tp_points: float = 0.99        # 止盈点数
+        self._sl_points: float = 3.99        # 止损点数
+        self._leverage: int = 50             # 杠杆倍数
+        self._balance_usdt: float = 50.0     # 账户余额 USDT
+
+        # 缓存
         self._last_snapshot: Optional[Dict] = None
-        
-        # 样本量统计
-        self._sample_count = 0
-    
+
+    # ─── 数据更新入口 ──────────────────────────────────────────
+
     def update_kline(self, kline: dict):
-        """
-        更新 K 线数据
-        
-        Args:
-            kline: K 线字典 {
-                'timestamp': int,
-                'open': Decimal,
-                'high': Decimal,
-                'low': Decimal,
-                'close': Decimal,
-                'volume': Decimal
-            }
-        """
+        """更新 K 线数据 — 仅收盘时重算"""
+        old_ts = self.volatility.current_kline['timestamp'] if self.volatility.current_kline else None
         self.volatility.add_kline(kline)
-        # K 线更新后重新计算评分
-        self._update_snapshot()
-    
-    def update_orderbook(self, bids: List[Tuple[Decimal, Decimal]], 
+        new_ts = self.volatility.current_kline['timestamp'] if self.volatility.current_kline else None
+
+        if old_ts is None or new_ts != old_ts:
+            self._update_snapshot()
+
+    def update_orderbook(self, bids: List[Tuple[Decimal, Decimal]],
                          asks: List[Tuple[Decimal, Decimal]]):
-        """
-        更新订单簿数据
-        
-        Args:
-            bids: 买单列表 [(价格，数量), ...]
-            asks: 卖单列表 [(价格，数量), ...]
-        """
+        """更新订单簿 — 每次 depth 事件都重算"""
         self.liquidity.update_orderbook(bids, asks)
-        # 订单簿更新后重新计算评分
         self._update_snapshot()
-    
+
+    def update_tick(self, price: Decimal):
+        """
+        更新 bookTicker 价格流（每秒约 5 次）
+        记录到 tick 追踪器，用于震荡检测
+        """
+        self.tick_tracker.add_tick(time.time(), float(price))
+
+    # ─── 动态参数设置 ──────────────────────────────────────────
+
+    def set_trading_params(self, tp_points: Optional[float] = None,
+                           sl_points: Optional[float] = None,
+                           leverage: Optional[int] = None,
+                           balance_usdt: Optional[float] = None):
+        """更新交易参数（止盈/止损/杠杆/余额）"""
+        if tp_points is not None:
+            self._tp_points = tp_points
+        if sl_points is not None:
+            self._sl_points = sl_points
+        if leverage is not None:
+            self._leverage = leverage
+        if balance_usdt is not None:
+            self._balance_usdt = balance_usdt
+
+    # ─── 内部计算 ───────────────────────────────────────────────
+
     def _update_snapshot(self):
-        """更新指标快照缓存 - v1.4.3 性能优化"""
-        # 每 10 次更新一次快照（减少计算频率）
-        if not hasattr(self, '_update_counter'):
-            self._update_counter = 0
-        
-        self._update_counter += 1
-        
-        # 只有 K 线更新时才重新计算（订单簿更新太频繁）
-        # 使用缓存的指标，避免重复计算
+        """重算全部指标 + 评分"""
         vol_metrics = self.volatility.get_metrics()
         liq_metrics = self.liquidity.get_metrics()
-        
-        # 准备评分数据（v1.1 版本）
-        current_data = {
+
+        # K线连续性
+        streak, streak_dir = self.volatility.get_kline_streak(lookback=10)
+
+        # Tick数据
+        tick_reversals = self.tick_tracker.get_reversal_count()
+        tick_amplitude_pct = self.tick_tracker.get_max_amplitude()
+        tick_momentum = self.tick_tracker.get_tick_momentum()
+
+        # TP目标距离（百分比）
+        current_price = float(self.volatility.current_kline['close']) if self.volatility.current_kline else 0
+        tp_pct = (self._tp_points / current_price * 100) if current_price > 0 else 0
+
+        # 所需ETH = (余额 × 杠杆) / 当前价格
+        required_eth = (self._balance_usdt * self._leverage / current_price) if current_price > 0 else 0
+
+        # 买卖深度
+        bid_depth = liq_metrics.get('bid_depth_surface', 0)
+        ask_depth = liq_metrics.get('ask_depth_surface', 0)
+
+        scorer_params = {
+            'kline_streak': streak,
+            'kline_streak_direction': streak_dir,
+            'tick_reversals': tick_reversals,
+            'tick_amplitude_pct': tick_amplitude_pct,
+            'tick_momentum': tick_momentum,
             '1min_amplitude': vol_metrics.get('1min_amplitude', 0),
-            '60min_avg_amplitude': vol_metrics.get('1h_avg_amplitude', 0),  # 60 分钟平均振幅
-            'spread_rate': liq_metrics.get('spread_rate', 0),
-            'depth_surface': liq_metrics.get('depth_surface', 0),
-            'depth_middle': liq_metrics.get('depth_middle', 0),
-            'depth_aggregated': liq_metrics.get('depth_aggregated', 0),  # 聚合层深度
-            'depth_imbalance': liq_metrics.get('depth_imbalance', 0),
-            'atr_14': vol_metrics.get('atr_14', 0),
-            # 'volume_trend': 1.0,  # v1.5 迭代添加
+            'tp_target_pct': tp_pct,
+            'bid_depth': bid_depth,
+            'ask_depth': ask_depth,
+            'required_eth': required_eth,
+            'predicted_direction': 'NONE',  # 由 scorer 决定
+            'current_price': current_price,
         }
-        
-        # 更新历史数据（每 10 次更新一次，减少评分计算）
-        if self._update_counter % 10 == 0:
-            self.scorer.update_history(current_data)
-            self._sample_count += 1
-        
-        # 根据样本量选择评分器
-        if self._sample_count < 30:
-            # 数据不足，使用简单评分器
-            score_result = self.simple_scorer.score(current_data)
-        else:
-            # 数据充足，使用动态评分器
-            score_result = self.scorer.score(current_data)
-        
+
+        score_result = self.scorer.score(scorer_params)
+
         self._last_snapshot = {
             'volatility': vol_metrics,
             'liquidity': liq_metrics,
             'score': score_result,
+            '_scorer_params': scorer_params,  # 内部用，TUI不显示
         }
-    
+
+    # ─── 对外接口 ───────────────────────────────────────────────
+
     def get_snapshot(self) -> dict:
-        """
-        获取完整的指标快照
-        
-        Returns:
-            指标字典 {
-                'volatility': dict,
-                'liquidity': dict,
-                'score': dict
-            }
-        """
         if self._last_snapshot is None:
             self._update_snapshot()
-        
         return self._last_snapshot
-    
+
     def get_quality_score(self) -> int:
-        """获取当前质量评分"""
         snapshot = self.get_snapshot()
-        return snapshot['score']['quality_score']
-    
+        return snapshot['score']['total_score']
+
     def get_recommendation(self) -> str:
-        """获取当前交易建议"""
         snapshot = self.get_snapshot()
         return snapshot['score']['recommendation']
-    
+
     def get_signal_emoji(self) -> str:
-        """获取信号灯 emoji"""
         snapshot = self.get_snapshot()
         return snapshot['score']['signal_emoji']
-    
+
     def get_signal_color(self) -> str:
-        """获取信号灯颜色"""
         snapshot = self.get_snapshot()
         return snapshot['score']['signal_color']
-    
+
     def check_alerts(self) -> list:
-        """
-        检查阈值告警
-        
-        Returns:
-            告警列表 [{'type': str, 'message': str, 'level': str}, ...]
-        """
         alerts = []
         vol = self.volatility.get_metrics()
         liq = self.liquidity.get_metrics()
-        
-        # 波动率告警
+
         if '🟡' in vol['1min_status']:
             alerts.append({
                 'type': 'volatility_low',
@@ -169,60 +163,65 @@ class IndicatorsManager:
                 'message': f"1 分钟振幅过高：{vol['1min_amplitude']:.3f}%",
                 'level': 'critical'
             })
-        
-        # 价差率告警
+
         if '🔴' in liq['spread_status']:
             alerts.append({
                 'type': 'spread_high',
-                'message': f"价差率过高：{liq['spread_rate']:.4f}%",
+                'message': f"价差率过高：{liq['spread_rate']:.6f}%",
                 'level': 'critical'
             })
-        
-        # 订单簿深度告警
+
         if '🔴' in liq['depth_status']:
             alerts.append({
                 'type': 'depth_low',
-                'message': f"订单簿深度不足：{liq['orderbook_depth']:.0f} ETH",
+                'message': f"订单簿深度不足：{liq['depth_surface']:.0f} ETH",
                 'level': 'critical'
             })
-        
+
         return alerts
-    
+
     def get_display_data(self) -> dict:
-        """
-        获取 TUI 展示数据（格式化后的指标）
-        
-        Returns:
-            展示数据字典
-        """
         snapshot = self.get_snapshot()
         vol = snapshot['volatility']
         liq = snapshot['liquidity']
         score = snapshot['score']
-        
+
+        # 方向指示
+        direction = score.get('direction', 'NONE')
+        direction_label = ''
+        if direction == 'LONG':
+            direction_label = '→ 看多'
+        elif direction == 'SHORT':
+            direction_label = '→ 看空'
+        else:
+            direction_label = '→ 无方向'
+
+        confidence = score.get('confidence', 0)
+        category_scores = score.get('category_scores', {})
+
         return {
             'volatility_lines': [
-                f"1 分钟：{vol['1min_amplitude']:.3f}% {vol['1min_status']}",
+                f"上根K线：{vol['1min_amplitude']:.3f}% {vol['1min_status']}",
                 f"5 分钟：{vol['5min_amplitude']:.3f}%",
-                f"1 小时：{vol['1h_avg_amplitude']:.3f}% {vol['1h_status']}",
+                f"1 小时：{vol['1h_amplitude']:.3f}% {vol['1h_status']}",
                 f"变化率：{vol['change_rate']:.2f} {vol['change_rate_status']}",
                 f"ATR(14): {vol['atr_14']:.4f}" if vol['atr_14'] else "ATR(14): --"
             ],
             'liquidity_lines': [
-                f"价差：{float(liq['spread']):.2f} USDC",
-                f"价差率：{liq['spread_rate']:.4f}% {liq['spread_status']}",
-                f"深度：{liq['depth_surface']:.0f} ETH {liq['depth_status']}"
+                f"价差：{float(liq['spread']):.4f} USDC",
+                f"价差率：{liq['spread_rate']:.6f}% {liq['spread_status']}",
+                f"买盘：{liq['bid_depth_surface']:.2f} ETH",
+                f"卖盘：{liq['ask_depth_surface']:.2f} ETH",
             ],
             'score_display': {
                 'emoji': score.get('signal_emoji', '🟡'),
                 'color': score.get('signal_color', 'yellow'),
                 'recommendation': score.get('recommendation', '观望'),
-                'score': score.get('total_score', 50.0),
-                'category_scores': score.get('category_scores', {
-                    'volatility': 50.0,
-                    'liquidity': 50.0,
-                    'momentum': 50.0,
-                })
+                'score': score.get('total_score', 0),
+                'direction': direction,
+                'direction_label': direction_label,
+                'confidence': confidence,
+                'category_scores': category_scores,
             },
             'alerts': self.check_alerts()
         }

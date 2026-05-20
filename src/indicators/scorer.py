@@ -1,212 +1,221 @@
 # -*- coding: utf-8 -*-
 """
-动态评分器 - v1.4.0
+趋势剥头皮评分器
 
-基于历史百分位数，动态评估盘面质量（0-100 分）
-输出：综合评分 + 分类评分 + 交易建议
+三维度评分：
+1. 趋势强度（40%）：K线连续性 + tick震荡，取高分
+2. 波动匹配（30%）：振幅 vs TP目标距离
+3. 深度充足度（30%）：买卖盘 vs 所需ETH
+
+输出：综合分数 + 预计方向 + 置信度
 """
 
-import json
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Dict, List, Optional
-from scipy import stats
+from datetime import datetime
+from typing import Dict
 
 
-class DynamicScorer:
-    """动态评分器 - 自动维护历史数据窗口（14 天）"""
-    
-    def __init__(self, window_days: int = 14, data_dir: Optional[Path] = None):
-        """
-        初始化评分器
-        
-        Args:
-            window_days: 历史数据窗口（天数）
-            data_dir: 数据目录（自动加载历史数据）
-        """
-        self.window_days = window_days
-        self.data_dir = data_dir
-        
-        # 历史数据存储（v1.1 版本）
-        self.historical_data = {
-            # 波动率指标
-            '1min_amplitude': [],       # 1 分钟振幅（已完成 K 线）
-            '60min_avg_amplitude': [],  # 60 分钟平均振幅（已完成 K 线）
-            
-            # 流动性指标
-            'spread_rate': [],
-            'depth_surface': [],        # 表层 20 档
-            'depth_middle': [],         # 中层 180 档
-            'depth_aggregated': [],     # 聚合层
-            'depth_imbalance': [],
-            
-            # 动量指标
-            'atr_14': [],
-            # 'volume_trend': [],  # v1.5 迭代添加
+class ScalpingScorer:
+    """趋势剥头皮评分器"""
+
+    def __init__(self):
+        # 趋势连续性阈值
+        self.streak_thresholds = {
+            5: 100,  # 5连 → 满分
+            4: 80,
+            3: 60,
+            2: 40,
         }
-        
-        # 如果提供了数据目录，自动加载历史数据
-        if data_dir and data_dir.exists():
-            self._load_historical_data()
-    
-    def _load_historical_data(self):
-        """从数据目录加载历史数据"""
-        # TODO: 实现从 data/klines 和 data/orderbook 加载历史数据
-        pass
-    
-    def update_history(self, new_data: Dict[str, float]):
-        """添加新数据，维护滚动窗口"""
-        cutoff = datetime.now() - timedelta(days=self.window_days)
-        
-        for key, value in new_data.items():
-            if key in self.historical_data:
-                self.historical_data[key].append({
-                    'value': value,
-                    'timestamp': datetime.now().isoformat()
-                })
-                
-                # 清理过期数据
-                self.historical_data[key] = [
-                    d for d in self.historical_data[key]
-                    if datetime.fromisoformat(d['timestamp']) > cutoff
-                ]
-    
-    def _get_history_values(self, key: str) -> List[float]:
-        """获取历史值列表"""
-        return [d['value'] for d in self.historical_data.get(key, [])]
-    
-    def _percentile_score(self, current_value: float, historical_data: List[float], 
-                          higher_is_better: bool = True) -> float:
-        """基于历史百分位数评分（0-100 分）- 优化版"""
-        if not historical_data:
-            return 50.0  # 默认中等分数
-        
-        # 过滤 None 值
-        historical_data = [x for x in historical_data if x is not None]
-        
-        if not historical_data:
+
+        # tick反转阈值
+        self.tick_reversal_thresholds = {
+            5: 100,  # 5次反转 → 满分
+            4: 80,
+            3: 60,
+            2: 40,
+        }
+
+        # 评分权重
+        self.weight_trend = 0.40
+        self.weight_vol = 0.30
+        self.weight_depth = 0.30
+
+    def _score_trend(self, params: Dict) -> tuple[float, str]:
+        """
+        趋势强度评分（40%）
+
+        K线连续性和tick震荡取高分，不叠加
+        返回 (分数, 方向 'UP'/'DOWN'/'NONE')
+        """
+        # A. K线连续性评分
+        kline_streak = params.get('kline_streak', 0)
+        kline_dir = params.get('kline_streak_direction', 'NONE')
+        kline_score = 0
+        for threshold, score in sorted(self.streak_thresholds.items(), reverse=True):
+            if kline_streak >= threshold:
+                kline_score = score
+                break
+
+        # B. tick震荡评分
+        tick_reversals = params.get('tick_reversals', 0)
+        tick_amplitude_pct = params.get('tick_amplitude_pct', 0)
+        tp_pct = params.get('tp_target_pct', 0)
+        tick_score = 0
+
+        if tick_reversals > 0 and tp_pct > 0:
+            # 反转次数达标 且 振幅足够
+            if tick_amplitude_pct >= tp_pct:
+                for threshold, score in sorted(self.tick_reversal_thresholds.items(), reverse=True):
+                    if tick_reversals >= threshold:
+                        tick_score = score
+                        break
+
+        # 取高分（趋势和震荡不同时发生）
+        if kline_score >= tick_score:
+            return float(kline_score), kline_dir
+        else:
+            return float(tick_score), params.get('tick_momentum', 'NONE')
+
+    def _score_volatility(self, params: Dict) -> float:
+        """
+        波动匹配评分（30%）
+
+        比较振幅和TP目标的比值
+        """
+        tp_pct = params.get('tp_target_pct', 0)
+        if tp_pct <= 0:
             return 50.0
-        
-        # 简化：只用简单百分位（跳过正态分布检验，减少计算）
-        sorted_data = sorted(historical_data)
-        count_below = sum(1 for x in sorted_data if x <= current_value)
-        percentile = count_below / len(sorted_data) * 100
-        
-        if higher_is_better:
-            score = percentile  # 越高分数越高
+
+        # 优先用tick振幅（更实时），其次用1min振幅
+        tick_amp = params.get('tick_amplitude_pct', 0)
+        min_amp = params.get('1min_amplitude', 0)
+        amplitude = max(tick_amp, min_amp)
+
+        if amplitude <= 0:
+            return 0.0
+
+        ratio = amplitude / tp_pct
+
+        # 线性映射
+        if ratio >= 2.0:
+            return 100.0  # 振幅是TP的2倍，轻松打到
+        elif ratio >= 1.0:
+            return 50.0 + (ratio - 1.0) / 1.0 * 50.0  # 50→100
+        elif ratio >= 0.5:
+            return 25.0 + (ratio - 0.5) / 0.5 * 25.0  # 25→50
         else:
-            score = 100 - percentile  # 越低分数越高
-        
-        return max(0.0, min(100.0, score))
-    
-    def _confidence_weight(self, sample_count: int, target_count: int = 100) -> float:
-        """根据样本量计算置信度权重"""
-        if sample_count < 30:
-            return sample_count / 30 * 0.5  # 最多 50% 权重
-        elif sample_count < target_count:
-            return 0.5 + (sample_count - 30) / (target_count - 30) * 0.5
+            return ratio / 0.5 * 25.0  # 0→25
+
+    def _score_depth(self, params: Dict) -> float:
+        """
+        深度充足度评分（30%）
+
+        买卖盘vs所需ETH量
+        """
+        required_eth = params.get('required_eth', 0)
+        if required_eth <= 0:
+            return 50.0
+
+        # 双向深度都检查（开多看买盘，开空看卖盘）
+        bid_depth = params.get('bid_depth', 0)
+        ask_depth = params.get('ask_depth', 0)
+
+        # 方向由趋势决定，但评分取最差边的保障
+        # 即：无论开多开空，对手盘都要能吃下
+        direction = params.get('predicted_direction', 'NONE')
+        if direction == 'LONG':
+            # 开多 → 平仓时卖盘要能吃下
+            opposing_depth = ask_depth
+        elif direction == 'SHORT':
+            # 开空 → 平仓时买盘要能吃下
+            opposing_depth = bid_depth
         else:
-            return 1.0
-    
-    def _calc_volatility_score(self, current_data: Dict[str, float], 
-                                history: Dict[str, List[float]]) -> float:
-        """波动率评分（30%）- 越低越好"""
-        amp_1min_score = self._percentile_score(
-            current_data.get('1min_amplitude', 0),
-            history.get('1min_amplitude', []),
-            higher_is_better=False
-        )
-        
-        amp_60min_score = self._percentile_score(
-            current_data.get('60min_avg_amplitude', 0),
-            history.get('60min_avg_amplitude', []),
-            higher_is_better=False
-        )
-        
-        # 平均波动率评分
-        vol_score = (amp_1min_score + amp_60min_score) / 2
-        
-        return vol_score
-    
-    def _calc_liquidity_score(self, current_data: Dict[str, float], 
-                               history: Dict[str, List[float]]) -> float:
-        """流动性评分（40%）- 分层加权"""
-        depth_surface_score = self._percentile_score(
-            current_data.get('depth_surface', 0),
-            history.get('depth_surface', []),
-            higher_is_better=True
-        )
-        
-        depth_middle_score = self._percentile_score(
-            current_data.get('depth_middle', 0),
-            history.get('depth_middle', []),
-            higher_is_better=True
-        )
-        
-        depth_agg_score = self._percentile_score(
-            current_data.get('depth_aggregated', 0),
-            history.get('depth_aggregated', []),
-            higher_is_better=True
-        )
-        
-        # 分层加权深度评分（50% + 40% + 10%）
-        depth_score = (
-            depth_surface_score * 0.50 +
-            depth_middle_score * 0.40 +
-            depth_agg_score * 0.10
-        )
-        
-        # 深度不平衡评分（越接近 0 越好）
-        imbalance = current_data.get('depth_imbalance', 0)
-        imbalance_score = self._percentile_score(
-            abs(imbalance),
-            [abs(x) for x in history.get('depth_imbalance', [])],
-            higher_is_better=False
-        )
-        
-        # 流动性综合评分
-        liq_score = depth_score * 0.80 + imbalance_score * 0.20
-        
-        return liq_score
-    
-    def _calc_momentum_score(self, current_data: Dict[str, float], 
-                              history: Dict[str, List[float]]) -> float:
-        """动量评分（30%）- v1.4 仅 ATR"""
-        atr_score = self._percentile_score(
-            current_data.get('atr_14', 0),
-            history.get('atr_14', []),
-            higher_is_better=True
-        )
-        
-        return atr_score  # 100% 权重
-    
-    def score(self, current_data: Dict[str, float]) -> Dict:
-        """计算当前盘面评分"""
-        # 提取历史值列表
-        history = {
-            key: self._get_history_values(key)
-            for key in self.historical_data.keys()
-        }
-        
-        # 1. 波动率评分（30%）
-        vol_score = self._calc_volatility_score(current_data, history)
-        
-        # 2. 流动性评分（40%）
-        liq_score = self._calc_liquidity_score(current_data, history)
-        
-        # 3. 动量评分（30%）
-        mom_score = self._calc_momentum_score(current_data, history)
-        
-        # 4. 综合评分
+            # 无方向 → 取较差的一边
+            opposing_depth = min(bid_depth, ask_depth)
+
+        ratio = opposing_depth / required_eth
+
+        if ratio >= 1.0:
+            return 100.0  # 完全能吃下
+        elif ratio >= 0.5:
+            return 50.0 + (ratio - 0.5) / 0.5 * 50.0  # 50→100
+        elif ratio >= 0.2:
+            return 25.0 + (ratio - 0.2) / 0.3 * 25.0  # 25→50
+        else:
+            return ratio / 0.2 * 25.0  # 0→25
+
+    def score(self, params: Dict) -> Dict:
+        """
+        综合评分
+
+        Args:
+            params: {
+                'kline_streak': int,           # 最长K线连续数
+                'kline_streak_direction': str, # 'UP'/'DOWN'/'NONE'
+                'tick_reversals': int,         # 30秒内tick反转次数
+                'tick_amplitude_pct': float,   # 30秒内tick振幅%
+                'tick_momentum': str,          # 'UP'/'DOWN'/'NONE'
+                '1min_amplitude': float,       # 上根K线振幅%
+                'tp_target_pct': float,        # TP目标距离%
+                'bid_depth': float,            # 买盘深度ETH
+                'ask_depth': float,            # 卖盘深度ETH
+                'required_eth': float,         # 所需ETH量
+                'current_price': float,        # 当前价格
+            }
+
+        Returns:
+            {
+                'total_score': float,
+                'direction': 'LONG'/'SHORT'/'NONE',
+                'confidence': float,
+                'category_scores': {...},
+                'recommendation': str,
+                'signal_emoji': str,
+                'signal_color': str,
+            }
+        """
+        # 1. 趋势评分
+        trend_score, trend_dir = self._score_trend(params)
+
+        # 2. 波动匹配评分
+        vol_score = self._score_volatility(params)
+
+        # 3. 深度充足度评分
+        depth_score = self._score_depth(params)
+
+        # 综合评分
         total_score = (
-            vol_score * 0.30 +
-            liq_score * 0.40 +
-            mom_score * 0.30
+            trend_score * self.weight_trend
+            + vol_score * self.weight_vol
+            + depth_score * self.weight_depth
         )
-        
-        # 5. 交易建议（统一两个字，避免 UI 闪动）
-        if total_score >= 75:
-            recommendation = "正常"
+
+        # 方向判定：综合趋势方向 + tick动量
+        predicted_direction = 'NONE'
+        if trend_dir != 'NONE':
+            predicted_direction = 'LONG' if trend_dir == 'UP' else 'SHORT'
+        else:
+            tick_momentum = params.get('tick_momentum', 'NONE')
+            if tick_momentum != 'NONE':
+                predicted_direction = 'LONG' if tick_momentum == 'UP' else 'SHORT'
+
+        # 置信度：基于趋势强度和数据可用性
+        confidence = 0.0
+        if trend_score >= 80:
+            confidence = 0.9
+        elif trend_score >= 60:
+            confidence = 0.7
+        elif trend_score >= 40:
+            confidence = 0.5
+        else:
+            confidence = 0.3
+
+        # 如果深度不足，降低置信度
+        if depth_score < 50:
+            confidence = min(confidence, 0.5)
+
+        # 交易建议
+        if total_score >= 70:
+            recommendation = "开仓"
             signal_emoji = "🟢"
             signal_color = "green"
         elif total_score >= 50:
@@ -217,81 +226,18 @@ class DynamicScorer:
             recommendation = "暂停"
             signal_emoji = "🔴"
             signal_color = "red"
-        
+
         return {
             'total_score': round(total_score, 1),
+            'direction': predicted_direction,
+            'confidence': confidence,
             'category_scores': {
+                'trend': round(trend_score, 1),
                 'volatility': round(vol_score, 1),
-                'liquidity': round(liq_score, 1),
-                'momentum': round(mom_score, 1),
+                'depth': round(depth_score, 1),
             },
             'recommendation': recommendation,
             'signal_emoji': signal_emoji,
             'signal_color': signal_color,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
         }
-
-
-class SimpleScorer:
-    """简单评分器（基于文档阈值，用于数据积累期）"""
-    
-    def __init__(self):
-        # 文档阈值（经验值）
-        self.thresholds = {
-            '1min_amplitude': {'low': 0.03, 'normal_min': 0.05, 'normal_max': 0.15, 'high': 0.3},
-            'spread_rate': {'excellent': 0.005, 'good': 0.01, 'acceptable': 0.02},
-            'depth_surface': {'good': 50, 'acceptable': 20},
-        }
-    
-    def score(self, current_data: Dict[str, float]) -> Dict:
-        """简化评分"""
-        return {
-            'total_score': 50.0,
-            'category_scores': {
-                'volatility': 50.0,
-                'liquidity': 50.0,
-                'momentum': 50.0,
-            },
-            'recommendation': "观望",
-            'signal_emoji': "🟡",
-            'signal_color': "yellow",
-            'timestamp': datetime.now().isoformat()
-        }
-
-
-if __name__ == "__main__":
-    # 测试示例
-    scorer = DynamicScorer(window_days=14)
-    
-    # 模拟历史数据
-    for i in range(100):
-        scorer.update_history({
-            '1min_amplitude': 0.05 + i * 0.001,
-            '60min_avg_amplitude': 0.06 + i * 0.0005,
-            'spread_rate': 0.005 + i * 0.0001,
-            'depth_surface': 50 + i,
-            'depth_middle': 100 + i * 2,
-            'depth_aggregated': 400 + i * 5,
-            'depth_imbalance': 0.01 + i * 0.001,
-            'atr_14': 1.0 + i * 0.01,
-        })
-    
-    # 当前数据
-    current_data = {
-        '1min_amplitude': 0.107,
-        '60min_avg_amplitude': 0.068,
-        'spread_rate': 0.0005,
-        'depth_surface': 55.0,
-        'depth_middle': 125.0,
-        'depth_aggregated': 460.0,
-        'depth_imbalance': 0.1,
-        'atr_14': 1.4,
-    }
-    
-    result = scorer.score(current_data)
-    
-    print(f"盘面质量评分：{result['total_score']}/100")
-    print(f"波动率评分：{result['category_scores']['volatility']}/100")
-    print(f"流动性评分：{result['category_scores']['liquidity']}/100")
-    print(f"动量评分：{result['category_scores']['momentum']}/100")
-    print(f"交易建议：{result['recommendation']} {result['signal_emoji']}")
