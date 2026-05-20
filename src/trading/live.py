@@ -53,6 +53,7 @@ class LiveTrader:
         self.available_balance: Decimal = Decimal('0')
         self.position_margin: Decimal = Decimal('0')
         self.order_margin: Decimal = Decimal('0')
+        self._ws_balance_update_reason: str = ''  # WS余额更新来源（用于调试）
         
         # 行情数据
         self.last_price: Optional[Decimal] = None
@@ -129,6 +130,7 @@ class LiveTrader:
                 testnet=self.testnet
             )
             self.user_stream_ws.add_order_callback(self._on_order_update)
+            self.user_stream_ws.add_account_callback(self._on_account_update)
             self.user_stream_task = asyncio.create_task(self.user_stream_ws.connect())
 
             # 等待 WebSocket 真正连接成功（最多 10 秒）
@@ -147,6 +149,20 @@ class LiveTrader:
             print(f"⚠ 用户数据流启动失败：{e}")
             print("  程序仍可正常运行，但订单状态更新可能有延迟")
             print("  建议：检查网络连接或防火墙设置")
+
+    def _on_account_update(self, account_data: dict):
+        """账户更新回调（WebSocket，实时）"""
+        try:
+            balances = account_data.get('B', [])
+            for bal in balances:
+                if bal.get('a') == 'USDC':
+                    wallet_balance = Decimal(bal.get('wb', '0'))
+                    cross_balance = Decimal(bal.get('cw', '0'))
+                    if wallet_balance > 0:
+                        self.available_balance = wallet_balance
+                        self._ws_balance_update_reason = account_data.get('m', '')
+        except Exception:
+            pass
     
     async def sync_position_from_exchange(self):
         """从交易所同步持仓状态（用于修复用户数据流失效时的状态不一致）"""
