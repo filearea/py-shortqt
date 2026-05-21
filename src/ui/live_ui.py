@@ -140,77 +140,90 @@ class LiveTradingUI:
         return f"行情：{ws_market} 订单：{ws_user}"
     
     def _render_orderbook(self, max_levels: int = 15) -> Table:
-        """渲染订单簿（动态调整档位，最新价永远居中，挂单价格标记）"""
+        """渲染订单簿（动态调整档位，最新价永远居中，特殊价格分类标记）"""
         from decimal import Decimal
-        
+
         ob_table = Table(show_header=False, box=None, padding=(0, 1))
         ob_table.add_column("价格", justify="right", width=10)
         ob_table.add_column("数量", justify="right", width=10)
-        
+
         asks = self.trader.orderbook.get('asks', [])
         bids = self.trader.orderbook.get('bids', [])
-        
-        # 收集所有用户挂单价格
-        user_order_prices = set()
-        
-        # 开仓挂单
-        if hasattr(self.trader, 'pending_order') and self.trader.pending_order:
-            user_order_prices.add(float(self.trader.pending_order['price']))
-        
-        # 止盈单
+
+        # 收集所有用户挂单价格 → {price: (symbol, color_tag)}
+        user_order_prices: dict[float, tuple[str, str]] = {}
+
+        def _add_price(price, symbol, color):
+            p = float(price)
+            if p > 0:
+                user_order_prices[p] = (symbol, color)
+
+        # 止盈单 ✦
         if hasattr(self.trader, 'tp_order') and self.trader.tp_order:
-            user_order_prices.add(float(self.trader.tp_order.get('price', 0)))
-        
-        # 止损单
+            _add_price(self.trader.tp_order.get('price', 0), '✦', 'bold green')
+
+        # 止损单 ✕
         if hasattr(self.trader, 'sl_order') and self.trader.sl_order:
-            user_order_prices.add(float(self.trader.sl_order.get('price', 0)))
-        
-        # 保底止损单
+            _add_price(self.trader.sl_order.get('price', 0), '✕', 'bold red')
+
+        # 保底止损 ◆
         if hasattr(self.trader, 'stop_market_order') and self.trader.stop_market_order:
-            user_order_prices.add(float(self.trader.stop_market_order.get('trigger', 0)))
-        
-        # 提前平仓单
+            _add_price(self.trader.stop_market_order.get('trigger', 0), '◆', 'bold red')
+
+        # 移动止损网格 ○
+        if (hasattr(self.trader, 'trailing_stop_manager') and
+                self.trader.trailing_stop_manager and
+                self.trader.trailing_stop_manager.enabled and
+                self.trader.trailing_stop_manager.grid_prices):
+            for gp in self.trader.trailing_stop_manager.grid_prices:
+                _add_price(gp, '○', 'yellow')
+
+        # 开仓挂单 ◀
+        if hasattr(self.trader, 'pending_order') and self.trader.pending_order:
+            _add_price(self.trader.pending_order['price'], '◀', 'bold magenta')
+
+        # 提前平仓单 ◀
         if hasattr(self.trader, 'early_close_order') and self.trader.early_close_order:
-            user_order_prices.add(float(self.trader.early_close_order.get('price', 0)))
-        
-        # 移除 0 值
-        user_order_prices.discard(0.0)
-        
+            _add_price(self.trader.early_close_order.get('price', 0), '◀', 'bold magenta')
+
         # 订单簿排序：最新价永远居中，卖盘在上，买盘在下，数量相等
-        # 使用传入的 max_levels，取买卖盘中较小的数量
         display_levels = min(len(bids), len(asks), max_levels)
-        
-        # 卖盘（倒序：从远到近，价格从高到低）- 显示在最新价上方
+
+        def _render_price(price, price_float, qty):
+            """返回订单簿行文本"""
+            if price_float in user_order_prices:
+                symbol, color = user_order_prices[price_float]
+                return f"[{color}]{symbol} {price:.2f}[/{color}]", f"[{color}]{qty:.3f}[/{color}]"
+            else:
+                return None, None
+
+        # 卖盘（倒序：从远到近，价格从高到低）
         for i in range(display_levels - 1, -1, -1):
             price, qty = asks[i]
             price_float = float(price)
-            
-            # 检查是否是用户挂单价格
-            if price_float in user_order_prices:
-                ob_table.add_row(f"[bold magenta]◀ {price:.2f}[/bold magenta]", f"[bold magenta]{qty:.3f}[/bold magenta]")
+            price_text, qty_text = _render_price(price, price_float, qty)
+            if price_text:
+                ob_table.add_row(price_text, qty_text)
             else:
                 ob_table.add_row(f"[red]{price:.2f}[/red]", f"{qty:.3f}")
-        
+
         # 最新价（居中显示）
         if self.trader.last_price:
             mid_price = f"{self.trader.last_price:.2f}"
             ob_table.add_row(f"[bold yellow]  {mid_price}  [/bold yellow]", "")
         else:
             ob_table.add_row(f"[bold yellow]  ----  [/bold yellow]", "")
-        
-        # 买盘（正序：从近到远，价格从高到低）- 显示在最新价下方
+
+        # 买盘（正序：从近到远，价格从高到低）
         for i in range(display_levels):
             price, qty = bids[i]
             price_float = float(price)
-            
-            # 检查是否是用户挂单价格
-            if price_float in user_order_prices:
-                ob_table.add_row(f"[bold magenta]◀ {price:.2f}[/bold magenta]", f"[bold magenta]{qty:.3f}[/bold magenta]")
+            price_text, qty_text = _render_price(price, price_float, qty)
+            if price_text:
+                ob_table.add_row(price_text, qty_text)
             else:
                 ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
-        
-        return ob_table
-        
+
         return ob_table
     
     def _render_account(self) -> Text:
@@ -233,26 +246,45 @@ class LiveTradingUI:
             pos = self.trader.position
             side = "做多" if pos['side'] == 'LONG' else "做空"
             color = 'green' if pos['side'] == 'LONG' else 'red'
-            
+
+            entry = pos['entry_price']
+            size = pos['size']
+
+            # 预估盈亏辅助函数
+            def _est_pnl_text(price):
+                if pos['side'] == 'LONG':
+                    pnl = (price - entry) * size
+                else:
+                    pnl = (entry - price) * size
+                pnl_color = "green" if pnl >= 0 else "red"
+                return f" ({pnl:+.2f}U)", pnl_color
+
             acc_text.append(f"持仓：{side}\n", style=f"bold {color}")
-            acc_text.append(f"开仓价：{pos['entry_price']:.2f}\n")  # 价格 2 位
-            acc_text.append(f"数量：{pos['size']:.3f} ETH\n\n")
-            
+            acc_text.append(f"开仓价：{entry:.2f}\n")  # 价格 2 位
+            acc_text.append(f"数量：{size:.3f} ETH\n\n")
+
             # 止盈
             if self.trader.tp_order:
                 tp = self.trader.tp_order.get('price', 0)
-                acc_text.append(f"止盈：{tp:.2f}\n", style="green")  # 价格 2 位
-            
+                pnl_text, pnl_color = _est_pnl_text(tp)
+                acc_text.append(f"止盈：{tp:.2f}", style="green")  # 价格 2 位
+                acc_text.append(pnl_text + "\n", style=pnl_color)
+
             # 止损
             if self.trader.sl_order:
                 sl = self.trader.sl_order.get('trigger', 0)
-                acc_text.append(f"止损：{sl:.2f}\n", style="red")  # 价格 2 位
-            
+                pnl_text, pnl_color = _est_pnl_text(sl)
+                acc_text.append(f"止损：{sl:.2f}", style="red")  # 价格 2 位
+                acc_text.append(pnl_text + "\n", style=pnl_color)
+
             # 保底止损
             if self.trader.stop_market_order:
                 sm = self.trader.stop_market_order.get('trigger', 0)
                 liq = self.trader.stop_market_order.get('liquidation', 0)
-                acc_text.append(f"保底：{sm:.2f} (强平{liq:.2f})\n", style="bold red")  # 价格 2 位
+                pnl_text, pnl_color = _est_pnl_text(sm)
+                acc_text.append(f"保底：{sm:.2f}", style="bold red")  # 价格 2 位
+                acc_text.append(pnl_text, style=pnl_color)
+                acc_text.append(f" (强平{liq:.2f})\n", style="dim")
             
             # v1.5.0 新增：移动止损和浮亏保护状态
             if self.trader.trailing_stop_manager:
@@ -312,7 +344,22 @@ class LiveTradingUI:
             acc_text.append(f"开仓挂单：{side}\n", style=color)
             price = order.get('price', Decimal('0'))
             acc_text.append(f"价格：{price:.2f}\n")  # 价格 2 位
-            acc_text.append(f"数量：{order['size']:.3f} ETH")
+            acc_text.append(f"数量：{order['size']:.3f} ETH\n\n")
+
+            # 移动止损配置
+            ts = self.trader.trailing_stop_manager
+            if ts and ts.enabled:
+                acc_text.append(f"移动止损：已开启 ({ts.grid_count}格)\n", style="bold cyan")
+            else:
+                acc_text.append("移动止损：未开启\n", style="dim")
+
+            # 浮亏保护配置
+            lp = self.trader.loss_protection_manager
+            if lp and lp.enabled:
+                mins = int(lp.trigger_minutes) if lp.trigger_minutes == int(lp.trigger_minutes) else f"{lp.trigger_minutes:.1f}"
+                acc_text.append(f"浮亏保护：已开启 ({mins}分钟)\n", style="bold cyan")
+            else:
+                acc_text.append("浮亏保护：未开启\n", style="dim")
         
         else:
             acc_text.append("无持仓\n", style="gray")
@@ -354,6 +401,21 @@ class LiveTradingUI:
                 sm_config = self.config_manager.get('stop_market', {})
                 sm_value = sm_config.get('max_loss_percent', 30.00)
                 acc_text.append(f"保底：最大损失{sm_value:.1f}%\n", style="bold red")
+
+            # 移动止损配置
+            ts = self.trader.trailing_stop_manager
+            if ts and ts.enabled:
+                acc_text.append(f"移动止损：已开启 ({ts.grid_count}格)\n", style="bold cyan")
+            else:
+                acc_text.append("移动止损：未开启\n", style="dim")
+
+            # 浮亏保护配置
+            lp = self.trader.loss_protection_manager
+            if lp and lp.enabled:
+                mins = int(lp.trigger_minutes) if lp.trigger_minutes == int(lp.trigger_minutes) else f"{lp.trigger_minutes:.1f}"
+                acc_text.append(f"浮亏保护：已开启 ({mins}分钟)\n", style="bold cyan")
+            else:
+                acc_text.append("浮亏保护：未开启\n", style="dim")
         
         return acc_text
     
