@@ -305,6 +305,7 @@ class LiveTrader:
                     print(f"  手续费：{commission} {commission_asset}")
                     self._add_action("开仓成交", f"{side} @ {entry_price} x {filled_qty} | 手续费 {commission} {commission_asset}")
 
+                    self.sync_account()
                     self.position = {
                         'side': side,
                         'entry_price': entry_price,
@@ -794,9 +795,10 @@ class LiveTrader:
                 
                 # 计算保底止损价格（基于用户配置的最大损失比例）
                 # 使用总权益 = 开仓后可用余额 + 开仓保证金（因为开仓后 position_margin 可能还没更新）
-                # 开仓保证金 = 仓位价值 / 实际杠杆
+                # 开仓保证金 = 仓位价值 / API 杠杆（Binance 按 API 杠杆冻结保证金）
+                api_leverage, _ = self.config_manager.get_leverage_config()
                 position_value = entry_price * size
-                position_margin_required = position_value / Decimal(self.actual_leverage)
+                position_margin_required = position_value / Decimal(api_leverage)
                 total_equity = self.available_balance + position_margin_required
                 print(f"\n[保底止损计算] 总权益={total_equity:.6f} USDT (可用={self.available_balance:.6f} + 本单保证金={position_margin_required:.6f})")
                 sm_price = self.config_manager.get_stop_market_price(
@@ -1577,6 +1579,7 @@ class LiveTrader:
 
         self._add_action("开仓成交", f"{side} @ {entry_price:.2f} x {filled_qty} | 手续费 {commission:.4f} {commission_asset}")
 
+        self.sync_account()
         self.position = {
             'side': side,
             'entry_price': entry_price,
