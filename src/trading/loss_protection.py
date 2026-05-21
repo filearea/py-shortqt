@@ -157,6 +157,11 @@ class LossProtectionManager:
             self.protected = True
             self.protection_time = datetime.now()
 
+            # 同步更新 trader.tp_order 中的 orderId，避免提前平仓时撤销已不存在的旧单
+            if self.trader.tp_order:
+                self.trader.tp_order['orderId'] = order['orderId']
+                self.trader.tp_order['price'] = protection_price  # 同步更新价格
+
             if self.trader.log_manager:
                 self.trader.log_manager.system.info(
                     f"[持仓超时] 浮亏保本 → 止盈单下移至开仓价 {protection_price}"
@@ -308,7 +313,7 @@ class LossProtectionManager:
 
         if self.trader.log_manager:
             self.trader.log_manager.system.info("[持仓超时] 已平仓，撤销保本止损单")
-        self.trader._add_action("持仓超时", "已平仓，撤销保本止损单")
+        self.trader._add_action("持仓清理", "已平仓，撤销保本止损单")
     
     def get_status(self) -> Dict:
         """获取状态信息"""

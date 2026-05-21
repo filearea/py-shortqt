@@ -357,6 +357,7 @@ class TrailingStopManager:
                     f"[移动止损] 第{level}格触发，止损单 @ {trigger_price}"
                 )
             self.trader._add_action("移动止损", f"第{level}格触发，止损单 @ {trigger_price}")
+            self.trader.play_ding(2)  # 网格触发响两声
 
         except Exception as e:
             # v1.5.3 修复：记录失败 level，防止反复重试

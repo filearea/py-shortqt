@@ -37,6 +37,16 @@ class LiveTrader:
         self.listener = None  # 行情 WebSocket 监听器（从外部传入）
         self.user_stream_ws: Optional[UserStreamWebSocket] = None
         self.listen_key: Optional[str] = None
+
+        # 声音文件路径
+        self._ding_path: Optional[str] = None
+        for candidate in [
+            Path(__file__).parent.parent.parent / 'sounds' / 'ding.wav',
+            Path.cwd() / 'sounds' / 'ding.wav',
+        ]:
+            if candidate.exists():
+                self._ding_path = str(candidate)
+                break
         
         # 交易状态
         self.position: Optional[Dict] = None
@@ -72,7 +82,32 @@ class LiveTrader:
         
         self.running = False
         self.connected = False
-    
+
+    def play_ding(self, count: int = 1):
+        """播放提示音（count 控制响几声）"""
+        if not self._ding_path:
+            return
+        try:
+            import winsound
+            for _ in range(count):
+                winsound.PlaySound(self._ding_path, winsound.SND_FILENAME)
+        except Exception:
+            pass
+
+    def _trigger_sound(self, action: str):
+        """根据 action 名称自动触发对应音效"""
+        if '开仓成交' in action or '开仓成交（部分）' in action:
+            self.play_ding(1)  # 开仓响一声
+        elif '持仓超时' in action:
+            self.play_ding(4)  # 持仓超时响四声
+        elif any(kw in action for kw in [
+            '止盈成交', '止损成交', '保底止损成交',
+            '提前平仓成交', '移动止损成交',
+            '市价全平', '开仓成交（部分）',
+            '持仓同步'
+        ]):
+            self.play_ding(3)  # 平仓响三声
+
     async def initialize(self) -> bool:
         """初始化"""
         print("\n初始化实盘交易...")
@@ -201,6 +236,8 @@ class LiveTrader:
             # 如果程序有持仓但实际没有，清除（彻底平仓）
             elif total_size == 0 and self.position:
                 print(f"\n[持仓同步] 持仓已平仓（程序未感知）")
+                # 先写 action 触发音效（持仓同步=外部平仓，响三声）
+                self._add_action("持仓同步", "持仓已清除")
                 # 主动刷新账户余额后再记录
                 self.sync_account()
                 # 记录平仓后账户余额（用于复合收益率计算）
@@ -218,8 +255,7 @@ class LiveTrader:
                     asyncio.create_task(self.trailing_stop_manager.on_position_closed())
                 if self.loss_protection_manager:
                     self.loss_protection_manager.on_position_closed()
-                self._add_action("持仓同步", "持仓已清除")
-            
+
             return total_size > 0
         except Exception as e:
             print(f"[持仓同步] 失败：{e}")
@@ -244,26 +280,43 @@ class LiveTrader:
                 filled_qty = Decimal(order_data.get('z', '0'))
                 commission = Decimal(order_data.get('fc', '0'))
                 commission_asset = order_data.get('fs', 'USDC')
-                
-                print(f"[开仓成交] 挂单完全成交，立即下止盈止损单...")
-                print(f"  成交价：{entry_price}, 成交量：{filled_qty}")
-                print(f"  手续费：{commission} {commission_asset}")
-                self._add_action("开仓成交", f"{side} @ {entry_price} x {filled_qty} | 手续费 {commission} {commission_asset}")
-                
-                self.position = {
-                    'side': side,
-                    'entry_price': entry_price,
-                    'size': filled_qty,
-                    'time': datetime.now()
-                }
-                self.pending_order = None
-                
-                # 记录信号特征（用于后续分析）
-                if self.logger:
-                    self.logger.record_signal(side, entry_price, self.orderbook)
-                
-                # 立即下止盈止损单（不等待）
-                asyncio.create_task(self._safe_place_tp_sl_orders())
+                original_size = self.pending_order.get('size', Decimal('0'))
+
+                # 校验成交量：FILLED 但成交量 < 挂单量，说明部分成交
+                if filled_qty < original_size and filled_qty > 0:
+                    print(f"[开仓成交] 部分成交：挂单 {original_size}，已成交 {filled_qty}，剩余 {(original_size - filled_qty)} 待确认...")
+                    self._add_action("部分成交", f"{side} @ {entry_price} x {filled_qty}/{original_size} | 等待超时撤单")
+                    self.sync_account()
+                    self.position = {
+                        'side': side,
+                        'entry_price': entry_price,
+                        'size': filled_qty,
+                        'time': datetime.now()
+                    }
+                    self.pending_order = None
+
+                    if self.logger:
+                        self.logger.record_signal(side, entry_price, self.orderbook)
+
+                    asyncio.create_task(self._safe_place_tp_sl_orders())
+                else:
+                    print(f"[开仓成交] 挂单完全成交，立即下止盈止损单...")
+                    print(f"  成交价：{entry_price}, 成交量：{filled_qty}")
+                    print(f"  手续费：{commission} {commission_asset}")
+                    self._add_action("开仓成交", f"{side} @ {entry_price} x {filled_qty} | 手续费 {commission} {commission_asset}")
+
+                    self.position = {
+                        'side': side,
+                        'entry_price': entry_price,
+                        'size': filled_qty,
+                        'time': datetime.now()
+                    }
+                    self.pending_order = None
+
+                    if self.logger:
+                        self.logger.record_signal(side, entry_price, self.orderbook)
+
+                    asyncio.create_task(self._safe_place_tp_sl_orders())
             
             elif order_status == 'CANCELED':
                 # 开仓挂单被撤销（可能是部分成交后超时）
@@ -557,11 +610,8 @@ class LiveTrader:
             if total_position_amt == 0:
                 # 无持仓 → 清空本地状态 + 撤销所有挂单
                 if self.position:
-                    # 订单成交时已经打印过 PnL，这里只清空状态
-                    print(f"[持仓同步] 持仓已清空，撤销所有挂单...")
-
-                    # 主动刷新账户余额
                     self.sync_account()
+                    self._add_action("持仓同步", "持仓已清空，撤销所有挂单")
 
                     # 批量撤销所有订单（普通订单 + 条件单）
                     try:
@@ -640,6 +690,9 @@ class LiveTrader:
     
     def _add_action(self, action: str, details: str):
         """添加操作日志（同时写入文件）"""
+        # 根据 action 触发音效
+        self._trigger_sound(action)
+
         # 内存日志（用于 TUI 显示）
         self.action_log.append({'time': datetime.now(), 'action': action, 'details': details})
         if len(self.action_log) > 20:
@@ -1287,9 +1340,17 @@ class LiveTrader:
             if self.tp_order:
                 tp_id = self.tp_order.get('orderId') or self.tp_order.get('algoId')
                 if tp_id:
-                    self.api.cancel_order(self.symbol, tp_id)
-                    self.tp_order = None
-                    print(f"[提前平仓] 已撤销止盈单")
+                    try:
+                        self.api.cancel_order(self.symbol, tp_id)
+                        self.tp_order = None
+                        print(f"[提前平仓] 已撤销止盈单")
+                    except BinanceAPIError as e:
+                        # -2011: 订单不存在（可能已被成交、撤销或状态未同步）
+                        if e.code == -2011:
+                            print(f"[提前平仓] 止盈单已不存在（[{e.code}] {e.msg}），跳过撤单")
+                            self.tp_order = None
+                        else:
+                            raise
             
             # 止损单不撤销，保留保护
             
@@ -1454,23 +1515,33 @@ class LiveTrader:
             commission = Decimal(order_status.get('cumCommission', '0'))
 
             if status == 'FILLED':
-                # 完全成交
+                original_size = self.pending_order.get('size', Decimal('0'))
                 self._fill_check_done = True
                 commission_asset = order_status.get('commissionAsset', 'USDC')
+
+                # 校验成交量：FILLED 但成交量 < 挂单量，说明部分成交后取消
+                if filled_qty < original_size and filled_qty > 0:
+                    print(f"[成交检测] 部分成交：挂单 {original_size}，实际成交 {filled_qty}，剩余 {(original_size - filled_qty)} 已取消")
+                    self.sync_account()
+                    self._add_action("部分成交确认", f"{side} @ {avg_price} x {filled_qty}/{original_size}")
                 self._on_pending_filled(side, avg_price, filled_qty, commission, commission_asset)
                 return True
 
             elif status == 'PARTIALLY_FILLED' and filled_qty > 0:
+                original_size = self.pending_order.get('size', Decimal('0'))
+                remaining = original_size - filled_qty
                 # 部分成交
                 if elapsed >= timeout_seconds:
                     # 超时了，撤销剩余，按已成交量处理
+                    print(f"[超时撤单] 超时 {timeout_seconds}s，撤销剩余 {remaining}，保留已成交 {filled_qty}")
                     self._fill_check_done = True
                     commission_asset = order_status.get('commissionAsset', 'USDC')
                     try:
                         self.api.cancel_order(self.symbol, order_id)
-                        self._add_action("超时撤销", f"部分成交 {filled_qty}")
+                        self._add_action("超时撤单", f"{side} 挂单 {original_size}，成交 {filled_qty}，撤销剩余 {remaining}")
+                        self.sync_account()
                     except:
-                        pass
+                        self._add_action("超时撤单失败", f"撤销失败，已成交 {filled_qty}")
                     self._on_pending_filled(side, avg_price, filled_qty, commission, commission_asset)
                     return True
                 else:
