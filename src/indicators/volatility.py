@@ -173,6 +173,24 @@ class VolatilityAnalyzer:
         change_rate = current_amp / avg_amp
         return change_rate
     
+    def get_atr_volatility_percent(self, period: int = 14) -> Optional[float]:
+        """
+        计算 ATR(14) 波动率百分比：ATR / 当前价格 × 100%
+        反映 14 根 K 线的平均波动率相对于当前价格的百分比
+
+        Returns:
+            波动率百分比，如果数据不足返回 None
+        """
+        atr = self.get_atr(period)
+        if atr is None:
+            return None
+        if not self.current_kline:
+            return None
+        current_price = float(self.current_kline['close'])
+        if current_price == 0:
+            return None
+        return (atr / current_price) * 100
+
     def get_atr(self, period: int = 14) -> Optional[float]:
         """
         计算 ATR(14)：14 周期平均真实波幅（带缓存，仅在新 K 线收盘时重算）
@@ -270,6 +288,7 @@ class VolatilityAnalyzer:
             '1h_amplitude': amp_1h,
             'change_rate': change_rate,
             'atr_14': atr,
+            'atr_volatility_percent': self.get_atr_volatility_percent(14),
             '1min_status': self.get_status_label(amp_1min, '1min_amplitude'),
             '1h_status': self.get_status_label(amp_1h, '1h_amplitude'),
             'change_rate_status': self.get_change_rate_status(change_rate)

@@ -36,6 +36,10 @@ class ConfigManager:
             "actual": 25
         },
         "order_timeout_seconds": 2.00,
+        # v1.7.0 新增：音效开关
+        "sound": {
+            "enabled": True
+        },
         # v1.5.0 新增：移动止损和浮亏保护默认配置
         "trailing_stop": {
             "enabled": True,
@@ -297,3 +301,7 @@ class ConfigManager:
             'enabled': False,
             'trigger_minutes': 5
         })
+
+    def is_sound_enabled(self) -> bool:
+        """获取音效开关状态"""
+        return self.config.get('sound', {}).get('enabled', True)

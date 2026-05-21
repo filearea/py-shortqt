@@ -58,7 +58,13 @@ class LiveTrader:
         
         self.tp_order_backup: Optional[Dict] = None
         self.sl_order_backup: Optional[Dict] = None
-        
+
+        # 历史持仓
+        self.position_history: list = []
+
+        # 24 小时交易统计
+        self.trade_stats_24h: dict = {}
+
         # 账户信息
         self.available_balance: Decimal = Decimal('0')
         self.position_margin: Decimal = Decimal('0')
@@ -87,6 +93,9 @@ class LiveTrader:
         """播放提示音（count 控制响几声）"""
         if not self._ding_path:
             return
+        # 检查音效开关
+        if self.config_manager and not self.config_manager.is_sound_enabled():
+            return
         try:
             import winsound
             for _ in range(count):
@@ -110,12 +119,12 @@ class LiveTrader:
 
     async def initialize(self) -> bool:
         """初始化"""
-        print("\n初始化实盘交易...")
-        print("=" * 70)
+        self.log_manager.system.debug("\n初始化实盘交易...") if self.log_manager else None
+        self.log_manager.system.debug("=" * 70) if self.log_manager else None
         
         try:
             server_time = self.api.get_server_time()
-            print(f"✓ API 连接成功，服务器时间：{datetime.fromtimestamp(server_time/1000)}")
+            self.log_manager.system.debug(f"✓ API 连接成功，服务器时间：{datetime.fromtimestamp(server_time/1000)}") if self.log_manager else None
             
             account = self.api.get_account()
             for asset in account.get('assets', []):
@@ -123,12 +132,12 @@ class LiveTrader:
                     self.available_balance = Decimal(asset['availableBalance'])
                     break
             
-            print(f"✓ 账户余额：{self.available_balance} USDC")
+            self.log_manager.system.debug(f"✓ 账户余额：{self.available_balance} USDC") if self.log_manager else None
             self.api.set_leverage(self.symbol, self.leverage_limit)
-            print(f"✓ 杠杆已设置：{self.leverage_limit}x")
+            self.log_manager.system.debug(f"✓ 杠杆已设置：{self.leverage_limit}x") if self.log_manager else None
             await self._start_user_stream()
             self.api.cancel_all_orders(self.symbol)
-            print("✓ 已撤销所有遗留挂单")
+            self.log_manager.system.debug("✓ 已撤销所有遗留挂单") if self.log_manager else None
             
             # v1.5.0 新增：初始化移动止损和浮亏保护管理器
             if self.config_manager:
@@ -139,20 +148,20 @@ class LiveTrader:
                 self.loss_protection_manager = LossProtectionManager(self, None, loss_protection_config)
                 
                 if trailing_config.get('enabled'):
-                    print(f"✓ 移动止损已启用：{trailing_config.get('grid_count')}格")
+                    self.log_manager.system.debug(f"✓ 移动止损已启用：{trailing_config.get('grid_count')}格") if self.log_manager else None
                 if loss_protection_config.get('enabled'):
-                    print(f"✓ 浮亏保护已启用：{loss_protection_config.get('trigger_minutes')}分钟触发")
+                    self.log_manager.system.debug(f"✓ 浮亏保护已启用：{loss_protection_config.get('trigger_minutes')}分钟触发") if self.log_manager else None
             
             self._add_action("初始化", "实盘初始化成功")
             self.connected = True
-            print("=" * 70)
+            self.log_manager.system.debug("=" * 70) if self.log_manager else None
             return True
         
         except BinanceAPIError as e:
-            print(f"✗ API 错误：[{e.code}] {e.msg}")
+            self.log_manager.system.debug(f"✗ API 错误：[{e.code}] {e.msg}") if self.log_manager else None
             return False
         except Exception as e:
-            print(f"✗ 初始化失败：{e}")
+            self.log_manager.system.debug(f"✗ 初始化失败：{e}") if self.log_manager else None
             return False
     
     async def _start_user_stream(self):
@@ -174,16 +183,16 @@ class LiveTrader:
                     break
                 await asyncio.sleep(0.5)
             else:
-                print("⚠ 用户数据流连接超时，订单回调可能延迟")
+                self.log_manager.system.debug("⚠ 用户数据流连接超时，订单回调可能延迟") if self.log_manager else None
 
             if self.user_stream_ws.connected:
-                print("✓ 用户数据流已连接（用于订单状态更新，30分钟自动保活）")
+                self.log_manager.system.debug("✓ 用户数据流已连接（用于订单状态更新，30分钟自动保活）") if self.log_manager else None
             else:
-                print("⚠ 用户数据流连接中，订单状态更新可能有延迟")
+                self.log_manager.system.debug("⚠ 用户数据流连接中，订单状态更新可能有延迟") if self.log_manager else None
         except Exception as e:
-            print(f"⚠ 用户数据流启动失败：{e}")
-            print("  程序仍可正常运行，但订单状态更新可能有延迟")
-            print("  建议：检查网络连接或防火墙设置")
+            self.log_manager.system.debug(f"⚠ 用户数据流启动失败：{e}") if self.log_manager else None
+            self.log_manager.system.debug("  程序仍可正常运行，但订单状态更新可能有延迟") if self.log_manager else None
+            self.log_manager.system.debug("  建议：检查网络连接或防火墙设置") if self.log_manager else None
 
     def _on_account_update(self, account_data: dict):
         """账户更新回调（WebSocket，实时）"""
@@ -217,8 +226,8 @@ class LiveTrader:
             
             # 如果有持仓但程序不知道，强制同步
             if total_size > 0 and not self.position:
-                print(f"\n[持仓同步] 发现未同步的持仓！")
-                print(f"  方向：{side}, 数量：{total_size}, 开仓价：{entry_price}")
+                self.log_manager.system.debug(f"\n[持仓同步] 发现未同步的持仓！") if self.log_manager else None
+                self.log_manager.system.debug(f"  方向：{side}, 数量：{total_size}, 开仓价：{entry_price}") if self.log_manager else None
                 
                 self.position = {
                     'side': side,
@@ -230,12 +239,12 @@ class LiveTrader:
                 self._add_action("持仓同步", f"{side} @ {entry_price} x {total_size}")
                 
                 # 下止盈止损单
-                print(f"  开始下止盈止损单...")
+                self.log_manager.system.debug(f"  开始下止盈止损单...") if self.log_manager else None
                 asyncio.create_task(self._safe_place_tp_sl_orders())
             
             # 如果程序有持仓但实际没有，清除（彻底平仓）
             elif total_size == 0 and self.position:
-                print(f"\n[持仓同步] 持仓已平仓（程序未感知）")
+                self.log_manager.system.debug(f"\n[持仓同步] 持仓已平仓（程序未感知）") if self.log_manager else None
                 # 先写 action 触发音效（持仓同步=外部平仓，响三声）
                 self._add_action("持仓同步", "持仓已清除")
                 # 主动刷新账户余额后再记录
@@ -256,9 +265,12 @@ class LiveTrader:
                 if self.loss_protection_manager:
                     self.loss_protection_manager.on_position_closed()
 
+                # 刷新历史持仓（延迟等 Binance 同步）
+                asyncio.create_task(self._refresh_history_delayed())
+
             return total_size > 0
         except Exception as e:
-            print(f"[持仓同步] 失败：{e}")
+            self.log_manager.system.debug(f"[持仓同步] 失败：{e}") if self.log_manager else None
             return False
     
     def _on_order_update(self, order_data: dict):
@@ -268,9 +280,9 @@ class LiveTrader:
         order_type = order_data.get('ot')
         
         # 记录详细订单信息
-        print(f"\n[订单更新] 状态={order_status}, 类型={order_type}, ID={order_id}")
-        print(f"  成交数量：{order_data.get('z', 0)}, 成交均价：{order_data.get('ap', 0)}")
-        print(f"  手续费：{order_data.get('fc', 0)} {order_data.get('fs', 'USDC')}")
+        self.log_manager.system.debug(f"\n[订单更新] 状态={order_status}, 类型={order_type}, ID={order_id}") if self.log_manager else None
+        self.log_manager.system.debug(f"  成交数量：{order_data.get('z', 0)}, 成交均价：{order_data.get('ap', 0)}") if self.log_manager else None
+        self.log_manager.system.debug(f"  手续费：{order_data.get('fc', 0)} {order_data.get('fs', 'USDC')}") if self.log_manager else None
         
         # 开仓挂单成交
         if self.pending_order and self.pending_order.get('orderId') == order_id:
@@ -284,7 +296,7 @@ class LiveTrader:
 
                 # 校验成交量：FILLED 但成交量 < 挂单量，说明部分成交
                 if filled_qty < original_size and filled_qty > 0:
-                    print(f"[开仓成交] 部分成交：挂单 {original_size}，已成交 {filled_qty}，剩余 {(original_size - filled_qty)} 待确认...")
+                    self.log_manager.system.debug(f"[开仓成交] 部分成交：挂单 {original_size}，已成交 {filled_qty}，剩余 {(original_size - filled_qty)} 待确认...") if self.log_manager else None
                     self._add_action("部分成交", f"{side} @ {entry_price} x {filled_qty}/{original_size} | 等待超时撤单")
                     self.sync_account()
                     self.position = {
@@ -300,9 +312,9 @@ class LiveTrader:
 
                     asyncio.create_task(self._safe_place_tp_sl_orders())
                 else:
-                    print(f"[开仓成交] 挂单完全成交，立即下止盈止损单...")
-                    print(f"  成交价：{entry_price}, 成交量：{filled_qty}")
-                    print(f"  手续费：{commission} {commission_asset}")
+                    self.log_manager.system.debug(f"[开仓成交] 挂单完全成交，立即下止盈止损单...") if self.log_manager else None
+                    self.log_manager.system.debug(f"  成交价：{entry_price}, 成交量：{filled_qty}") if self.log_manager else None
+                    self.log_manager.system.debug(f"  手续费：{commission} {commission_asset}") if self.log_manager else None
                     self._add_action("开仓成交", f"{side} @ {entry_price} x {filled_qty} | 手续费 {commission} {commission_asset}")
 
                     self.sync_account()
@@ -340,12 +352,15 @@ class LiveTrader:
                     else:  # 空单止盈
                         pnl = (self.position['entry_price'] - fill_price) * fill_qty - commission
                     
-                    print(f"[止盈单成交] 止盈单已成交！")
-                    print(f"  成交价：{fill_price}, 成交量：{fill_qty}")
-                    print(f"  手续费：{commission} {commission_asset}")
-                    print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
+                    self.log_manager.system.debug(f"[止盈单成交] 止盈单已成交！") if self.log_manager else None
+                    self.log_manager.system.debug(f"  成交价：{fill_price}, 成交量：{fill_qty}") if self.log_manager else None
+                    self.log_manager.system.debug(f"  手续费：{commission} {commission_asset}") if self.log_manager else None
+                    self.log_manager.system.debug(f"[平仓盈亏] PnL: {pnl:+.6f} USDT") if self.log_manager else None
                     self._add_action("止盈成交", f"PnL: {pnl:+.6f} USDT")
-                    
+
+                    # 刷新历史持仓
+                    asyncio.create_task(self._refresh_history_delayed())
+
                     # 记录信号结果
                     if self.logger:
                         duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
@@ -366,7 +381,7 @@ class LiveTrader:
                 self._cancel_other_orders(exclude='tp')
                 self.tp_order = None
             elif order_status in ['CANCELED', 'EXPIRED']:
-                print(f"[止盈单取消] 止盈单已取消/过期")
+                self.log_manager.system.debug(f"[止盈单取消] 止盈单已取消/过期") if self.log_manager else None
                 self.tp_order = None
         
         # 止损单成交 → 撤销止盈单和保底止损单
@@ -384,12 +399,15 @@ class LiveTrader:
                     else:  # 空单止损
                         pnl = (self.position['entry_price'] - fill_price) * fill_qty - commission
                     
-                    print(f"[止损单成交] 止损单已成交！")
-                    print(f"  成交价：{fill_price}, 成交量：{fill_qty}")
-                    print(f"  手续费：{commission} {commission_asset}")
-                    print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
+                    self.log_manager.system.debug(f"[止损单成交] 止损单已成交！") if self.log_manager else None
+                    self.log_manager.system.debug(f"  成交价：{fill_price}, 成交量：{fill_qty}") if self.log_manager else None
+                    self.log_manager.system.debug(f"  手续费：{commission} {commission_asset}") if self.log_manager else None
+                    self.log_manager.system.debug(f"[平仓盈亏] PnL: {pnl:+.6f} USDT") if self.log_manager else None
                     self._add_action("止损成交", f"PnL: {pnl:+.6f} USDT")
-                    
+
+                    # 刷新历史持仓
+                    asyncio.create_task(self._refresh_history_delayed())
+
                     # 记录信号结果
                     if self.logger:
                         duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
@@ -410,7 +428,7 @@ class LiveTrader:
                 self._cancel_other_orders(exclude='sl')
                 self.sl_order = None
             elif order_status in ['CANCELED', 'EXPIRED']:
-                print(f"[止损单取消] 止损单已取消/过期")
+                self.log_manager.system.debug(f"[止损单取消] 止损单已取消/过期") if self.log_manager else None
                 self.sl_order = None
         
         # 保底止损成交 → 撤销止盈单和止损单
@@ -428,12 +446,15 @@ class LiveTrader:
                     else:  # 空单保底止损
                         pnl = (self.position['entry_price'] - fill_price) * fill_qty - commission
                     
-                    print(f"[保底止损成交] 保底止损已成交！")
-                    print(f"  成交价：{fill_price}, 成交量：{fill_qty}")
-                    print(f"  手续费：{commission} {commission_asset}")
-                    print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
+                    self.log_manager.system.debug(f"[保底止损成交] 保底止损已成交！") if self.log_manager else None
+                    self.log_manager.system.debug(f"  成交价：{fill_price}, 成交量：{fill_qty}") if self.log_manager else None
+                    self.log_manager.system.debug(f"  手续费：{commission} {commission_asset}") if self.log_manager else None
+                    self.log_manager.system.debug(f"[平仓盈亏] PnL: {pnl:+.6f} USDT") if self.log_manager else None
                     self._add_action("保底止损成交", f"PnL: {pnl:+.6f} USDT")
-                    
+
+                    # 刷新历史持仓
+                    asyncio.create_task(self._refresh_history_delayed())
+
                     # 记录信号结果
                     if self.logger:
                         duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
@@ -454,7 +475,7 @@ class LiveTrader:
                 self._cancel_other_orders(exclude='stop_market')
                 self.stop_market_order = None
             elif order_status in ['CANCELED', 'EXPIRED']:
-                print(f"[保底止损取消] 保底止损已取消/过期")
+                self.log_manager.system.debug(f"[保底止损取消] 保底止损已取消/过期") if self.log_manager else None
                 self.stop_market_order = None
         
         elif self.early_close_order:
@@ -474,12 +495,15 @@ class LiveTrader:
                         else:  # 空单平仓
                             pnl = (self.position['entry_price'] - fill_price) * fill_qty - commission
                         
-                        print(f"[提前平仓成交] 提前平仓已成交！")
-                        print(f"  成交价：{fill_price}, 成交量：{fill_qty}")
-                        print(f"  手续费：{commission} {commission_asset}")
-                        print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
+                        self.log_manager.system.debug(f"[提前平仓成交] 提前平仓已成交！") if self.log_manager else None
+                        self.log_manager.system.debug(f"  成交价：{fill_price}, 成交量：{fill_qty}") if self.log_manager else None
+                        self.log_manager.system.debug(f"  手续费：{commission} {commission_asset}") if self.log_manager else None
+                        self.log_manager.system.debug(f"[平仓盈亏] PnL: {pnl:+.6f} USDT") if self.log_manager else None
                         self._add_action("提前平仓成交", f"PnL: {pnl:+.6f} USDT")
-                        
+
+                        # 刷新历史持仓
+                        asyncio.create_task(self._refresh_history_delayed())
+
                         # 记录信号结果
                         if self.logger:
                             duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
@@ -501,7 +525,7 @@ class LiveTrader:
                     self._cancel_other_orders(exclude='none')
                     self.early_close_order = None
                 elif order_status in ['CANCELED', 'EXPIRED']:
-                    print(f"[提前平仓取消] 提前平仓已取消/过期")
+                    self.log_manager.system.debug(f"[提前平仓取消] 提前平仓已取消/过期") if self.log_manager else None
                     self.early_close_order = None
         
         # Fallback: 未知订单成交，但持仓被清空 → 可能是止损单触发的限价单成交
@@ -521,11 +545,14 @@ class LiveTrader:
                 
                 duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
                 
-                print(f"[订单成交] 未知订单成交（可能是止损触发）！")
-                print(f"  成交价：{fill_price}, 成交量：{fill_qty}")
-                print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
+                self.log_manager.system.debug(f"[订单成交] 未知订单成交（可能是止损触发）！") if self.log_manager else None
+                self.log_manager.system.debug(f"  成交价：{fill_price}, 成交量：{fill_qty}") if self.log_manager else None
+                self.log_manager.system.debug(f"[平仓盈亏] PnL: {pnl:+.6f} USDT") if self.log_manager else None
                 self._add_action("止损成交", f"PnL: {pnl:+.6f} USDT")
-                
+
+                # 刷新历史持仓
+                asyncio.create_task(self._refresh_history_delayed())
+
                 # 记录信号结果（修复 Bug：之前这里缺失导致 signals.csv 没有记录）
                 if self.logger:
                     self.logger.update_signal_result('SL', float(pnl), duration)
@@ -562,10 +589,13 @@ class LiveTrader:
 
                     duration = (datetime.now() - self.position['time']).total_seconds() if 'time' in self.position else 0
 
-                    print(f"[移动止损成交] 移动止损单已成交！")
-                    print(f"  成交价：{fill_price}, 成交量：{fill_qty}")
-                    print(f"[平仓盈亏] PnL: {pnl:+.6f} USDT")
+                    self.log_manager.system.debug(f"[移动止损成交] 移动止损单已成交！") if self.log_manager else None
+                    self.log_manager.system.debug(f"  成交价：{fill_price}, 成交量：{fill_qty}") if self.log_manager else None
+                    self.log_manager.system.debug(f"[平仓盈亏] PnL: {pnl:+.6f} USDT") if self.log_manager else None
                     self._add_action("移动止损成交", f"PnL: {pnl:+.6f} USDT")
+
+                    # 刷新历史持仓
+                    asyncio.create_task(self._refresh_history_delayed())
 
                     if self.logger:
                         self.logger.update_signal_result('TS', float(pnl), duration)
@@ -617,9 +647,9 @@ class LiveTrader:
                     # 批量撤销所有订单（普通订单 + 条件单）
                     try:
                         self.api.cancel_all_open_orders(self.symbol)
-                        print(f"[批量撤销] 已撤销所有订单")
+                        self.log_manager.system.debug(f"[批量撤销] 已撤销所有订单") if self.log_manager else None
                     except Exception as e:
-                        print(f"[批量撤销失败] {e}")
+                        self.log_manager.system.debug(f"[批量撤销失败] {e}") if self.log_manager else None
 
                     # 清空本地状态
                     self.position = None
@@ -630,6 +660,9 @@ class LiveTrader:
                         asyncio.create_task(self.trailing_stop_manager.on_position_closed())
                     if self.loss_protection_manager:
                         self.loss_protection_manager.on_position_closed()
+
+                    # 刷新历史持仓（延迟等 Binance 同步）
+                    asyncio.create_task(self._refresh_history_delayed())
             
             else:
                 # 有持仓 → 更新状态
@@ -639,8 +672,8 @@ class LiveTrader:
                 # 检查是否有变化
                 if self.position:
                     if self.position['side'] != side or self.position['size'] != actual_size:
-                        print(f"[持仓同步] 更新持仓：{side} {actual_size} @ {entry_price}")
-                        print(f"[浮动盈亏] PnL: {unrealized_pnl:+.2f} USDT")
+                        self.log_manager.system.debug(f"[持仓同步] 更新持仓：{side} {actual_size} @ {entry_price}") if self.log_manager else None
+                        self.log_manager.system.debug(f"[浮动盈亏] PnL: {unrealized_pnl:+.2f} USDT") if self.log_manager else None
                         self._add_action("持仓更新", f"{side} {actual_size} @ {entry_price} | PnL: {unrealized_pnl:+.2f}")
                 
                 self.position = {
@@ -651,7 +684,7 @@ class LiveTrader:
                 }
         
         except Exception as e:
-            print(f"[持仓同步失败] {e}")
+            self.log_manager.system.debug(f"[持仓同步失败] {e}") if self.log_manager else None
     
     def _cancel_other_orders(self, exclude: str):
         """
@@ -662,7 +695,7 @@ class LiveTrader:
         """
         try:
             # 批量撤销所有订单（普通订单 + 条件单）
-            print(f"[批量撤销] 撤销所有订单...")
+            self.log_manager.system.debug(f"[批量撤销] 撤销所有订单...") if self.log_manager else None
             self.api.cancel_all_open_orders(self.symbol)
 
             # 主动刷新账户余额
@@ -684,10 +717,10 @@ class LiveTrader:
             if self.loss_protection_manager:
                 self.loss_protection_manager.on_position_closed()
 
-            print("✓ 其他订单已撤销，持仓已清空")
+            self.log_manager.system.debug("✓ 其他订单已撤销，持仓已清空") if self.log_manager else None
         
         except Exception as e:
-            print(f"✗ 撤销订单失败：{e}")
+            self.log_manager.system.debug(f"✗ 撤销订单失败：{e}") if self.log_manager else None
     
     def _add_action(self, action: str, details: str):
         """添加操作日志（同时写入文件）"""
@@ -749,7 +782,7 @@ class LiveTrader:
         try:
             await self.place_tp_sl_orders()
         except Exception as e:
-            print(f"\n[止盈止损异常] {e}")
+            self.log_manager.system.debug(f"\n[止盈止损异常] {e}") if self.log_manager else None
             import traceback
             traceback.print_exc()
             self._add_action("止盈止损异常", str(e))
@@ -757,22 +790,22 @@ class LiveTrader:
     async def place_tp_sl_orders(self):
         """开仓成功后，放置止盈止损单（使用 config_manager 配置）"""
         if not self.position:
-            print("✗ 止盈止损失败：无持仓")
+            self.log_manager.system.debug("✗ 止盈止损失败：无持仓") if self.log_manager else None
             return
         
         entry_price = self.position['entry_price']
         side = self.position['side']
         size = self.position['size']
         
-        print(f"\n[止盈止损] 开始下单...")
-        print(f"  持仓：{side}, 开仓价={entry_price}, 数量={size}")
+        self.log_manager.system.debug(f"\n[止盈止损] 开始下单...") if self.log_manager else None
+        self.log_manager.system.debug(f"  持仓：{side}, 开仓价={entry_price}, 数量={size}") if self.log_manager else None
         self._add_action("止盈止损开始", f"{side} @ {entry_price} x {size}")
         
         try:
             # 1. 获取强平价（快速重试 3 次，每次间隔 0.3 秒）
             liquidation_price = None
             for retry in range(3):
-                print(f"[1/3] 获取强平价... (尝试 {retry + 1}/3)")
+                self.log_manager.system.debug(f"[1/3] 获取强平价... (尝试 {retry + 1}/3)") if self.log_manager else None
                 positions = self.api.get_position(self.symbol)
                 
                 for pos in positions:
@@ -781,11 +814,11 @@ class LiveTrader:
                         break
                 
                 if liquidation_price and liquidation_price != Decimal('0'):
-                    print(f"  ✓ 强平价有效：{liquidation_price}")
+                    self.log_manager.system.debug(f"  ✓ 强平价有效：{liquidation_price}") if self.log_manager else None
                     break
                 else:
                     if retry < 2:  # 最后一次不等待
-                        print(f"  ⚠ 强平价无效，等待 0.3 秒后重试...")
+                        self.log_manager.system.debug(f"  ⚠ 强平价无效，等待 0.3 秒后重试...") if self.log_manager else None
                         await asyncio.sleep(0.3)
             
             # 2. 从 config_manager 获取止盈止损配置
@@ -800,11 +833,11 @@ class LiveTrader:
                 position_value = entry_price * size
                 position_margin_required = position_value / Decimal(api_leverage)
                 total_equity = self.available_balance + position_margin_required
-                print(f"\n[保底止损计算] 总权益={total_equity:.6f} USDT (可用={self.available_balance:.6f} + 本单保证金={position_margin_required:.6f})")
+                self.log_manager.system.debug(f"\n[保底止损计算] 总权益={total_equity:.6f} USDT (可用={self.available_balance:.6f} + 本单保证金={position_margin_required:.6f})") if self.log_manager else None
                 sm_price = self.config_manager.get_stop_market_price(
                     entry_price, side, size, total_equity, liquidation_price or Decimal('0')
                 )
-                print(f"[保底止损计算] 保底价格={sm_price:.2f}, 强平价={liquidation_price or 'N/A'}")
+                self.log_manager.system.debug(f"[保底止损计算] 保底价格={sm_price:.2f}, 强平价={liquidation_price or 'N/A'}") if self.log_manager else None
                 
                 # 如果强平价有效，和强平价 +1 比较，取更安全的
                 if liquidation_price and liquidation_price != Decimal('0'):
@@ -812,16 +845,16 @@ class LiveTrader:
                         # 多单：保底价格不能低于强平价 +1
                         liquidation_floor = liquidation_price + Decimal('1')
                         if sm_price < liquidation_floor:
-                            print(f"  保底价格 {sm_price:.2f} 低于强平价 +1 ({liquidation_floor:.2f})，使用强平价 +1")
+                            self.log_manager.system.debug(f"  保底价格 {sm_price:.2f} 低于强平价 +1 ({liquidation_floor:.2f})，使用强平价 +1") if self.log_manager else None
                             sm_price = liquidation_floor
                     else:
                         # 空单：保底价格不能高于强平价 -1
                         liquidation_floor = liquidation_price - Decimal('1')
                         if sm_price > liquidation_floor:
-                            print(f"  保底价格 {sm_price:.2f} 高于强平价 -1 ({liquidation_floor:.2f})，使用强平价 -1")
+                            self.log_manager.system.debug(f"  保底价格 {sm_price:.2f} 高于强平价 -1 ({liquidation_floor:.2f})，使用强平价 -1") if self.log_manager else None
                             sm_price = liquidation_floor
                 
-                print(f"  配置止盈：{tp_price}, 止损触发：{sl_trigger}, 保底：{sm_price} (强平价={liquidation_price or 'N/A'})")
+                self.log_manager.system.debug(f"  配置止盈：{tp_price}, 止损触发：{sl_trigger}, 保底：{sm_price} (强平价={liquidation_price or 'N/A'})") if self.log_manager else None
             else:
                 # 兼容模式：使用硬编码值
                 tp_price = entry_price + Decimal('1')
@@ -829,7 +862,7 @@ class LiveTrader:
                 sm_price = liquidation_price + Decimal('1') if liquidation_price else Decimal('0')
             
             # 3. 止盈单（LIMIT 限价单，保证 Maker）
-            print(f"[2/3] 下止盈单...")
+            self.log_manager.system.debug(f"[2/3] 下止盈单...") if self.log_manager else None
             if side == 'LONG':
                 tp_side = 'SELL'
             else:
@@ -861,7 +894,7 @@ class LiveTrader:
                 # QUEUE 模式下，保存实际挂单价格（从订单响应中获取）
                 actual_price = Decimal(tp_order.get('price', '0'))
                 self._add_action("止盈单已下", f"{tp_side} QUEUE @ {actual_price:.2f}")
-                print(f"✓ 止盈单已下：{tp_side} QUEUE @ {actual_price:.2f}（目标价 {tp_price} 会被吃）")
+                self.log_manager.system.debug(f"✓ 止盈单已下：{tp_side} QUEUE @ {actual_price:.2f}（目标价 {tp_price} 会被吃）") if self.log_manager else None
             else:
                 # 不会立即成交，用目标价
                 tp_order = self.api.place_order(
@@ -874,7 +907,7 @@ class LiveTrader:
                     positionSide=side
                 )
                 self._add_action("止盈单已下", f"{tp_side} @ {tp_price}")
-                print(f"✓ 止盈单已下：{tp_side} @ {tp_price}")
+                self.log_manager.system.debug(f"✓ 止盈单已下：{tp_side} @ {tp_price}") if self.log_manager else None
                 actual_price = tp_price
             
             self.tp_order = {
@@ -885,19 +918,19 @@ class LiveTrader:
             }
             
             # 3. 止损单（使用 config_manager 配置）
-            print(f"[3/3] 下止损单...")
+            self.log_manager.system.debug(f"[3/3] 下止损单...") if self.log_manager else None
             sl_order = None  # 初始化变量
             
             if self.config_manager and sl_algo_params:
                 # 从配置读取止损参数
-                print(f"  止损参数：{sl_algo_params}")
+                self.log_manager.system.debug(f"  止损参数：{sl_algo_params}") if self.log_manager else None
                 try:
                     sl_order = self.api.place_algo_order(**sl_algo_params)
                     actual_price = Decimal(sl_order.get('price', '0'))
                     sl_trigger_display = sl_algo_params.get('triggerPrice', sl_trigger)
-                    print(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}")
+                    self.log_manager.system.debug(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}") if self.log_manager else None
                 except Exception as e:
-                    print(f"  ✗ 止损单失败：{e}")
+                    self.log_manager.system.debug(f"  ✗ 止损单失败：{e}") if self.log_manager else None
                     import traceback
                     traceback.print_exc()
                     sl_trigger_display = sl_trigger
@@ -925,9 +958,9 @@ class LiveTrader:
                     )
                     actual_price = Decimal(sl_order.get('price', '0'))
                     sl_trigger_display = sl_trigger
-                    print(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}")
+                    self.log_manager.system.debug(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}") if self.log_manager else None
                 except Exception as e:
-                    print(f"  ✗ 止损单失败：{e}")
+                    self.log_manager.system.debug(f"  ✗ 止损单失败：{e}") if self.log_manager else None
                     import traceback
                     traceback.print_exc()
                     sl_trigger_display = sl_trigger
@@ -950,7 +983,7 @@ class LiveTrader:
                 }
                 
                 self._add_action("止损单已下", f"触发={sl_trigger_display}, 限价={actual_price:.2f}")
-                print(f"✓ 止损单已下：触发={sl_trigger_display}, 限价={actual_price:.2f}, algoId={sl_order['algoId']}")
+                self.log_manager.system.debug(f"✓ 止损单已下：触发={sl_trigger_display}, 限价={actual_price:.2f}, algoId={sl_order['algoId']}") if self.log_manager else None
             else:
                 self._add_action("止损单失败", "跳过记录")
             
@@ -983,7 +1016,7 @@ class LiveTrader:
                 # print(f"  调用 place_algo_order...")
                 stop_order = self.api.place_algo_order(**sm_params)
                 # print(f"  API 返回：{stop_order}")
-                print(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}")
+                self.log_manager.system.debug(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}") if self.log_manager else None
                 
                 self.stop_market_order = {
                     'algoId': stop_order['algoId'],
@@ -994,14 +1027,14 @@ class LiveTrader:
                 }
                 
                 liq_display = f"{liquidation_price:.2f}" if liquidation_price else "N/A"
-                self._add_action("保底止损已下", f"强平价={liq_display}, 触发={sm_price}")
-                print(f"✓ 保底止损已下：强平价={liq_display}, 触发={sm_price}, algoId={stop_order['algoId']}")
+                self._add_action("保底止损已下", f"强平价={liq_display}, 触发={sm_price:.2f}")
+                self.log_manager.system.debug(f"✓ 保底止损已下：强平价={liq_display}, 触发={sm_price}, algoId={stop_order['algoId']}") if self.log_manager else None
             except Exception as e:
-                print(f"  ✗ 保底止损失败：{type(e).__name__}: {e}")
+                self.log_manager.system.debug(f"  ✗ 保底止损失败：{type(e).__name__}: {e}") if self.log_manager else None
                 import traceback
                 traceback.print_exc()
             
-            print("\n✓ 止盈止损单全部下达完成")
+            self.log_manager.system.debug("\n✓ 止盈止损单全部下达完成") if self.log_manager else None
             
             # v1.5.0 新增：初始化移动止损和浮亏保护
             if self.trailing_stop_manager:
@@ -1022,13 +1055,13 @@ class LiveTrader:
                 )
         
         except BinanceAPIError as e:
-            print(f"\n✗ 止盈止损下单失败：[{e.code}] {e.msg}")
-            print(f"  错误详情：{e}")
+            self.log_manager.system.debug(f"\n✗ 止盈止损下单失败：[{e.code}] {e.msg}") if self.log_manager else None
+            self.log_manager.system.debug(f"  错误详情：{e}") if self.log_manager else None
             self._add_action("止盈止损错误", f"[{e.code}] {e.msg}")
             raise  # 重新抛出异常
         except Exception as e:
-            print(f"\n✗ 止盈止损错误：{e}")
-            print(f"  错误详情：{type(e).__name__}: {e}")
+            self.log_manager.system.debug(f"\n✗ 止盈止损错误：{e}") if self.log_manager else None
+            self.log_manager.system.debug(f"  错误详情：{type(e).__name__}: {e}") if self.log_manager else None
             self._add_action("止盈止损错误", str(e))
             raise  # 重新抛出异常
     
@@ -1062,12 +1095,12 @@ class LiveTrader:
             }
             
             self._add_action("止盈单已下", f"价格={tp_price}")
-            print(f"✓ 止盈单已下：价格={tp_price}, ID={tp_order['orderId']}")
+            self.log_manager.system.debug(f"✓ 止盈单已下：价格={tp_price}, ID={tp_order['orderId']}") if self.log_manager else None
             return True
         
         except BinanceAPIError as e:
             if e.code == -1128:
-                print(f"[止盈重试] Post-Only 被拒，调整到盘口价重试...")
+                self.log_manager.system.debug(f"[止盈重试] Post-Only 被拒，调整到盘口价重试...") if self.log_manager else None
                 return await self._place_tp_at_market_price(side, size, max_retries)
             else:
                 raise
@@ -1110,29 +1143,29 @@ class LiveTrader:
                 }
                 
                 self._add_action("止盈单已下", f"价格={tp_price}（盘口价）")
-                print(f"✓ 止盈单已下：价格={tp_price}（盘口价）, ID={tp_order['orderId']}")
+                self.log_manager.system.debug(f"✓ 止盈单已下：价格={tp_price}（盘口价）, ID={tp_order['orderId']}") if self.log_manager else None
                 return True
             
             except BinanceAPIError as e:
                 if e.code == -1128:
                     retry_count += 1
-                    print(f"[止盈重试] 第{retry_count}次重试...")
+                    self.log_manager.system.debug(f"[止盈重试] 第{retry_count}次重试...") if self.log_manager else None
                     await asyncio.sleep(0.1)
                 else:
                     raise
         
-        print("✗ 止盈单重试失败")
+        self.log_manager.system.debug("✗ 止盈单重试失败") if self.log_manager else None
         self._add_action("止盈失败", "Post-Only 重试超过最大次数")
         return False
     
     async def open_position(self, side: str) -> bool:
         """开仓"""
         if self.position is not None or self.pending_order is not None:
-            print("✗ 已有持仓或挂单")
+            self.log_manager.system.debug("✗ 已有持仓或挂单") if self.log_manager else None
             return False
         
         if self.last_price is None:
-            print("✗ 暂无价格数据")
+            self.log_manager.system.debug("✗ 暂无价格数据") if self.log_manager else None
             return False
         
         try:
@@ -1144,15 +1177,15 @@ class LiveTrader:
             size = (contract_value / self.last_price).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
             
             if size <= 0:
-                print("✗ 余额不足")
+                self.log_manager.system.debug("✗ 余额不足") if self.log_manager else None
                 return False
             
             # 验证名义价值（仓位价值 = 数量 × 价格）
             notional_value = size * self.last_price
             if notional_value < MIN_NOTIONAL:
-                print(f"✗ 名义价值不足（最小 20 USDC，计算值{notional_value:.2f} USDC）")
-                print(f"  当前：保证金{self.available_balance:.2f}U × {self.actual_leverage}x = {notional_value:.2f}U")
-                print(f"  提示：提高杠杆倍数 或 增加保证金")
+                self.log_manager.system.debug(f"✗ 名义价值不足（最小 20 USDC，计算值{notional_value:.2f} USDC）") if self.log_manager else None
+                self.log_manager.system.debug(f"  当前：保证金{self.available_balance:.2f}U × {self.actual_leverage}x = {notional_value:.2f}U") if self.log_manager else None
+                self.log_manager.system.debug(f"  提示：提高杠杆倍数 或 增加保证金") if self.log_manager else None
                 return False
             
             if side == 'LONG':
@@ -1185,20 +1218,20 @@ class LiveTrader:
             self._order_placed_at = time.time()
             self._fill_check_done = False
             
-            print(f"✓ 挂单成功：{side} QUEUE @ {actual_price:.2f}, 订单 ID: {order['orderId']}")
+            self.log_manager.system.debug(f"✓ 挂单成功：{side} QUEUE @ {actual_price:.2f}, 订单 ID: {order['orderId']}") if self.log_manager else None
             self._add_action("开仓挂单", f"{side} {size} QUEUE @ {actual_price:.2f}")
             return True
         
         except BinanceAPIError as e:
             if e.code == -1128:
-                print("[Post-Only 被拒] 价格穿透，调整价格重新挂单")
+                self.log_manager.system.debug("[Post-Only 被拒] 价格穿透，调整价格重新挂单") if self.log_manager else None
                 return await self.open_position(side)
             else:
-                print(f"✗ 开仓失败：[{e.code}] {e.msg}")
+                self.log_manager.system.debug(f"✗ 开仓失败：[{e.code}] {e.msg}") if self.log_manager else None
                 self._add_action("开仓错误", f"[{e.code}] {e.msg}")
                 return False
         except Exception as e:
-            print(f"✗ 开仓错误：{e}")
+            self.log_manager.system.debug(f"✗ 开仓错误：{e}") if self.log_manager else None
             self._add_action("开仓错误", str(e))
             return False
     
@@ -1211,7 +1244,7 @@ class LiveTrader:
             self.pending_order = None
             # 撤单后保证金释放，立即同步余额以便后续下单
             self.sync_account()
-            print("✓ 已撤销开仓挂单")
+            self.log_manager.system.debug("✓ 已撤销开仓挂单") if self.log_manager else None
             self._add_action("撤销挂单", "撤销开仓挂单")
             return True
         except:
@@ -1220,27 +1253,27 @@ class LiveTrader:
     async def close_position_market(self) -> bool:
         """市价全平仓位（Z 键）"""
         if not self.position:
-            print("✗ 无持仓，无法平仓")
+            self.log_manager.system.debug("✗ 无持仓，无法平仓") if self.log_manager else None
             return False
         
         side = self.position['side']
         size = self.position['size']
         entry_price = self.position['entry_price']
         
-        print(f"\n[Z 键平仓] 市价全平 {side} {size}...")
+        self.log_manager.system.debug(f"\n[Z 键平仓] 市价全平 {side} {size}...") if self.log_manager else None
         self._add_action("Z 键平仓", f"市价全平 {side} {size}")
         
         try:
             # 1. 撤销所有挂单（普通订单 + Algo Order）
-            print("  撤销所有挂单...")
+            self.log_manager.system.debug("  撤销所有挂单...") if self.log_manager else None
             self.api.cancel_all_orders(self.symbol)
             # 撤销所有 Algo Order（止损单、保底止损单）
             self.api.cancel_all_open_orders(self.symbol)
-            print("  ✓ 已撤销所有挂单")
+            self.log_manager.system.debug("  ✓ 已撤销所有挂单") if self.log_manager else None
             
             # 2. 市价全平
             close_side = 'SELL' if side == 'LONG' else 'BUY'
-            print(f"  市价 {close_side} {size}...")
+            self.log_manager.system.debug(f"  市价 {close_side} {size}...") if self.log_manager else None
             
             close_order = self.api.place_order(
                 symbol=self.symbol,
@@ -1262,14 +1295,14 @@ class LiveTrader:
             commission_asset = 'USDC'
             
             # 调试：打印订单响应
-            print(f"  [DEBUG] 订单响应：{close_order}")
+            self.log_manager.system.debug(f"  [DEBUG] 订单响应：{close_order}") if self.log_manager else None
             
             if fills:
                 # 从成交明细中累加手续费
                 for fill in fills:
                     comm = Decimal(fill.get('commission', '0'))
                     asset = fill.get('commissionAsset', 'USDC')
-                    print(f"  [DEBUG] 手续费：{comm} {asset}")
+                    self.log_manager.system.debug(f"  [DEBUG] 手续费：{comm} {asset}") if self.log_manager else None
                     if asset == 'USDC':
                         commission += comm
                         commission_asset = asset
@@ -1285,9 +1318,9 @@ class LiveTrader:
                 pnl = (entry_price - close_price) * size - commission
             
             pnl_str = f"{pnl:+.6f} USDT"
-            print(f"  ✓ 已市价全平：{close_side} {size} @ {close_price}")
-            print(f"  手续费：{commission:.6f} {commission_asset}")
-            print(f"  PnL: {pnl_str}")
+            self.log_manager.system.debug(f"  ✓ 已市价全平：{close_side} {size} @ {close_price}") if self.log_manager else None
+            self.log_manager.system.debug(f"  手续费：{commission:.6f} {commission_asset}") if self.log_manager else None
+            self.log_manager.system.debug(f"  PnL: {pnl_str}") if self.log_manager else None
             
             self._add_action("市价全平", f"{close_side} {size} @ {close_price} | 手续费 {commission:.6f} {commission_asset} | PnL: {pnl_str}")
 
@@ -1317,20 +1350,23 @@ class LiveTrader:
             if self.loss_protection_manager:
                 self.loss_protection_manager.on_position_closed()
 
+            # 刷新历史持仓（延迟等 Binance 同步）
+            asyncio.create_task(self._refresh_history_delayed())
+
             return True
         except Exception as e:
-            print(f"  ✗ 市价全平失败：{e}")
+            self.log_manager.system.debug(f"  ✗ 市价全平失败：{e}") if self.log_manager else None
             self._add_action("市价全平失败", str(e))
             return False
     
     async def close_position_early(self, retry_count: int = 0) -> bool:
         """提前平仓（带重试）"""
         if not self.position:
-            print("✗ 无持仓")
+            self.log_manager.system.debug("✗ 无持仓") if self.log_manager else None
             return False
         
         if self.early_close_order:
-            print("✗ 已有提前平仓挂单")
+            self.log_manager.system.debug("✗ 已有提前平仓挂单") if self.log_manager else None
             return False
         
         try:
@@ -1345,11 +1381,11 @@ class LiveTrader:
                     try:
                         self.api.cancel_order(self.symbol, tp_id)
                         self.tp_order = None
-                        print(f"[提前平仓] 已撤销止盈单")
+                        self.log_manager.system.debug(f"[提前平仓] 已撤销止盈单") if self.log_manager else None
                     except BinanceAPIError as e:
                         # -2011: 订单不存在（可能已被成交、撤销或状态未同步）
                         if e.code == -2011:
-                            print(f"[提前平仓] 止盈单已不存在（[{e.code}] {e.msg}），跳过撤单")
+                            self.log_manager.system.debug(f"[提前平仓] 止盈单已不存在（[{e.code}] {e.msg}），跳过撤单") if self.log_manager else None
                             self.tp_order = None
                         else:
                             raise
@@ -1384,21 +1420,21 @@ class LiveTrader:
             }
             
             actual_price = Decimal(order.get('price', '0'))
-            print(f"✓ 提前平仓挂单：{order_side} QUEUE @ {actual_price:.2f}")
+            self.log_manager.system.debug(f"✓ 提前平仓挂单：{order_side} QUEUE @ {actual_price:.2f}") if self.log_manager else None
             self._add_action("提前平仓挂单", f"{order_side} QUEUE @ {actual_price:.2f}")
             return True
         
         except BinanceAPIError as e:
             if e.code == -1128 and retry_count < 3:
-                print(f"[提前平仓重试] 订单被拒，第{retry_count+1}次重试...")
+                self.log_manager.system.debug(f"[提前平仓重试] 订单被拒，第{retry_count+1}次重试...") if self.log_manager else None
                 await asyncio.sleep(0.1)
                 return await self.close_position_early(retry_count + 1)
             else:
-                print(f"✗ 提前平仓失败：[{e.code}] {e.msg}")
+                self.log_manager.system.debug(f"✗ 提前平仓失败：[{e.code}] {e.msg}") if self.log_manager else None
                 self._add_action("提前平仓错误", f"[{e.code}] {e.msg}")
                 return False
         except Exception as e:
-            print(f"✗ 提前平仓错误：{e}")
+            self.log_manager.system.debug(f"✗ 提前平仓错误：{e}") if self.log_manager else None
             return False
     
     def cancel_early_close(self) -> bool:
@@ -1411,11 +1447,11 @@ class LiveTrader:
             if order_id:
                 self.api.cancel_order(self.symbol, order_id)
                 self.early_close_order = None
-                print("✓ 已撤销提前平仓挂单")
+                self.log_manager.system.debug("✓ 已撤销提前平仓挂单") if self.log_manager else None
             
             # 恢复原止盈单
             if self.tp_order_backup:
-                print(f"[恢复止盈] 重新挂止盈单...")
+                self.log_manager.system.debug(f"[恢复止盈] 重新挂止盈单...") if self.log_manager else None
                 tp_price = self.tp_order_backup.get('price')
                 tp_side = self.tp_order_backup.get('side')
                 size = self.position['size'] if self.position else Decimal('0')
@@ -1438,7 +1474,7 @@ class LiveTrader:
                         'type': 'LIMIT'
                     }
                     
-                    print(f"✓ 已恢复止盈单：{tp_side} @ {tp_price}")
+                    self.log_manager.system.debug(f"✓ 已恢复止盈单：{tp_side} @ {tp_price}") if self.log_manager else None
                     self._add_action("恢复止盈单", f"{tp_side} @ {tp_price}")
             
             self.tp_order_backup = None
@@ -1446,7 +1482,7 @@ class LiveTrader:
             
             return True
         except Exception as e:
-            print(f"✗ 撤销提前平仓失败：{e}")
+            self.log_manager.system.debug(f"✗ 撤销提前平仓失败：{e}") if self.log_manager else None
             return False
     
     def update_price(self, price: Decimal):
@@ -1523,7 +1559,7 @@ class LiveTrader:
 
                 # 校验成交量：FILLED 但成交量 < 挂单量，说明部分成交后取消
                 if filled_qty < original_size and filled_qty > 0:
-                    print(f"[成交检测] 部分成交：挂单 {original_size}，实际成交 {filled_qty}，剩余 {(original_size - filled_qty)} 已取消")
+                    self.log_manager.system.debug(f"[成交检测] 部分成交：挂单 {original_size}，实际成交 {filled_qty}，剩余 {(original_size - filled_qty)} 已取消") if self.log_manager else None
                     self.sync_account()
                     self._add_action("部分成交确认", f"{side} @ {avg_price} x {filled_qty}/{original_size}")
                 self._on_pending_filled(side, avg_price, filled_qty, commission, commission_asset)
@@ -1535,7 +1571,7 @@ class LiveTrader:
                 # 部分成交
                 if elapsed >= timeout_seconds:
                     # 超时了，撤销剩余，按已成交量处理
-                    print(f"[超时撤单] 超时 {timeout_seconds}s，撤销剩余 {remaining}，保留已成交 {filled_qty}")
+                    self.log_manager.system.debug(f"[超时撤单] 超时 {timeout_seconds}s，撤销剩余 {remaining}，保留已成交 {filled_qty}") if self.log_manager else None
                     self._fill_check_done = True
                     commission_asset = order_status.get('commissionAsset', 'USDC')
                     try:
@@ -1595,6 +1631,9 @@ class LiveTrader:
 
         # 立即下止盈止损单
         asyncio.create_task(self._safe_place_tp_sl_orders())
+
+        # 刷新历史持仓（延迟等 Binance 同步）
+        asyncio.create_task(self._refresh_history_delayed())
     
     def sync_account(self):
         """同步账户信息（REST 调用，应在主循环中节流使用）"""
@@ -1608,10 +1647,311 @@ class LiveTrader:
             self.order_margin = Decimal(account.get('totalOpenOrderInitialMargin', 0))
         except:
             pass
-    
+
+    async def _refresh_history_delayed(self, delay: float = 5.0):
+        """延迟刷新历史持仓（等 Binance 同步 trade 记录）"""
+        await asyncio.sleep(delay)
+        await self.fetch_position_history()
+
+    async def fetch_position_history(self, days: int = 7):
+        """从币安拉取成交记录，配对生成历史持仓"""
+        try:
+            import time
+            now_ms = int(time.time() * 1000)
+            start_ms = now_ms - days * 86400000
+
+            # 1. 分页拉取所有成交
+            all_fills = []
+            from_id = None
+            while True:
+                fills = self.api.get_fills(self.symbol, limit=1000, startTime=start_ms, endTime=now_ms, fromId=from_id)
+                if not fills:
+                    break
+                all_fills.extend(fills)
+                if len(fills) < 1000:
+                    break
+                from_id = fills[-1].get('id') + 1
+                if len(all_fills) > 10000:  # 安全上限
+                    break
+
+            if not all_fills:
+                return
+
+            # 2. 拉取资费记录
+            funding = self.api.get_income_history(self.symbol, incomeType='FUNDING_FEE', startTime=start_ms, endTime=now_ms, limit=1000)
+
+            # 3. 按 positionSide 分组
+            long_fills = [f for f in all_fills if f.get('positionSide') == 'LONG']
+            short_fills = [f for f in all_fills if f.get('positionSide') == 'SHORT']
+
+            # 4. 配对
+            history = []
+            history.extend(self._pair_positions('LONG', long_fills, funding))
+            history.extend(self._pair_positions('SHORT', short_fills, funding))
+
+            # 5. 按开仓时间倒序
+            history.sort(key=lambda x: x.get('open_time', ''), reverse=True)
+            self.position_history = history[:10]  # 最多保留 10 条
+
+            # 6. 更新 24h 交易统计
+            self._update_trade_stats_24h()
+
+        except Exception as e:
+            self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
+
+    def _pair_positions(self, side: str, fills: list, funding: list) -> list:
+        """将同一方向的成交配对成持仓记录（部分平仓也生成记录）"""
+        if not fills:
+            return []
+
+        positions = []
+        current = None
+
+        # 时间字段用 'time'（不是 tradeTime）
+        for fill in sorted(fills, key=lambda x: x.get('time', 0)):
+            price = Decimal(str(fill['price']))
+            qty = Decimal(str(fill['qty']))
+            fee = Decimal(str(fill.get('commission', '0')))
+            realized_pnl = Decimal(str(fill.get('realizedPnl', '0')))
+            trade_time_ms = fill.get('time', 0)
+            trade_time = datetime.fromtimestamp(trade_time_ms / 1000)
+            is_buyer = fill.get('buyer', False)
+
+            # 判断开仓还是平仓
+            is_open = (side == 'LONG' and is_buyer) or (side == 'SHORT' and not is_buyer)
+
+            if is_open:
+                if current is None:
+                    current = {
+                        'side': side,
+                        'total_opened_qty': qty,
+                        'total_close_qty': Decimal('0'),
+                        'total_open_cost': price * qty,
+                        'total_close_cost': Decimal('0'),
+                        'total_fee': fee,
+                        'realized_pnl_sum': Decimal('0'),
+                        'open_time': trade_time,
+                        'open_time_ms': trade_time_ms,
+                        'close_time': None,
+                        'close_time_ms': None,
+                    }
+                else:
+                    # 加仓
+                    current['total_opened_qty'] += qty
+                    current['total_open_cost'] += price * qty
+                    current['total_fee'] += fee
+            else:
+                if current:
+                    current['total_close_qty'] += qty
+                    current['total_close_cost'] += price * qty
+                    current['realized_pnl_sum'] += realized_pnl
+                    current['total_fee'] += fee
+                    current['close_time'] = trade_time
+                    current['close_time_ms'] = trade_time_ms
+
+                    if current['total_close_qty'] >= current['total_opened_qty']:
+                        # 完全平仓
+                        open_avg = current['total_open_cost'] / current['total_opened_qty']
+                        close_avg = current['total_close_cost'] / current['total_close_qty']
+                        pos_funding = self._calc_funding(funding, current['open_time_ms'], current['close_time_ms'])
+                        pnl = current['realized_pnl_sum'] - current['total_fee']
+
+                        positions.append({
+                            'side': side,
+                            'status': '完全平仓',
+                            'max_size': current['total_opened_qty'],
+                            'closed_size': current['total_close_qty'],
+                            'open_avg_price': open_avg,
+                            'close_avg_price': close_avg,
+                            'pnl': pnl,
+                            'total_fee': current['total_fee'],
+                            'funding_fee': pos_funding,
+                            'open_time': current['open_time'],
+                            'close_time': current['close_time'],
+                        })
+                        current = None
+                    else:
+                        # 部分平仓：生成记录，仅统计已平仓部分的数据
+                        closed_ratio = current['total_close_qty'] / current['total_opened_qty']
+                        open_avg = current['total_open_cost'] / current['total_opened_qty']
+                        partial_close_avg = current['total_close_cost'] / current['total_close_qty']
+                        partial_fee = current['total_fee'] * closed_ratio
+                        partial_pnl = current['realized_pnl_sum'] - partial_fee
+
+                        positions.append({
+                            'side': side,
+                            'status': '部分平仓',
+                            'max_size': current['total_opened_qty'],
+                            'closed_size': current['total_close_qty'],
+                            'open_avg_price': open_avg,
+                            'close_avg_price': partial_close_avg,
+                            'pnl': partial_pnl,
+                            'total_fee': partial_fee,
+                            'funding_fee': Decimal('0'),
+                            'open_time': current['open_time'],
+                            'close_time': current['close_time'],
+                        })
+
+        # 遍历结束还有未平仓的
+        if current:
+            open_avg = current['total_open_cost'] / current['total_opened_qty']
+            pos_funding = Decimal('0')
+            for f in funding:
+                f_time = f.get('time', 0)
+                if f_time >= current['open_time_ms']:
+                    pos_funding += Decimal(str(f.get('income', '0')))
+
+            pnl = current['realized_pnl_sum'] - current['total_fee']
+            positions.append({
+                'side': side,
+                'status': '未平仓',
+                'max_size': current['total_opened_qty'],
+                'closed_size': current['total_close_qty'],
+                'open_avg_price': open_avg,
+                'close_avg_price': None,
+                'pnl': pnl,
+                'total_fee': current['total_fee'],
+                'funding_fee': pos_funding,
+                'open_time': current['open_time'],
+                'close_time': None,
+            })
+
+        return positions
+
+    def _calc_funding(self, funding: list, open_ms: int, close_ms: int) -> Decimal:
+        """计算持仓期间的资费"""
+        pos_funding = Decimal('0')
+        for f in funding:
+            f_time = f.get('time', 0)
+            if open_ms <= f_time <= close_ms:
+                pos_funding += Decimal(str(f.get('income', '0')))
+        return pos_funding
+
+    def _update_trade_stats_24h(self):
+        """计算近 24 小时交易统计"""
+        import time
+        now_ms = int(time.time() * 1000)
+        day_ms = 86400000
+
+        # 拉取近 24 小时成交（全量，不限方向）
+        try:
+            all_fills = []
+            from_id = None
+            while True:
+                fills = self.api.get_fills(self.symbol, limit=1000, startTime=now_ms - day_ms, endTime=now_ms, fromId=from_id)
+                if not fills:
+                    break
+                all_fills.extend(fills)
+                if len(fills) < 1000:
+                    break
+                from_id = fills[-1].get('id') + 1
+                if len(all_fills) > 10000:
+                    break
+        except Exception:
+            self.trade_stats_24h = {'error': True}
+            return
+
+        if not all_fills:
+            self.trade_stats_24h = {
+                'open_count': 0, 'close_count': 0, 'win_count': 0,
+                'win_rate': 0, 'total_volume': Decimal('0'),
+                'total_pnl': Decimal('0'), 'avg_pnl_ratio': 0,
+                'avg_hold_time': '--'
+            }
+            return
+
+        # 统计完整持仓轮次（每笔开仓 → 完全平仓算1轮）
+        completed_rounds = 0
+        total_volume = Decimal('0')
+        total_pnl = Decimal('0')
+        win_count = 0
+        loss_count = 0
+        total_win_usd = Decimal('0')  # 累计盈利金额
+        total_loss_usd = Decimal('0')  # 累计亏损金额
+        hold_times = []
+
+        # 按 direction 分组配对
+        for side in ['LONG', 'SHORT']:
+            side_fills = [f for f in all_fills if f.get('positionSide') == side]
+            current_open = None
+            for fill in sorted(side_fills, key=lambda x: x.get('time', 0)):
+                price = Decimal(str(fill['price']))
+                qty = Decimal(str(fill['qty']))
+                realized_pnl = Decimal(str(fill.get('realizedPnl', '0')))
+                is_buyer = fill.get('buyer', False)
+                is_open = (side == 'LONG' and is_buyer) or (side == 'SHORT' and not is_buyer)
+                total_volume += qty
+                trade_time_ms = fill.get('time', 0)
+
+                if is_open:
+                    if current_open is None:
+                        current_open = {
+                            'open_time_ms': trade_time_ms,
+                            'total_qty': qty,
+                            'total_cost': price * qty,
+                            'realized_pnl': Decimal('0'),
+                        }
+                    else:
+                        current_open['total_qty'] += qty
+                        current_open['total_cost'] += price * qty
+                else:
+                    if current_open:
+                        current_open['total_qty'] -= qty
+                        current_open['realized_pnl'] += realized_pnl
+                        hold_times.append(trade_time_ms - current_open['open_time_ms'])
+
+                        if current_open['total_qty'] <= 0:
+                            # 一轮持仓结束
+                            completed_rounds += 1
+                            pnl = current_open['realized_pnl']
+                            total_pnl += pnl
+                            if pnl > 0:
+                                win_count += 1
+                                total_win_usd += pnl
+                            elif pnl < 0:
+                                loss_count += 1
+                                total_loss_usd += abs(pnl)
+                            current_open = None
+
+        closed_rounds = completed_rounds
+        win_rate = (win_count / closed_rounds * 100) if closed_rounds > 0 else 0
+
+        # 盈亏比 = 平均盈利 / 平均亏损
+        avg_win = total_win_usd / win_count if win_count > 0 else Decimal('0')
+        avg_loss = total_loss_usd / loss_count if loss_count > 0 else Decimal('0')
+        if avg_loss > 0 and avg_win > 0:
+            avg_pnl_ratio = float(avg_win / avg_loss)
+        elif win_count > 0:
+            avg_pnl_ratio = float('inf')
+        elif loss_count > 0:
+            avg_pnl_ratio = 0
+        else:
+            avg_pnl_ratio = 0
+
+        # 平均持仓时间 HH:MM:SS
+        if hold_times:
+            avg_hold_ms = sum(hold_times) / len(hold_times)
+            total_seconds = int(avg_hold_ms / 1000)
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            secs = total_seconds % 60
+            avg_hold_str = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        else:
+            avg_hold_str = '--'
+
+        self.trade_stats_24h = {
+            'round_count': completed_rounds,
+            'win_count': win_count,
+            'win_rate': win_rate,
+            'total_volume': total_volume,
+            'total_pnl': total_pnl,
+            'avg_pnl_ratio': avg_pnl_ratio,
+            'avg_hold_time': avg_hold_str,
+        }
+
     async def cleanup(self):
         """清理资源"""
-        print("\n清理交易器资源...")
+        self.log_manager.system.debug("\n清理交易器资源...") if self.log_manager else None
         self.running = False
         
         # 1. 关闭用户数据流 WebSocket
@@ -1620,29 +1960,29 @@ class LiveTrader:
                 self.user_stream_ws.running = False
                 if hasattr(self.user_stream_ws, 'websocket') and self.user_stream_ws.websocket:
                     await self.user_stream_ws.websocket.close()
-                print("✓ 用户数据流 WebSocket 已关闭")
+                self.log_manager.system.debug("✓ 用户数据流 WebSocket 已关闭") if self.log_manager else None
             except Exception as e:
-                print(f"关闭用户数据流失败：{e}")
+                self.log_manager.system.debug(f"关闭用户数据流失败：{e}") if self.log_manager else None
         
         # 2. 等待用户数据流任务结束
         if hasattr(self, 'user_stream_task') and self.user_stream_task:
             try:
                 await asyncio.wait_for(self.user_stream_task, timeout=1.0)
-                print("✓ 用户数据流任务已结束")
+                self.log_manager.system.debug("✓ 用户数据流任务已结束") if self.log_manager else None
             except asyncio.TimeoutError:
-                print("⚠ 用户数据流任务超时，强制结束")
+                self.log_manager.system.debug("⚠ 用户数据流任务超时，强制结束") if self.log_manager else None
             except Exception as e:
-                print(f"等待用户数据流任务失败：{e}")
+                self.log_manager.system.debug(f"等待用户数据流任务失败：{e}") if self.log_manager else None
         
         # 3. 撤销所有挂单（避免遗留订单）
         try:
-            print("撤销所有挂单...")
+            self.log_manager.system.debug("撤销所有挂单...") if self.log_manager else None
             self.api.cancel_all_orders(self.symbol)
-            print("✓ 所有挂单已撤销")
+            self.log_manager.system.debug("✓ 所有挂单已撤销") if self.log_manager else None
         except Exception as e:
-            print(f"撤销挂单失败：{e}")
+            self.log_manager.system.debug(f"撤销挂单失败：{e}") if self.log_manager else None
         
         # 4. 等待一小段时间，确保 API 请求完成
         await asyncio.sleep(0.5)
         
-        print("✓ 实盘交易器已清理")
+        self.log_manager.system.debug("✓ 实盘交易器已清理") if self.log_manager else None

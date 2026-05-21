@@ -315,12 +315,33 @@ class BinanceClient:
             'orderId': order_id
         }, signed=True)
 
-    def get_fills(self, symbol: str, limit: int = 10) -> list:
-        """查询最近成交记录"""
-        return self._get('/fapi/v1/userTrades', {
+    def get_fills(self, symbol: str, limit: int = 10, startTime: int = None, endTime: int = None, fromId: int = None) -> list:
+        """查询成交记录（支持分页）"""
+        params = {
             'symbol': symbol,
-            'limit': limit
-        }, signed=True)
+            'limit': min(limit, 1000)
+        }
+        if startTime is not None:
+            params['startTime'] = startTime
+        if endTime is not None:
+            params['endTime'] = endTime
+        if fromId is not None:
+            params['fromId'] = fromId
+        return self._get('/fapi/v1/userTrades', params, signed=True, weight=5)
+
+    def get_income_history(self, symbol: str, incomeType: str = None, startTime: int = None, endTime: int = None, limit: int = 1000) -> list:
+        """查询收入历史（资金费率、手续费、已实现盈亏等）"""
+        params = {
+            'symbol': symbol,
+            'limit': min(limit, 1000)
+        }
+        if incomeType is not None:
+            params['incomeType'] = incomeType
+        if startTime is not None:
+            params['startTime'] = startTime
+        if endTime is not None:
+            params['endTime'] = endTime
+        return self._get('/fapi/v1/income', params, signed=True, weight=30)
 
     # ==================== 用户数据流====================
     

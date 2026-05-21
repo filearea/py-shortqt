@@ -75,7 +75,13 @@ class SettingsUI:
                      'visible_cond': lambda c: c.get('loss_protection', {}).get('enabled', False)},
                 ]
             },
-            {'name': '备份管理', 'fields': []}
+            {'name': '备份管理', 'fields': []},
+            {
+                'name': '系统设置',
+                'fields': [
+                    {'key': 'sound.enabled', 'label': '音效开关', 'type': 'bool'},
+                ]
+            }
         ]
     
     def render(self) -> Panel:
@@ -96,8 +102,10 @@ class SettingsUI:
                 lines.extend(self._render_trading_tab_lines())
             elif self.current_tab == 1:
                 lines.extend(self._render_smart_stop_tab_lines())
-            else:
+            elif self.current_tab == 2:
                 lines.extend(self._render_backup_tab_lines())
+            else:
+                lines.extend(self._render_system_tab_lines())
             
             # 日志区域
             if self.trader and hasattr(self.trader, 'action_log'):
@@ -304,7 +312,34 @@ class SettingsUI:
         lines.append("B 新建备份  R 恢复选中  X 删除")
         
         return lines
-    
+
+    def _render_system_tab_lines(self) -> list:
+        """渲染系统设置标签页"""
+        config = self.config_manager.get_config()
+        lines = []
+
+        for i, field in enumerate(self.tabs[3]['fields']):
+            is_selected = (i == self.current_field)
+            value = self._get_nested_value(config, field['key'])
+
+            if field['type'] == 'bool':
+                label = "✓ 开启" if value else "○ 关闭"
+
+                if is_selected:
+                    if self.editing:
+                        option_strs = [f"[green]●开启[/green]" if value else "○开启", "●关闭" if not value else "○关闭"]
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] {' '.join(option_strs)}  ←→切换  Enter 确认")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][←→切换][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {label}")
+
+        lines.append("")
+        lines.append("─" * 50)
+        lines.append("[dim]音效：开仓成交、平仓等操作时播放提示音[/dim]")
+
+        return lines
+
     def _render_footer_lines(self) -> str:
         """渲染底部操作提示"""
         if self.editing:
@@ -312,6 +347,8 @@ class SettingsUI:
         else:
             if self.current_tab == 0:
                 return "[green]S 保存退出[/green]  [yellow]D 重置默认[/yellow]  [blue]B 备份[/blue]  [dim]Esc 放弃修改[/dim]"
+            elif self.current_tab == 3:
+                return "[green]S 保存退出[/green]  [dim]Esc 放弃修改[/dim]"
             else:
                 return "B 新建备份  R 恢复选中  X 删除  S 返回"
     
@@ -359,8 +396,10 @@ class SettingsUI:
             return self._handle_trading_tab_key(key)
         elif self.current_tab == 1:
             return self._handle_smart_stop_tab_key(key)
-        else:
+        elif self.current_tab == 2:
             return self._handle_backup_tab_key(key)
+        else:
+            return self._handle_system_tab_key(key)
     
     def _handle_trading_tab_key(self, key: str) -> str:
         """处理交易参数标签页的按键"""
@@ -630,7 +669,57 @@ class SettingsUI:
                         self.modified = True
         
         return 'continue'
-    
+
+    def _handle_system_tab_key(self, key: str) -> str:
+        """处理系统设置标签页的按键"""
+        config = self.config_manager.get_config()
+        fields = self.tabs[3]['fields']
+
+        max_field = len(fields) - 1
+        if self.current_field > max_field:
+            self.current_field = max_field
+        if self.current_field < 0:
+            self.current_field = 0
+
+        field = fields[self.current_field]
+
+        if self.editing:
+            if field['type'] == 'bool':
+                if key == 'left' or key == 'right':
+                    current = self._get_nested_value(config, field['key'])
+                    new_value = not (current or False)
+                    self._set_nested_value(config, field['key'], new_value)
+                    self.config_manager.config = config
+                    self.modified = True
+                elif key == 'enter':
+                    self.editing = False
+                    self.input_buffer = ""
+        else:
+            if key == 'up':
+                self.current_field = max(0, self.current_field - 1)
+            elif key == 'down':
+                self.current_field = min(max_field, self.current_field + 1)
+            elif key == 'enter':
+                self.input_buffer = ""
+                self.editing = True
+                return 'enter_edit'
+            elif key == 'left':
+                if field['type'] == 'bool':
+                    current = self._get_nested_value(config, field['key'])
+                    new_value = not (current or False)
+                    self._set_nested_value(config, field['key'], new_value)
+                    self.config_manager.config = config
+                    self.modified = True
+            elif key == 'right':
+                if field['type'] == 'bool':
+                    current = self._get_nested_value(config, field['key'])
+                    new_value = not (current or False)
+                    self._set_nested_value(config, field['key'], new_value)
+                    self.config_manager.config = config
+                    self.modified = True
+
+        return 'continue'
+
     def _handle_backup_tab_key(self, key: str) -> str:
         """处理备份管理标签页的按键"""
         backups = self.config_manager.list_backups()

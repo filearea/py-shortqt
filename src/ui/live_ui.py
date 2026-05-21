@@ -3,6 +3,7 @@
 实盘交易 UI - v1.4.1 优化布局
 """
 
+import os
 import re
 from rich.console import Console
 from rich.live import Live
@@ -23,6 +24,31 @@ def _pnl_style_from_details(details: str) -> str:
     return None
 
 
+def _fmt_num(value) -> str:
+    """格式化数字：最大 6 位小数，省略末尾的 0，0 直接显示 '0'"""
+    if value is None:
+        return '--'
+    f = float(value)
+    if f == 0:
+        return '0'
+    return f'{f:.6f}'.rstrip('0').rstrip('.')
+
+
+def _fmt_time(dt, now=None) -> str:
+    """格式化时间：同天显示 HH:MM，昨天显示 昨天 HH:MM，其余 MM-DD HH:MM"""
+    from datetime import datetime as _dt, timedelta
+    if dt is None:
+        return ''
+    if now is None:
+        now = _dt.now()
+    if dt.date() == now.date():
+        return dt.strftime('%H:%M')
+    yesterday = now.date() - timedelta(days=1)
+    if dt.date() == yesterday:
+        return f'昨天 {dt.strftime("%H:%M")}'
+    return dt.strftime('%m-%d %H:%M')
+
+
 class LiveTradingUI:
     """实盘交易界面 - v1.4.0"""
     
@@ -37,55 +63,52 @@ class LiveTradingUI:
         self.config_manager = config_manager  # 配置管理器，用于读取止盈止损配置
         self.indicators = indicators  # v1.4.0 新增：指标管理器
     
-    def render(self) -> Layout:
-        """渲染界面 - v1.4.0 验收布局"""
-        # v1.5.0 修复：固定 layout 结构，避免抖动
+    def render(self, console_height: int = None) -> Layout:
+        """渲染界面 - v1.6.6 布局"""
         layout = Layout()
-        
-        # 固定各部分高度，避免重新计算
+
         layout.split_column(
             Layout(name="header", size=3),
-            Layout(name="main"),  # 剩余空间
+            Layout(name="top"),      # orderbook + account + history
             Layout(name="footer", size=12),
-            Layout(name="indicators", size=5)
+            Layout(name="indicators", size=5),
+            Layout(name="stats", size=3)  # 24h 数据统计
         )
-        
-        # 头部
+
         header = self._render_header()
         layout["header"].update(header)
-        
-        # 主体
-        main_layout = Layout()
-        main_layout.split_row(
-            Layout(name="orderbook", ratio=2),
-            Layout(name="account", ratio=1)
+
+        # top 区域：水平分割
+        top_layout = Layout()
+        top_layout.split_row(
+            Layout(name="orderbook", size=27),   # 固定宽度
+            Layout(name="history"),              # 自适应中间
+            Layout(name="account", size=40),     # 固定宽度
         )
-        
-        # 计算订单簿区域可用高度
-        # 总高度 - 头部 3 行 - 日志 12 行 - 指标 5 行 - Panel 边框 4 行 = 订单簿区域高度
-        # 订单簿区域高度 - 最新价 1 行 = 买卖盘总行数
-        # 买卖盘各占一半
+
+        # 计算订单簿显示档数（基于传入的终端实际高度）
         try:
-            from rich.console import Console
-            console = Console()
-            total_height = console.height if console.height else 45
-            orderbook_height = total_height - 3 - 12 - 5 - 4
-            # 计算每边显示的档数
-            levels_per_side = max(5, (orderbook_height - 1) // 2)
-            max_levels = min(levels_per_side, 200)  # 最多 200 档
+            total_height = console_height or os.get_terminal_size().lines
+            # top_height = 终端总高度 - header(3) - footer(12) - indicators(5)
+            # orderbook 内部 Panel 有 2 行边框 + 最新价 1 行
+            top_height = total_height - 3 - 12 - 5
+            levels = max(5, min((top_height - 3) // 2, 20))
         except:
-            max_levels = 15  # 默认 15 档
-        
-        main_layout["orderbook"].update(Panel(self._render_orderbook(max_levels), title="订单簿"))
-        main_layout["account"].update(Panel(self._render_account(), title="账户"))
-        layout["main"].update(main_layout)
-        
-        # 底部日志
+            levels = 15
+
+        # 订单簿：买卖盘数量相等，最新价居中
+        asks = list(self.trader.orderbook.get('asks', [])[:levels])
+        bids = list(self.trader.orderbook.get('bids', [])[:levels])
+
+        top_layout["orderbook"].update(Panel(self._render_orderbook_levels(asks, bids, levels), title="订单簿"))
+        top_layout["history"].update(Panel(self._render_position_history(), title="历史持仓"))
+        top_layout["account"].update(Panel(self._render_account(), title="账户"))
+        layout["top"].update(top_layout)
+
         layout["footer"].update(Panel(self._render_log(), title="日志"))
-        
-        # v1.4.0 新增：指标区（放在日志上面，紧凑布局）
         layout["indicators"].update(Panel(self._render_indicators(), title="盘面指标"))
-        
+        layout["stats"].update(Panel(self._render_stats(), title="数据统计（24h）"))
+
         return layout
     
     def _render_header(self) -> Panel:
@@ -225,7 +248,171 @@ class LiveTradingUI:
                 ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
 
         return ob_table
-    
+
+    def _render_orderbook_levels(self, asks: list, bids: list, max_levels: int) -> Table:
+        """渲染订单簿买卖盘（接收已截断的 asks/bids 列表）"""
+        from rich.table import Table
+        ob_table = Table(show_header=False, box=None, padding=(0, 1))
+        ob_table.add_column("价格", justify="right", width=10)
+        ob_table.add_column("数量", justify="right", width=10)
+
+        # 收集所有用户挂单价格
+        user_order_prices: dict[float, tuple[str, str]] = {}
+
+        def _add_price(price, symbol, color):
+            p = float(price)
+            if p > 0:
+                user_order_prices[p] = (symbol, color)
+
+        if hasattr(self.trader, 'tp_order') and self.trader.tp_order:
+            _add_price(self.trader.tp_order.get('price', 0), '✦', 'bold green')
+        if hasattr(self.trader, 'sl_order') and self.trader.sl_order:
+            _add_price(self.trader.sl_order.get('price', 0), '✕', 'bold red')
+        if hasattr(self.trader, 'stop_market_order') and self.trader.stop_market_order:
+            _add_price(self.trader.stop_market_order.get('trigger', 0), '◆', 'bold red')
+        if (hasattr(self.trader, 'trailing_stop_manager') and
+                self.trader.trailing_stop_manager and
+                self.trader.trailing_stop_manager.enabled and
+                self.trader.trailing_stop_manager.grid_prices):
+            for gp in self.trader.trailing_stop_manager.grid_prices:
+                _add_price(gp, '○', 'yellow')
+        if hasattr(self.trader, 'pending_order') and self.trader.pending_order:
+            _add_price(self.trader.pending_order['price'], '◀', 'bold magenta')
+        if hasattr(self.trader, 'early_close_order') and self.trader.early_close_order:
+            _add_price(self.trader.early_close_order.get('price', 0), '◀', 'bold magenta')
+
+        display_levels = min(len(bids), len(asks), max_levels)
+
+        def _render_price(price, price_float, qty):
+            if price_float in user_order_prices:
+                symbol, color = user_order_prices[price_float]
+                return f"[{color}]{symbol} {price:.2f}[/{color}]", f"[{color}]{qty:.3f}[/{color}]"
+            return None, None
+
+        # 卖盘（倒序：从远到近）
+        for i in range(display_levels - 1, -1, -1):
+            price, qty = asks[i]
+            price_float = float(price)
+            price_text, qty_text = _render_price(price, price_float, qty)
+            if price_text:
+                ob_table.add_row(price_text, qty_text)
+            else:
+                ob_table.add_row(f"[red]{price:.2f}[/red]", f"{qty:.3f}")
+
+        # 最新价居中
+        if self.trader.last_price:
+            mid_price = f"{self.trader.last_price:.2f}"
+            ob_table.add_row(f"[bold yellow]  {mid_price}  [/bold yellow]", "")
+        else:
+            ob_table.add_row(f"[bold yellow]  ----  [/bold yellow]", "")
+
+        # 买盘（正序：从近到远）
+        for i in range(display_levels):
+            price, qty = bids[i]
+            price_float = float(price)
+            price_text, qty_text = _render_price(price, price_float, qty)
+            if price_text:
+                ob_table.add_row(price_text, qty_text)
+            else:
+                ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
+
+        return ob_table
+
+    def _render_position_history(self) -> Text:
+        """渲染历史持仓（4行卡片：方向/PnL | 开仓 | 平仓 | 费用）"""
+        from rich.text import Text
+        from datetime import datetime
+        history_text = Text()
+        now = datetime.now()
+
+        if not hasattr(self.trader, 'position_history') or not self.trader.position_history:
+            history_text.append("暂无历史持仓", style="dim")
+            return history_text
+
+        positions = self.trader.position_history[:10]
+        total_count = len(self.trader.position_history) if hasattr(self.trader, 'position_history') else 0
+
+        for i, pos in enumerate(positions):
+            side = pos.get('side', '')
+            status = pos.get('status', '')
+            pnl = pos.get('pnl', Decimal('0'))
+            fee = pos.get('total_fee', Decimal('0'))
+            funding = pos.get('funding_fee', Decimal('0'))
+            open_time = pos.get('open_time')
+            close_time = pos.get('close_time')
+            open_avg = pos.get('open_avg_price', Decimal('0'))
+            close_avg = pos.get('close_avg_price')
+            size = pos.get('max_size', Decimal('0'))
+            closed_size = pos.get('closed_size', Decimal('0'))
+
+            # 第1行：方向 + 状态 + PnL
+            side_style = 'bold green' if side == 'LONG' else 'bold red'
+            history_text.append("  ", style=side_style)
+            history_text.append(side, style=side_style)
+            history_text.append("  ")
+
+            if status == '未平仓':
+                history_text.append(status, style="yellow")
+            elif status == '完全平仓':
+                history_text.append(status, style="dim")
+            else:
+                history_text.append(status, style="cyan")
+            history_text.append("  ")
+
+            if status == '未平仓':
+                history_text.append("PnL: --", style="yellow")
+            elif pnl and pnl > 0:
+                history_text.append(f"PnL: +{_fmt_num(pnl)}U", style="green")
+            elif pnl and pnl < 0:
+                history_text.append(f"PnL: {_fmt_num(pnl)}U", style="red")
+            else:
+                history_text.append("PnL: 0U", style="gray")
+
+            history_text.append("\n")
+
+            # 第2行：开仓信息
+            open_t = _fmt_time(open_time, now) if isinstance(open_time, datetime) else ''
+            history_text.append(f"开仓 {_fmt_num(open_avg)} x {_fmt_num(size)}  @ {open_t}")
+            history_text.append("\n")
+
+            # 第3行：平仓信息
+            if status == '未平仓':
+                history_text.append("未平仓", style="dim")
+            elif status == '部分平仓':
+                # 部分平仓：显示已平数量 / 总开仓量
+                close_t = _fmt_time(close_time, now) if isinstance(close_time, datetime) else ''
+                remaining = size - closed_size if size and closed_size else Decimal('0')
+                history_text.append(f"平仓 {_fmt_num(close_avg)} x {_fmt_num(closed_size)}/{_fmt_num(size)}  @ {close_t}")
+            else:
+                # 完全平仓：显示平仓数量
+                close_t = _fmt_time(close_time, now) if isinstance(close_time, datetime) else ''
+                history_text.append(f"平仓 {_fmt_num(close_avg)} x {_fmt_num(closed_size)}  @ {close_t}")
+            history_text.append("\n")
+
+            # 第4行：费用
+            history_text.append(f"手续费 {_fmt_num(fee)}U  ", style="dim")
+            if status == '未平仓':
+                history_text.append("资费 --  ", style="dim")
+                history_text.append("净利 --", style="dim")
+            else:
+                net_pnl = pnl - fee - funding if pnl else Decimal('0')
+                history_text.append(f"资费 {_fmt_num(funding)}U  ", style="dim")
+                if net_pnl > 0:
+                    history_text.append(f"净利 +{_fmt_num(net_pnl)}U", style="green")
+                elif net_pnl < 0:
+                    history_text.append(f"净利 {_fmt_num(net_pnl)}U", style="red")
+                else:
+                    history_text.append("净利 0U", style="gray")
+            history_text.append("\n")
+
+            # 空行分隔
+            history_text.append("\n")
+
+        if total_count > 10:
+            history_text.append(f"\n... 共 {total_count} 条", style="dim")
+
+        return history_text
+
     def _render_account(self) -> Text:
         """渲染账户信息"""
         acc_text = Text()
@@ -442,8 +629,13 @@ class LiveTradingUI:
         vol_lines = display_data['volatility_lines']
         liq_lines = display_data['liquidity_lines']
         score = display_data['score_display']
-        
-        # 第一行：波动率（横向展示）
+
+        # ATR(14) 原始值和波动率百分比
+        vol_snapshot = snapshot.get('volatility', {})
+        atr_14 = vol_snapshot.get('atr_14')
+        atr_vol_pct = vol_snapshot.get('atr_volatility_percent')
+
+        # 第一行：波动率（横向展示）+ ATR(14)
         vol_row = Text()
         vol_row.append("波动率：", style="bold cyan")
         vol_parts = []
@@ -453,33 +645,53 @@ class LiveTradingUI:
             if clean_line:
                 vol_parts.append(clean_line)
         vol_row.append(" | ".join(vol_parts[:5]))  # 最多显示 5 个
-        
+
+        # ATR(14) 显示
+        vol_row.append("  |  ", style="dim")
+        vol_row.append("ATR(14)：", style="bold cyan")
+        if atr_14 is not None:
+            vol_row.append(f"{atr_14:.4f}", style="cyan")
+            if atr_vol_pct is not None:
+                vol_row.append(f" ({atr_vol_pct:.3f}%)", style="yellow")
+        else:
+            vol_row.append("--", style="dim")
+
         # 添加状态标记
         if any('🟡' in l or '🔴' in l for l in vol_lines):
             vol_row.append(" 🟡", style="yellow")
         
-        # 第二行：流动性（买卖深度分开颜色渲染）
+        # 第二行：流动性（买卖深度固定宽度 + 价差 + 深度对比）
         liq_row = Text()
         liq_row.append("流动性：", style="bold cyan")
+
+        # 价差信息
         for line in liq_lines:
             clean_line = line.replace('🟡', '').replace('🔴', '').replace('[正常]', '').replace('[充足]', '').replace('[WARN]', '').strip()
-            if clean_line.startswith('买盘：'):
-                liq_row.append(f" {clean_line} ", style="green")
-            elif clean_line.startswith('卖盘：'):
-                liq_row.append(f" {clean_line} ", style="red")
-            elif clean_line:
-                liq_row.append(f" {clean_line} ", style="cyan")
+            if clean_line:
+                liq_row.append(f" {clean_line}", style="cyan")
 
-        # 深度不平衡指示
+        # 买卖深度（固定宽度：4位整数+2位小数，不足补0）
         bid_depth = liq.get('bid_depth_surface', 0)
         ask_depth = liq.get('ask_depth_surface', 0)
         total_depth = bid_depth + ask_depth
+
+        bid_str = f"{float(bid_depth):07.2f}"
+        ask_str = f"{float(ask_depth):07.2f}"
+
+        liq_row.append(f" 买:{bid_str}ETH", style="green")
+        liq_row.append(f" 卖:{ask_str}ETH", style="red")
+
+        # 深度对比（固定4字文案，不抖动）
         if total_depth > 0:
             imbalance = (bid_depth - ask_depth) / total_depth
-            if imbalance > 0.15:
-                liq_row.append(" 买盘占优 ", style="green")
-            elif imbalance < -0.15:
-                liq_row.append(" 卖盘占优 ", style="red")
+            if abs(imbalance) <= 0.15:
+                liq_row.append(" 势均力敌", style="dim")
+            elif imbalance > 0.15:
+                liq_row.append(" 买盘占优", style="green")
+            else:
+                liq_row.append(" 卖盘占优", style="red")
+        else:
+            liq_row.append(" 势均力敌", style="dim")
         
         # 第三行：综合评分 + 方向 + 分类评分
         score_row = Text()
@@ -510,6 +722,62 @@ class LiveTradingUI:
         
         return table
 
+    def _render_stats(self) -> Text:
+        """渲染 24 小时数据统计（单行展示）"""
+        stats_text = Text()
+
+        if not hasattr(self.trader, 'trade_stats_24h') or not self.trader.trade_stats_24h:
+            stats_text.append("暂无数据", style="dim")
+            return stats_text
+
+        stats = self.trader.trade_stats_24h
+        if stats.get('error'):
+            stats_text.append("拉取失败", style="dim")
+            return stats_text
+
+        round_count = stats.get('round_count', 0)
+        win_count = stats.get('win_count', 0)
+        win_rate = stats.get('win_rate', 0)
+        total_volume = stats.get('total_volume', Decimal('0'))
+        total_pnl = stats.get('total_pnl', Decimal('0'))
+        avg_pnl_ratio = stats.get('avg_pnl_ratio', 0)
+        avg_hold = stats.get('avg_hold_time', '--')
+
+        # 单行展示所有数据
+        stats_text.append(f"交易:{round_count}次  ", style="cyan")
+        stats_text.append(f"盈利:{win_count}次  ", style="green")
+        stats_text.append("胜率:", style="bold cyan")
+        if win_rate > 50:
+            stats_text.append(f"{win_rate:.1f}%  ", style="green")
+        elif win_rate > 0:
+            stats_text.append(f"{win_rate:.1f}%  ", style="yellow")
+        else:
+            stats_text.append("--  ", style="dim")
+        stats_text.append("交易量:", style="bold cyan")
+        stats_text.append(f"{_fmt_num(total_volume)}ETH  ", style="default")
+        stats_text.append("累计盈亏:", style="bold cyan")
+        pnl_val = float(total_pnl)
+        if pnl_val > 0:
+            stats_text.append(f"+{pnl_val:.2f}U  ", style="green")
+        elif pnl_val < 0:
+            stats_text.append(f"{pnl_val:.2f}U  ", style="red")
+        else:
+            stats_text.append("0U  ", style="dim")
+        stats_text.append("盈亏比:", style="bold cyan")
+        if avg_pnl_ratio == float('inf'):
+            stats_text.append("∞  ", style="green")
+        elif avg_pnl_ratio > 0:
+            if avg_pnl_ratio >= 1:
+                stats_text.append(f"{avg_pnl_ratio:.2f}  ", style="green")
+            else:
+                stats_text.append(f"{avg_pnl_ratio:.2f}  ", style="yellow")
+        else:
+            stats_text.append("--  ", style="dim")
+        stats_text.append("平均持仓时间:", style="bold cyan")
+        stats_text.append(str(avg_hold), style="default")
+
+        return stats_text
+
     def _render_log(self) -> Text:
         """渲染日志（带颜色高亮 + 错误显示）"""
         log_text = Text()
@@ -539,8 +807,24 @@ class LiveTradingUI:
                 # --- 优先：含 PnL 的日志，按盈亏着色 ---
                 pnl_style = _pnl_style_from_details(details)
 
+                # 0. 部分成交/超时撤单（优先匹配）
+                if '部分成交' in action_name:
+                    log_text.append(f"{time_str}  ", style="dim")
+                    log_text.append(f"{action_name}  ", style="bold yellow")
+                    log_text.append(f"{details}\n", style="yellow")
+
+                elif '超时撤单' in action_name:
+                    if '失败' in action_name:
+                        log_text.append(f"{time_str}  ", style="dim")
+                        log_text.append(f"{action_name}  ", style="bold red")
+                        log_text.append(f"{details}\n", style="red")
+                    else:
+                        log_text.append(f"{time_str}  ", style="dim")
+                        log_text.append(f"{action_name}  ", style="bold cyan")
+                        log_text.append(f"{details}\n", style="cyan")
+
                 # 1. 成交类 — 含 PnL 的按盈亏，否则按类型
-                if '成交' in action_name:
+                elif '成交' in action_name:
                     if pnl_style:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style=f"bold {pnl_style}")

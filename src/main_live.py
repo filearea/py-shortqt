@@ -17,8 +17,26 @@ from datetime import datetime, timedelta
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
     os.environ['PYTHONUTF8'] = '1'
-    # 设置控制台窗口尺寸（120 列 x 45 行）
-    os.system('mode con: cols=120 lines=45')
+    # 设置控制台窗口尺寸（130 列 x 50 行）
+    os.system('mode con: cols=130 lines=50')
+
+    # 禁用控制台鼠标输入 + 关闭 QuickEdit，防止滚轮误触
+    import ctypes
+    try:
+        hcon = ctypes.windll.kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        mode = ctypes.c_ulong(0)
+        ctypes.windll.kernel32.GetConsoleMode(hcon, ctypes.byref(mode))
+        # 清除 ENABLE_MOUSE_INPUT (0x0010) 和 ENABLE_QUICK_EDIT_MODE (0x0040)
+        mode.value &= ~(0x0010 | 0x0040)
+        ctypes.windll.kernel32.SetConsoleMode(hcon, mode)
+    except Exception:
+        pass
+
+    # 发送 ANSI 转义序列禁用终端鼠标报告模式
+    # 现代终端（Windows Terminal/ConEmu）可能启用了鼠标报告模式，
+    # 滚轮会被转换为 \x1b[A / \x1b[B 等 ANSI 序列送入 stdin
+    sys.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l')
+    sys.stdout.flush()
 
 # 配置代理（REST API 和 WebSocket 都走本地代理）
 os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7890'
@@ -54,7 +72,7 @@ except ImportError as e:
 
 
 class LiveTradingBot:
-    """实盘交易机器人 - v1.2.0"""
+    """实盘交易机器人"""
     
     def __init__(self, api_key: str, api_secret: str, account_name: str = "主账号"):
         self.symbol = SYMBOL
@@ -344,21 +362,21 @@ class LiveTradingBot:
     
     async def _cleanup_resources(self, ws_task=None):
         """清理资源（确保 WebSocket 正确关闭）"""
-        print("\n清理资源...")
+        self.log_manager.system.info("正在清理资源...")
         self.running = False
         self.listener.running = False
-        
+
         # 关闭用户数据流 WebSocket
         await self.trader.cleanup()
-        
+
         # 等待行情 WebSocket 任务结束
         if ws_task:
             try:
                 await asyncio.wait_for(ws_task, timeout=2.0)
             except asyncio.TimeoutError:
-                print("WebSocket 任务超时，强制结束")
-        
-        print("[OK] 资源已清理")
+                self.log_manager.system.warning("WebSocket 任务超时，强制结束")
+
+        self.log_manager.system.info("资源已清理")
     
     async def run(self):
         """运行主循环"""
@@ -367,7 +385,7 @@ class LiveTradingBot:
         print(msg)
         self.log_manager.system.info(msg)
         
-        msg = "py-shortqt v1.2.0 - 实盘交易模式"
+        msg = f"py-shortqt v{__version__} - 实盘交易模式"
         print(msg)
         self.log_manager.system.info(msg)
         
@@ -384,7 +402,7 @@ class LiveTradingBot:
                         'account': self.account_name,
                         'leverage': self.trader.actual_leverage
                     })
-                    
+
                     # v1.4.0: 获取 499 根（约 8 小时）历史 K 线（8 小时数据，带速率限制）
                     # v1.5.0 修复：在后台线程中执行，避免阻塞主线程
                     await asyncio.sleep(1)  # 等待 1 秒，避免与初始化请求冲突
@@ -392,7 +410,10 @@ class LiveTradingBot:
                         None,
                         lambda: self._init_historical_klines(limit=300)
                     )
-                    
+
+                    # v1.6.6: 拉取历史持仓
+                    asyncio.create_task(self.trader.fetch_position_history())
+
                     break
                 else:
                     if retry < max_retries - 1:
@@ -419,29 +440,20 @@ class LiveTradingBot:
                     return
         
         # 2. 连接行情 WebSocket
-        print("连接行情 WebSocket...")
+        self.log_manager.system.info("正在连接行情 WebSocket...")
         ws_task = asyncio.create_task(self.listener.connect())
-        
+
         # 等待行情连接（最多 15 秒）
-        print("等待连接...")
         for i in range(30):  # 15 秒 = 30 * 0.5 秒
             if self.listener.connected:
-                print("[OK] 行情已连接")
+                self.log_manager.system.info("行情已连接")
                 break
             await asyncio.sleep(0.5)
         else:
-            print("⚠ 行情连接超时，但程序继续运行")
-            print("  可能的原因：")
-            print("  1. 网络连接不稳定")
-            print("  2. 币安 WebSocket 服务暂时不可用")
-            print("  3. 防火墙/代理阻止了连接")
-            print("\n  程序将在后台继续尝试连接...")
-            # 不退出程序，让 WebSocket 在后台继续重试
-        
+            self.log_manager.system.warning("行情连接超时，程序继续运行，WebSocket 将在后台重试")
+
         # 3. v1.4.0 新增：补全缺失的历史数据（WebSocket 连接后）
-        print("\n" + "=" * 70)
-        print("正在补全缺失的历史数据（过去 14 天）...")
-        print("=" * 70)
+        self.log_manager.system.info("正在补全缺失的历史数据（过去 14 天）...")
         try:
             from src.data_collector import collect_historical_data
             # 使用 asyncio 运行同步函数，避免阻塞
@@ -449,19 +461,24 @@ class LiveTradingBot:
                 None,
                 lambda: collect_historical_data([self.symbol], days=14)
             )
-            print("[OK] 历史数据补全完成")
+            self.log_manager.system.info("历史数据补全完成")
         except Exception as e:
-            print(f"[WARN] 历史数据补全失败：{e}")
-            print("  程序将继续运行，数据将在后台收集")
+            self.log_manager.system.warning(f"历史数据补全失败：{e}，程序将继续运行")
         
-        print("=" * 70)
-        print("操作：↑做多  |  ↓做空  |  ←撤单  |  →平仓  |  Z 市价全平  |  S 设置  |  H 同步  |  Q 退出")
-        print("=" * 70)
-        
-        # 5. 主循环
-        print("\n进入主循环...")
-        print("=" * 70)
-        
+        # 5. 启动历史持仓轮询（每 20 秒刷新一次）
+        async def _history_poll():
+            while self.running:
+                await asyncio.sleep(20)
+                try:
+                    await self.trader.fetch_position_history()
+                except Exception:
+                    pass
+
+        history_task = asyncio.create_task(_history_poll())
+
+        # 6. 主循环
+        self.log_manager.system.info("进入主循环")
+
         try:
             with Live(
                 self.ui.render(),
@@ -474,10 +491,11 @@ class LiveTradingBot:
                 while self.running:
                     try:
                         # 先刷新 UI（Rich Live 内部 refresh_per_second=2 自动节流）
+                        console_h = live.console.height
                         if self.in_settings:
                             live.update(self.settings_ui.render())
                         else:
-                            live.update(self.ui.render())
+                            live.update(self.ui.render(console_height=console_h))
                     except Exception as e:
                         self.log_manager.system.error(f"UI 更新错误：{e}")
                         continue
@@ -486,11 +504,17 @@ class LiveTradingBot:
                         # 键盘输入（非阻塞）
                         if msvcrt.kbhit():
                             key = msvcrt.getch()
+
+                            # 过滤 \x00 前缀事件（功能键/鼠标滚轮）
+                            if key == b'\x00':
+                                msvcrt.getch()  # 消费第二字节
+                                continue
+
                             try:
                                 key_char = key.decode('utf-8', errors='ignore').lower()
                             except:
                                 key_char = key.decode('gbk', errors='ignore').lower()
-                            
+
                             # 特殊键映射
                             if key == b'\r' or key == b'\n':  # Enter 键
                                 key_char = 'enter'
@@ -503,11 +527,11 @@ class LiveTradingBot:
                             
                             # 在设置界面中
                             if self.in_settings:
-                                self.log_manager.system.debug(f"设置界面按键：{repr(key)} -> '{key_char}'")
-                                
                                 if key == b'\xe0' or key == b'\x00':  # 方向键前缀
                                     key = msvcrt.getch()
-                                    if key == b'H':  # ↑
+                                    if key in (b'I', b'i', b'Q', b'q'):
+                                        pass  # 鼠标滚轮，忽略
+                                    elif key == b'H':  # ↑
                                         self.settings_ui.handle_key('up')
                                     elif key == b'P':  # ↓
                                         self.settings_ui.handle_key('down')
@@ -609,7 +633,9 @@ class LiveTradingBot:
                             # 主交易界面 - 只用方向键
                             if key == b'\xe0' or key == b'\x00':
                                 key = msvcrt.getch()
-                                if key == b'H':  # ↑
+                                if key in (b'I', b'i', b'Q', b'q'):
+                                    pass  # 鼠标滚轮，忽略
+                                elif key == b'H':  # ↑
                                     await self.place_order('LONG')
                                 elif key == b'P':  # ↓
                                     await self.place_order('SHORT')
@@ -626,19 +652,17 @@ class LiveTradingBot:
                             elif key_char == 'z':
                                 # Z 键：市价全平
                                 if self.trader.position:
-                                    print("\n[Z 键] 市价全平...")
+                                    self.trader._add_action("Z 键市价全平", "执行中...")
                                     await self.trader.close_position_market()
                                 else:
                                     self.trader._add_action("⚠️ Z 键无效", "无持仓")
                             elif key_char == 'h':
                                 # 手动触发持仓同步
-                                print("\n[手动同步] 开始同步持仓...")
                                 await self.trader.sync_position_from_exchange()
                             elif key_char == 'q':
                                 self.running = False
                     except Exception as e:
                         self.log_manager.system.error(f"键盘输入错误：{e}")
-                        print(f"\n[键盘输入错误] {e}")
                     
                     # 成交检测：bookTicker 穿透 → REST 确认（零消耗 unless 穿透）
                     await self.trader.check_pending_order_filled()
@@ -663,46 +687,41 @@ class LiveTradingBot:
                     await asyncio.sleep(0.05)
         
         except KeyboardInterrupt:
-            print("\n用户中断（窗口关闭）")
+            self.log_manager.system.info("用户中断（窗口关闭）")
+            history_task.cancel()
             await self._cleanup_resources(ws_task)
         except Exception as e:
-            print(f"\n[主循环异常] {e}")
-            import traceback
-            traceback.print_exc()
+            self.log_manager.system.error(f"主循环异常：{e}", exc_info=True)
+            history_task.cancel()
             await self._cleanup_resources(ws_task)
         finally:
             # 无论何种退出方式，都要记录余额日志
-            print(f"\n[关闭日志] 开始同步账户信息...")
+            self.log_manager.system.info("正在同步账户信息...")
             self.trader.sync_account()
-            print(f"[关闭日志] 当前余额：{self.trader.available_balance:.4f} USDC")
-            
+            self.log_manager.system.info(f"当前余额：{self.trader.available_balance:.4f} USDC")
+
             # 输出数据记录统计
-            print(f"\n[数据记录统计]")
             stats = self.recorder.get_stats()
-            print(f"  K 线保存：{stats['klines_saved']} 根")
-            print(f"  订单簿快照：{stats['orderbooks_saved']} 次")
-            
-            print(f"[关闭日志] 正在写入 shutdown 余额日志...")
+            self.log_manager.system.info(f"数据记录统计 - K线保存：{stats['klines_saved']} 根，订单簿快照：{stats['orderbooks_saved']} 次")
+
+            self.log_manager.system.info("正在写入 shutdown 余额日志...")
             try:
                 self.logger.log_balance('shutdown', self.trader.available_balance, {
                     'account': self.account_name,
                     'exit_type': 'finally_block'
                 })
-                print(f"[关闭日志] shutdown 余额日志已写入")
+                self.log_manager.system.info("shutdown 余额日志已写入")
             except Exception as e:
-                print(f"[关闭日志] 写入失败：{e}")
-            
+                self.log_manager.system.warning(f"shutdown 余额日志写入失败：{e}")
+
             # 刷新数据记录器缓存
             if hasattr(self, 'recorder') and self.recorder:
                 self.recorder.flush_all()
-            
+
             # 输出指标记录器统计
             if hasattr(self, 'metrics_recorder') and self.metrics_recorder:
                 stats = self.metrics_recorder.get_stats()
-                print(f"\n[指标数据统计]")
-                print(f"  已保存：{stats['records_saved']} 条快照")
-                print(f"  保存间隔：{stats['save_interval']}秒")
-                print(f"  数据目录：{stats['data_dir']}")
+                self.log_manager.system.info(f"指标数据统计 - 已保存：{stats['records_saved']} 条快照，保存间隔：{stats['save_interval']}秒，数据目录：{stats['data_dir']}")
         
         # 正常退出时也清理（Q 键退出时 running=False，但仍需清理）
         if not self.running:
@@ -783,7 +802,7 @@ async def main(account_name: str = None):
 
 if __name__ == "__main__":
     # 解析命令行参数
-    parser = argparse.ArgumentParser(description='py-shortqt v1.2.0 实盘交易')
+    parser = argparse.ArgumentParser(description=f'py-shortqt v{__version__} 实盘交易')
     parser.add_argument('--account', type=str, default=None, help='账户名称（从 config/accounts.json 中选择）')
     args = parser.parse_args()
     

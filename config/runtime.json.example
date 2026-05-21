@@ -14,10 +14,21 @@
     "stop_market": {
         "max_loss_percent": 30.00
     },
+    "trailing_stop": {
+        "enabled": true,
+        "grid_count": 10
+    },
+    "loss_protection": {
+        "enabled": true,
+        "trigger_minutes": 5
+    },
+    "sound": {
+        "enabled": true
+    },
     "leverage": {
         "api": 100,
         "actual": 25
     },
     "order_timeout_seconds": 2.00,
-    "last_modified": "2026-03-21T12:00:00+08:00"
+    "last_modified": "2026-05-22T00:00:00+08:00"
 }

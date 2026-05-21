@@ -205,13 +205,10 @@ class IndicatorsManager:
                 f"5 分钟：{vol['5min_amplitude']:.3f}%",
                 f"1 小时：{vol['1h_amplitude']:.3f}% {vol['1h_status']}",
                 f"变化率：{vol['change_rate']:.2f} {vol['change_rate_status']}",
-                f"ATR(14): {vol['atr_14']:.4f}" if vol['atr_14'] else "ATR(14): --"
             ],
             'liquidity_lines': [
                 f"价差：{float(liq['spread']):.4f} USDC",
                 f"价差率：{liq['spread_rate']:.6f}% {liq['spread_status']}",
-                f"买盘：{liq['bid_depth_surface']:.2f} ETH",
-                f"卖盘：{liq['ask_depth_surface']:.2f} ETH",
             ],
             'score_display': {
                 'emoji': score.get('signal_emoji', '🟡'),
