@@ -1700,7 +1700,7 @@ class LiveTrader:
             self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
 
     def _pair_positions(self, side: str, fills: list, funding: list) -> list:
-        """将同一方向的成交配对成持仓记录（部分平仓也生成记录）"""
+        """将同一方向的成交配对成持仓记录（一个开仓周期只生成一条最终记录）"""
         if not fills:
             return []
 
@@ -1750,7 +1750,7 @@ class LiveTrader:
                     current['close_time_ms'] = trade_time_ms
 
                     if current['total_close_qty'] >= current['total_opened_qty']:
-                        # 完全平仓
+                        # 完全平仓：生成记录并结束当前持仓
                         open_avg = current['total_open_cost'] / current['total_opened_qty']
                         close_avg = current['total_close_cost'] / current['total_close_qty']
                         pos_funding = self._calc_funding(funding, current['open_time_ms'], current['close_time_ms'])
@@ -1770,50 +1770,41 @@ class LiveTrader:
                             'close_time': current['close_time'],
                         })
                         current = None
-                    else:
-                        # 部分平仓：生成记录，仅统计已平仓部分的数据
-                        closed_ratio = current['total_close_qty'] / current['total_opened_qty']
-                        open_avg = current['total_open_cost'] / current['total_opened_qty']
-                        partial_close_avg = current['total_close_cost'] / current['total_close_qty']
-                        partial_fee = current['total_fee'] * closed_ratio
-                        partial_pnl = current['realized_pnl_sum'] - partial_fee
+                    # 部分平仓：不在循环中生成记录，等遍历结束后统一生成
 
-                        positions.append({
-                            'side': side,
-                            'status': '部分平仓',
-                            'max_size': current['total_opened_qty'],
-                            'closed_size': current['total_close_qty'],
-                            'open_avg_price': open_avg,
-                            'close_avg_price': partial_close_avg,
-                            'pnl': partial_pnl,
-                            'total_fee': partial_fee,
-                            'funding_fee': Decimal('0'),
-                            'open_time': current['open_time'],
-                            'close_time': current['close_time'],
-                        })
-
-        # 遍历结束还有未平仓的
+        # 遍历结束还有未平仓的 → 生成"未平仓"或"部分平仓"记录
         if current:
             open_avg = current['total_open_cost'] / current['total_opened_qty']
-            pos_funding = Decimal('0')
-            for f in funding:
-                f_time = f.get('time', 0)
-                if f_time >= current['open_time_ms']:
-                    pos_funding += Decimal(str(f.get('income', '0')))
+
+            # 计算从开仓到现在的资费
+            now_ms = int(time.time() * 1000)
+            pos_funding = self._calc_funding(funding, current['open_time_ms'], now_ms)
 
             pnl = current['realized_pnl_sum'] - current['total_fee']
+
+            if current['total_close_qty'] > 0:
+                # 有部分平仓但还没平完
+                status = '部分平仓'
+                close_avg = current['total_close_cost'] / current['total_close_qty']
+                close_time = current['close_time']
+            else:
+                # 完全没有平仓
+                status = '未平仓'
+                close_avg = None
+                close_time = None
+
             positions.append({
                 'side': side,
-                'status': '未平仓',
+                'status': status,
                 'max_size': current['total_opened_qty'],
                 'closed_size': current['total_close_qty'],
                 'open_avg_price': open_avg,
-                'close_avg_price': None,
+                'close_avg_price': close_avg,
                 'pnl': pnl,
                 'total_fee': current['total_fee'],
                 'funding_fee': pos_funding,
                 'open_time': current['open_time'],
-                'close_time': None,
+                'close_time': close_time,
             })
 
         return positions
