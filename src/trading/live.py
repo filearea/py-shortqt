@@ -1758,7 +1758,7 @@ class LiveTrader:
                         open_avg = current['total_open_cost'] / current['total_opened_qty']
                         close_avg = current['total_close_cost'] / current['total_close_qty']
                         pos_funding = self._calc_funding(funding, current['open_time_ms'], current['close_time_ms'])
-                        pnl = current['realized_pnl_sum'] - current['total_fee']
+                        pnl = current['realized_pnl_sum'] - current['total_fee'] + pos_funding
 
                         positions.append({
                             'side': side,
@@ -1785,7 +1785,7 @@ class LiveTrader:
             now_ms = int(time.time() * 1000)
             pos_funding = self._calc_funding(funding, current['open_time_ms'], now_ms)
 
-            pnl = current['realized_pnl_sum'] - current['total_fee']
+            pnl = current['realized_pnl_sum'] - current['total_fee'] + pos_funding
 
             if current['total_close_qty'] > 0:
                 # 有部分平仓但还没平完
