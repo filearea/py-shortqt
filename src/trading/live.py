@@ -1689,8 +1689,12 @@ class LiveTrader:
             history.extend(self._pair_positions('LONG', long_fills, funding))
             history.extend(self._pair_positions('SHORT', short_fills, funding))
 
-            # 5. 按开仓时间倒序
-            history.sort(key=lambda x: x.get('open_time', ''), reverse=True)
+            # 5. 排序：未平仓/部分平仓在最上面，按最后操作时间倒序
+            STATUS_ORDER = {'未平仓': 0, '部分平仓': 1, '完全平仓': 2}
+            history.sort(key=lambda x: (
+                STATUS_ORDER.get(x.get('status', '完全平仓'), 2),
+                -x.get('last_action_time_ms', 0),
+            ))
             self.position_history = history[:10]  # 最多保留 10 条
 
             # 6. 更新 24h 交易统计
@@ -1768,6 +1772,7 @@ class LiveTrader:
                             'funding_fee': pos_funding,
                             'open_time': current['open_time'],
                             'close_time': current['close_time'],
+                            'last_action_time_ms': current['close_time_ms'],
                         })
                         current = None
                     # 部分平仓：不在循环中生成记录，等遍历结束后统一生成
@@ -1805,6 +1810,7 @@ class LiveTrader:
                 'funding_fee': pos_funding,
                 'open_time': current['open_time'],
                 'close_time': close_time,
+                'last_action_time_ms': current['close_time_ms'] if current['close_time_ms'] else current['open_time_ms'],
             })
 
         return positions
