@@ -244,7 +244,7 @@ class LiveTrader:
             
             # 如果程序有持仓但实际没有，清除（彻底平仓）
             elif total_size == 0 and self.position:
-                self.log_manager.system.debug(f"\n[持仓同步] 持仓已平仓（程序未感知）") if self.log_manager else None
+                self.log_manager.system.info(f"[持仓同步] 持仓已平仓（程序未感知）") if self.log_manager else None
                 # 先写 action 触发音效（持仓同步=外部平仓，响三声）
                 self._add_action("持仓同步", "持仓已清除")
                 # 主动刷新账户余额后再记录

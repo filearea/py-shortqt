@@ -672,12 +672,12 @@ class LiveTradingBot:
                         self._sync_counter = 0
                     self._sync_counter += 1
 
-                    # 有挂单：每 100 帧（~5 秒）同步账户 + 持仓
-                    if self.trader.pending_order and self._sync_counter % 100 == 0:
+                    # 有持仓或挂单：每 100 帧（~5 秒）同步账户 + 持仓
+                    if (self.trader.pending_order or self.trader.position) and self._sync_counter % 100 == 0:
                         self.trader.sync_account()
                         self.indicators.set_trading_params(balance_usdt=float(self.trader.available_balance))
                         await self.trader.sync_position_from_exchange()
-                    # 无挂单：每 300 帧（~15 秒）同步账户，每 600 帧（~30 秒）同步持仓
+                    # 无持仓无挂单：每 300 帧（~15 秒）同步账户，每 600 帧（~30 秒）同步持仓
                     elif self._sync_counter % 300 == 0:
                         self.trader.sync_account()
                         self.indicators.set_trading_params(balance_usdt=float(self.trader.available_balance))
