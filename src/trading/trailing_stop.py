@@ -208,12 +208,12 @@ class TrailingStopManager:
 
                 if self.trader.log_manager:
                     if close_price:
-                        self.trader.log_manager.system.info(
+                        self.trader.log_manager.system.debug(
                             f"[持仓同步] 交易所已无持仓 | PnL: {pnl:+.2f} USDT "
                             f"(开仓 {entry_price:.2f} → 平仓 {close_price:.2f})"
                         )
                     else:
-                        self.trader.log_manager.system.info(
+                        self.trader.log_manager.system.debug(
                             "[持仓同步] 交易所已无持仓（可能已被止损/止盈成交），清理本地状态"
                         )
 
@@ -312,7 +312,7 @@ class TrailingStopManager:
         except Exception as e:
             # 撤销失败，记录日志但不中断
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(f"[移动止损] 滚动撤销失败：{e}")
+                self.trader.log_manager.system.debug(f"[移动止损] 滚动撤销失败：{e}")
             self.trader._add_action("移动止损", f"滚动撤销 level={min_level} 失败")
 
     async def _create_stop_order(self, level: int, trigger_price: Decimal):
@@ -359,7 +359,7 @@ class TrailingStopManager:
 
             # 记录关键日志
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(
+                self.trader.log_manager.system.debug(
                     f"[移动止损] 第{level}格触发，止损单 @ {trigger_price}"
                 )
             self.trader._add_action("移动止损", f"第{level}格触发，止损单 @ {trigger_price}")
@@ -369,7 +369,7 @@ class TrailingStopManager:
             # v1.5.3 修复：记录失败 level，防止反复重试
             self._failed_levels.add(level)
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(f"[移动止损] 创建止损单失败（level={level}，已标记跳过）：{e}")
+                self.trader.log_manager.system.debug(f"[移动止损] 创建止损单失败（level={level}，已标记跳过）：{e}")
             self.trader._add_action("移动止损", f"第{level}格创建失败，已标记跳过")
 
     async def on_position_opened(self, entry_price: Decimal, take_profit_price: Decimal,
@@ -422,7 +422,7 @@ class TrailingStopManager:
         self.max_level_reached = 0
 
         if self.trader.log_manager:
-            self.trader.log_manager.system.info("[移动止损] 已平仓，清理所有止损单")
+            self.trader.log_manager.system.debug("[移动止损] 已平仓，清理所有止损单")
 
     def get_status(self) -> Dict:
         """获取状态信息"""

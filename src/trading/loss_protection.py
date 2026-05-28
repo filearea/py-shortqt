@@ -169,7 +169,7 @@ class LossProtectionManager:
                 self.trader.tp_order['price'] = protection_price  # 同步更新价格
 
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(
+                self.trader.log_manager.system.debug(
                     f"[持仓超时] 浮亏保本 → 止盈单下移至开仓价 {protection_price}"
                 )
             self.trader._add_action("持仓超时", f"浮亏保本：止盈单下移至开仓价 {protection_price}")
@@ -252,14 +252,14 @@ class LossProtectionManager:
                 self._breakeven_stop_id = order_id
 
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(
+                self.trader.log_manager.system.debug(
                     f"[持仓超时] 浮盈保本 → 创建止损单 @ {trigger_price} (防利润回吐)"
                 )
             self.trader._add_action("持仓超时", f"浮盈保本：创建止损单 @ {trigger_price} (防利润回吐)")
 
         except Exception as e:
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(f"[持仓超时] 创建保本止损单失败：{e}")
+                self.trader.log_manager.system.debug(f"[持仓超时] 创建保本止损单失败：{e}")
             self.trader._add_action("持仓超时", f"保本止损单创建失败：{e}")
 
     async def _create_grid1_stop_order(self, side: str, position_size: Decimal, grid1_price: Decimal):
@@ -285,14 +285,14 @@ class LossProtectionManager:
                 self._grid1_stop_id = order_id
 
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(
+                self.trader.log_manager.system.debug(
                     f"[持仓超时] 浮盈加强 → 创建网格1止损单 @ {grid1_price}"
                 )
             self.trader._add_action("持仓超时", f"浮盈加强：创建网格1止损单 @ {grid1_price}")
 
         except Exception as e:
             if self.trader.log_manager:
-                self.trader.log_manager.system.info(f"[持仓超时] 创建网格1止损单失败：{e}")
+                self.trader.log_manager.system.debug(f"[持仓超时] 创建网格1止损单失败：{e}")
             self.trader._add_action("持仓超时", f"网格1止损单创建失败：{e}")
     
     def on_position_closed(self):
@@ -318,7 +318,7 @@ class LossProtectionManager:
         self._grid1_stop_id = None
 
         if self.trader.log_manager:
-            self.trader.log_manager.system.info("[持仓超时] 已平仓，撤销保本止损单")
+            self.trader.log_manager.system.debug("[持仓超时] 已平仓，撤销保本止损单")
         self.trader._add_action("持仓清理", "已平仓，撤销保本止损单")
     
     def get_status(self) -> Dict:

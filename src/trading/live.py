@@ -177,7 +177,7 @@ class LiveTrader:
                 self.listen_key,
                 api_client=self.api,
                 testnet=self.testnet,
-                log_func=lambda msg: self.log_manager.system.info(msg) if self.log_manager else None
+                log_func=lambda msg: self.log_manager.system.debug(msg) if self.log_manager else None
             )
             self.user_stream_ws.add_order_callback(self._on_order_update)
             self.user_stream_ws.add_account_callback(self._on_account_update)
@@ -250,7 +250,7 @@ class LiveTrader:
             
             # 如果程序有持仓但实际没有，清除（彻底平仓）
             elif total_size == 0 and self.position:
-                self.log_manager.system.info(f"[持仓同步] 持仓已平仓（程序未感知）") if self.log_manager else None
+                self.log_manager.system.debug(f"[持仓同步] 持仓已平仓（程序未感知）") if self.log_manager else None
 
                 entry_price = self.position['entry_price']
                 pos_size = self.position['size']
