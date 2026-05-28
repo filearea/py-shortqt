@@ -58,8 +58,6 @@ class TradeLogger:
         # 价格历史（用于计算变化率）
         self.price_history = []
         self.current_signal = None
-        
-        print(f"[OK] 交易日志目录：{self.log_dir}")
     
     def record_price(self, price: Decimal):
         """记录价格历史"""
@@ -218,4 +216,3 @@ class TradeLogger:
         self.positions_log.close()
         self.pnl_log.close()
         self.signals_file.close()
-        print(f"[OK] 日志已保存至：{self.log_dir}")

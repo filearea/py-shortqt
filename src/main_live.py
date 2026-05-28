@@ -135,7 +135,10 @@ class LiveTradingBot:
         )
         
         # 初始化行情 WebSocket
-        self.listener = BinanceListener(self.symbol.lower(), "wss://fstream.binance.com/ws")
+        self.listener = BinanceListener(
+            self.symbol.lower(), "wss://fstream.binance.com/ws",
+            log_func=lambda msg: self.log_manager.system.info(msg)
+        )
         self.listener.add_callback(self.on_market_data)
         
         # 将 listener 赋值给 trader，用于 UI 显示连接状态
@@ -359,7 +362,46 @@ class LiveTradingBot:
         # 可以进入
         self.in_settings = True
         return True
-    
+
+    def _apply_settings(self):
+        """设置保存后生效：杠杆同步 + 移动止损/浮亏保护配置重读"""
+        self.trader._add_action("[OK] 配置已保存并退出", "")
+        self.log_manager.system.info("设置操作：配置已保存并退出")
+
+        # 1. 更新杠杆
+        api_lev, actual_lev = self.config_manager.get_leverage_config()
+        self.trader.leverage_limit = api_lev
+        self.trader.actual_leverage = actual_lev
+
+        # 同步到币安 API
+        try:
+            self.trader.api.set_leverage(self.trader.symbol, api_lev)
+            self.log_manager.system.info(f"杠杆已同步到交易所：{api_lev}x")
+        except Exception as e:
+            self.log_manager.system.debug(f"杠杆同步失败：{e}")
+
+        # 更新 UI 杠杆显示
+        tp = self.config_manager.get_take_profit_price(Decimal('2150'))
+        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager, self.indicators)
+
+        # 2. 刷新移动止损配置
+        if self.trader.trailing_stop_manager:
+            ts_config = self.config_manager.get_trailing_stop_config()
+            self.trader.trailing_stop_manager.refresh_config(ts_config)
+            self.log_manager.system.info(
+                f"移动止损配置已刷新：{'启用' if ts_config.get('enabled') else '关闭'}"
+            ) if self.log_manager else None
+
+        # 3. 刷新浮亏保护配置
+        if self.trader.loss_protection_manager:
+            lp_config = self.config_manager.get_loss_protection_config()
+            self.trader.loss_protection_manager.refresh_config(lp_config)
+            self.log_manager.system.info(
+                f"浮亏保护配置已刷新：{'启用' if lp_config.get('enabled') else '关闭'}"
+            ) if self.log_manager else None
+
+        self.log_manager.system.info(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
+
     async def _cleanup_resources(self, ws_task=None):
         """清理资源（确保 WebSocket 正确关闭）"""
         self.log_manager.system.info("正在清理资源...")
@@ -553,7 +595,7 @@ class LiveTradingBot:
                                         elif result == 'save':
                                             success, errors = self.settings_ui.save_config()
                                             if success:
-                                                self.trader._add_action("[OK] 配置已保存", "")
+                                                self._apply_settings()
                                                 self.in_settings = False
                                             else:
                                                 for err in errors:
@@ -565,37 +607,22 @@ class LiveTradingBot:
                                     # S 保存并退出
                                     success, errors = self.settings_ui.save_config()
                                     if success:
-                                        msg = "[OK] 配置已保存并退出"
-                                        self.trader._add_action(msg, "")
-                                        self.log_manager.system.info(f"设置操作：{msg}")
-                                        
-                                        # 更新配置
-                                        api_lev, actual_lev = self.config_manager.get_leverage_config()
-                                        
-                                        # 更新 UI 的杠杆显示
-                                        tp = self.config_manager.get_take_profit_price(Decimal('2150'))
-                                        self.ui = LiveTradingUI(self.trader, api_lev, tp, Decimal('3'), actual_lev, self.config_manager, self.indicators)
-                                        
-                                        # 更新 trader 的杠杆设置
-                                        self.trader.leverage_limit = api_lev
-                                        self.trader.actual_leverage = actual_lev
-                                        
-                                        self.log_manager.system.info(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
-                                        
+                                        self._apply_settings()
                                         self.in_settings = False
                                         self._pending_confirm_exit = False
-                                        self._pending_reset = False  # 清除重置标志
+                                        self._pending_reset = False
                                     else:
                                         for err in errors:
                                             self.trader._add_action("⚠️ 配置错误", err)
                                             self.log_manager.system.error(f"设置错误：{err}")
                                         self._pending_confirm_exit = False
-                                        self._pending_reset = False  # 清除重置标志
+                                        self._pending_reset = False
                                 else:
                                     # 先检查是否有待处理的确认
                                     if self._pending_reset and key_char == 'd':
                                         # 第二次按 D，直接执行重置
                                         self.config_manager.reset_to_defaults()
+                                        self._apply_settings()
                                         self.trader._add_action("[OK] 配置已重置为默认值", "")
                                         self._pending_reset = False
                                         continue
@@ -608,7 +635,7 @@ class LiveTradingBot:
                                     elif result == 'save':
                                         success, errors = self.settings_ui.save_config()
                                         if success:
-                                            self.trader._add_action("[OK] 配置已保存并退出", "")
+                                            self._apply_settings()
                                             self.in_settings = False
                                         else:
                                             for err in errors:
@@ -666,6 +693,9 @@ class LiveTradingBot:
                     
                     # 成交检测：bookTicker 穿透 → REST 确认（零消耗 unless 穿透）
                     await self.trader.check_pending_order_filled()
+
+                    # 关键价格检测：订单簿 vs 关键价格比对 → REST 确认平仓
+                    await self.trader._check_key_prices()
 
                     # 节流：同步账户和持仓（避免每帧 REST 阻塞事件循环）
                     if not hasattr(self, '_sync_counter'):

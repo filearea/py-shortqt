@@ -78,7 +78,11 @@ class LiveTrader:
         # 挂单成交检测（v1.5.5）
         self._order_placed_at: Optional[float] = None  # 挂单时间戳（秒）
         self._fill_check_done: bool = False  # 是否已经确认成交并处理过
-        
+
+        # 关键价格表：每帧与订单簿比对，穿透时 REST 确认（替代失效的用户流 WS）
+        self._key_prices: List[Dict] = []  # [{type, price, order_id, order_category}]
+        self._key_price_triggered: set = set()  # 已触发过的 order_id，防止重复查 REST
+
         # 操作日志
         self.action_log: List[Dict] = []
         
@@ -112,8 +116,8 @@ class LiveTrader:
         elif any(kw in action for kw in [
             '止盈成交', '止损成交', '保底止损成交',
             '提前平仓成交', '移动止损成交',
-            '市价全平', '开仓成交（部分）',
-            '持仓同步'
+            '手动平仓成交', '持仓同步成交',
+            '浮亏保护成交',
         ]):
             self.play_ding(3)  # 平仓响三声
 
@@ -247,21 +251,72 @@ class LiveTrader:
             # 如果程序有持仓但实际没有，清除（彻底平仓）
             elif total_size == 0 and self.position:
                 self.log_manager.system.info(f"[持仓同步] 持仓已平仓（程序未感知）") if self.log_manager else None
-                # 先写 action 触发音效（持仓同步=外部平仓，响三声）
-                self._add_action("持仓同步", "持仓已清除")
-                # 主动刷新账户余额后再记录
+
+                entry_price = self.position['entry_price']
+                pos_size = self.position['size']
+                pos_side = self.position['side']
+
+                # 查最近成交获取平仓价和手续费，计算 PnL
+                exit_price = Decimal('0')
+                commission = Decimal('0')
+                try:
+                    pos_time = self.position.get('time')
+                    start_ms = int(pos_time.timestamp() * 1000) - 2000 if pos_time else None
+                    fills = self.api.get_fills(self.symbol, limit=5, startTime=start_ms)
+                    total_fill_qty = Decimal('0')
+                    expected_side = 'SELL' if pos_side == 'LONG' else 'BUY'
+                    for fill in fills:
+                        if fill.get('side', '') == expected_side:
+                            fq = Decimal(fill.get('qty', '0'))
+                            fp = Decimal(fill.get('price', '0'))
+                            fc = Decimal(fill.get('commission', '0'))
+                            total_fill_qty += fq
+                            if exit_price == 0:
+                                exit_price = fp
+                            else:
+                                exit_price = (exit_price * (total_fill_qty - fq) + fp * fq) / total_fill_qty
+                            commission += fc
+                            if total_fill_qty >= pos_size:
+                                break
+                except Exception:
+                    pass
+
+                if exit_price > 0:
+                    if pos_side == 'LONG':
+                        pnl = (exit_price - entry_price) * pos_size - commission
+                    else:
+                        pnl = (entry_price - exit_price) * pos_size - commission
+                    pnl_str = f"{pnl:+.6f} USDT"
+                    self._add_action("持仓同步成交", f"PnL: {pnl_str}")
+                else:
+                    self._add_action("持仓同步成交", "持仓已清除（无法获取平仓价）")
+
+                # 主动刷新账户余额
                 self.sync_account()
-                # 记录平仓后账户余额（用于复合收益率计算）
                 if self.logger:
                     self.logger.log_balance('position_closed', self.available_balance, {
                         'reason': 'sync_detected',
-                        'last_position': self.position.get('side'),
-                        'last_entry': float(self.position.get('entry_price', 0))
+                        'last_position': pos_side,
+                        'last_entry': float(entry_price),
+                        'close_price': float(exit_price) if exit_price > 0 else 0,
+                        'pnl': float(pnl) if exit_price > 0 else 0,
                     })
+
+                # 取消交易所所有剩余挂单
+                try:
+                    self.api.cancel_all_orders(self.symbol)
+                    self.api.cancel_all_open_orders(self.symbol)
+                except Exception:
+                    pass
+
+                # 清空本地状态
                 self.position = None
                 self.tp_order = None
                 self.sl_order = None
                 self.stop_market_order = None
+                self.early_close_order = None
+                self._key_prices = []
+                self._key_price_triggered.clear()
                 if self.trailing_stop_manager:
                     asyncio.create_task(self.trailing_stop_manager.on_position_closed())
                 if self.loss_protection_manager:
@@ -713,7 +768,10 @@ class LiveTrader:
             if exclude != 'stop_market':
                 self.stop_market_order = None
 
+            self.early_close_order = None
             self.position = None
+            self._key_prices = []
+            self._key_price_triggered.clear()
 
             # v1.5.0 新增：清理移动止损和浮亏保护状态
             if self.trailing_stop_manager:
@@ -773,7 +831,7 @@ class LiveTrader:
                     self.logger.log_trade('止损成交', {'details': details, 'pnl': pnl})
                     self.logger.log_pnl('止损成交', pnl)
                     self.logger.log_position('CLOSE', 0, 0, pnl)
-                elif '平仓' in action:
+                elif '平仓' in action or '保护' in action:
                     pnl = float(details.split('PnL:')[1].strip().split(' ')[0]) if 'PnL:' in details else 0
                     self.logger.log_trade('平仓成交', {'details': details, 'pnl': pnl})
                     self.logger.log_pnl('平仓成交', pnl)
@@ -787,8 +845,6 @@ class LiveTrader:
             await self.place_tp_sl_orders()
         except Exception as e:
             self.log_manager.system.debug(f"\n[止盈止损异常] {e}") if self.log_manager else None
-            import traceback
-            traceback.print_exc()
             self._add_action("止盈止损异常", str(e))
     
     async def place_tp_sl_orders(self):
@@ -935,8 +991,6 @@ class LiveTrader:
                     self.log_manager.system.debug(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}") if self.log_manager else None
                 except Exception as e:
                     self.log_manager.system.debug(f"  ✗ 止损单失败：{e}") if self.log_manager else None
-                    import traceback
-                    traceback.print_exc()
                     sl_trigger_display = sl_trigger
                     actual_price = Decimal('0')
             else:
@@ -965,8 +1019,6 @@ class LiveTrader:
                     self.log_manager.system.debug(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}") if self.log_manager else None
                 except Exception as e:
                     self.log_manager.system.debug(f"  ✗ 止损单失败：{e}") if self.log_manager else None
-                    import traceback
-                    traceback.print_exc()
                     sl_trigger_display = sl_trigger
                     actual_price = Decimal('0')
             
@@ -1035,11 +1087,12 @@ class LiveTrader:
                 self.log_manager.system.debug(f"✓ 保底止损已下：强平价={liq_display}, 触发={sm_price}, algoId={stop_order['algoId']}") if self.log_manager else None
             except Exception as e:
                 self.log_manager.system.debug(f"  ✗ 保底止损失败：{type(e).__name__}: {e}") if self.log_manager else None
-                import traceback
-                traceback.print_exc()
             
             self.log_manager.system.debug("\n✓ 止盈止损单全部下达完成") if self.log_manager else None
-            
+
+            # 重建关键价格表
+            self._rebuild_key_prices()
+
             # v1.5.0 新增：初始化移动止损和浮亏保护
             if self.trailing_stop_manager:
                 await self.trailing_stop_manager.on_position_opened(
@@ -1326,7 +1379,7 @@ class LiveTrader:
             self.log_manager.system.debug(f"  手续费：{commission:.6f} {commission_asset}") if self.log_manager else None
             self.log_manager.system.debug(f"  PnL: {pnl_str}") if self.log_manager else None
             
-            self._add_action("市价全平", f"{close_side} {size} @ {close_price} | 手续费 {commission:.6f} {commission_asset} | PnL: {pnl_str}")
+            self._add_action("手动平仓成交", f"{close_side} {size} @ {close_price} | 手续费 {commission:.6f} {commission_asset} | PnL: {pnl_str}")
 
             # 市价单成交后立即同步余额
             self.sync_account()
@@ -1348,6 +1401,8 @@ class LiveTrader:
             self.stop_market_order = None
             self.early_close_order = None
             self.pending_order = None
+            self._key_prices = []
+            self._key_price_triggered.clear()
 
             if self.trailing_stop_manager:
                 asyncio.create_task(self.trailing_stop_manager.on_position_closed())
@@ -1426,6 +1481,7 @@ class LiveTrader:
             actual_price = Decimal(order.get('price', '0'))
             self.log_manager.system.debug(f"✓ 提前平仓挂单：{order_side} QUEUE @ {actual_price:.2f}") if self.log_manager else None
             self._add_action("提前平仓挂单", f"{order_side} QUEUE @ {actual_price:.2f}")
+            self._rebuild_key_prices()
             return True
         
         except BinanceAPIError as e:
@@ -1483,7 +1539,8 @@ class LiveTrader:
             
             self.tp_order_backup = None
             self.sl_order_backup = None
-            
+            self._rebuild_key_prices()
+
             return True
         except Exception as e:
             self.log_manager.system.debug(f"✗ 撤销提前平仓失败：{e}") if self.log_manager else None
@@ -1499,6 +1556,258 @@ class LiveTrader:
             'bids': [[Decimal(p), Decimal(q)] for p, q in bids[:10]],
             'asks': [[Decimal(p), Decimal(q)] for p, q in asks[:10]]
         }
+
+
+    def _rebuild_key_prices(self):
+        """根据当前所有挂单重建关键价格表"""
+        self._key_prices = []
+        if not self.position:
+            return
+
+        side = self.position['side']
+
+        # TP 止盈单
+        if self.tp_order:
+            tp_price = Decimal(str(self.tp_order.get('price', 0)))
+            if tp_price > 0:
+                self._key_prices.append({
+                    'type': 'TP',
+                    'price': tp_price,
+                    'order_id': self.tp_order.get('orderId') or self.tp_order.get('algoId'),
+                    'order_category': 'LIMIT',
+                })
+
+        # SL 止损单（algo order）
+        if self.sl_order:
+            sl_trigger = Decimal(str(self.sl_order.get('stopPrice', 0)))
+            if sl_trigger > 0:
+                self._key_prices.append({
+                    'type': 'SL',
+                    'price': sl_trigger,
+                    'order_id': self.sl_order.get('algoId'),
+                    'order_category': 'ALGO',
+                })
+
+        # 保底止损（algo order）
+        if self.stop_market_order:
+            sm_trigger = Decimal(str(self.stop_market_order.get('stopPrice', 0)))
+            if sm_trigger > 0:
+                self._key_prices.append({
+                    'type': 'STOP_MARKET',
+                    'price': sm_trigger,
+                    'order_id': self.stop_market_order.get('algoId'),
+                    'order_category': 'ALGO',
+                })
+
+        # 提前平仓单
+        if self.early_close_order:
+            ec_price = Decimal(str(self.early_close_order.get('price', 0)))
+            if ec_price > 0:
+                self._key_prices.append({
+                    'type': 'EARLY_CLOSE',
+                    'price': ec_price,
+                    'order_id': self.early_close_order.get('orderId') or self.early_close_order.get('algoId'),
+                    'order_category': 'LIMIT',
+                })
+
+        # 移动止损（trailing stop manager 的活跃订单）
+        if self.trailing_stop_manager:
+            for level, algo_id in self.trailing_stop_manager.active_orders.items():
+                trigger_price = self.trailing_stop_manager.get_trigger_price_for_level(level)
+                if trigger_price is not None:
+                    self._key_prices.append({
+                        'type': 'TRAILING_STOP',
+                        'price': trigger_price,
+                        'order_id': algo_id,
+                        'order_category': 'ALGO',
+                    })
+
+        # 浮亏保护 STOP 订单
+        if self.loss_protection_manager:
+            lp = self.loss_protection_manager
+            if hasattr(lp, '_breakeven_stop_id') and lp._breakeven_stop_id:
+                self._key_prices.append({
+                    'type': 'LOSS_PROTECTION',
+                    'price': self.position['entry_price'],  # 保护价 = 开仓价
+                    'order_id': lp._breakeven_stop_id,
+                    'order_category': 'ALGO',
+                })
+            if hasattr(lp, '_grid1_stop_id') and lp._grid1_stop_id and self.trailing_stop_manager:
+                grid1_price = self.trailing_stop_manager.grid_prices[0] if self.trailing_stop_manager.grid_prices else None
+                if grid1_price:
+                    self._key_prices.append({
+                        'type': 'LOSS_PROTECTION',
+                        'price': grid1_price,
+                        'order_id': lp._grid1_stop_id,
+                        'order_category': 'ALGO',
+                    })
+
+    async def _check_key_prices(self):
+        """每帧调用：订单簿 vs 关键价格比对，穿透时 REST 确认平仓"""
+        if not self.position or not self._key_prices:
+            return
+
+        orderbook = self.orderbook
+        if not orderbook.get('bids') or not orderbook.get('asks'):
+            return
+
+        best_bid = orderbook['bids'][0][0]
+        best_ask = orderbook['asks'][0][0]
+        side = self.position['side']
+
+        for kp in self._key_prices:
+            oid = kp['order_id']
+            if oid is None or oid in self._key_price_triggered:
+                continue
+
+            price = kp['price']
+            kp_type = kp['type']
+            triggered = False
+
+            # 根据持仓方向和订单类型判断是否穿透
+            if side == 'LONG':
+                if kp_type in ('TP', 'EARLY_CLOSE'):
+                    if best_bid >= price:
+                        triggered = True
+                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION'):
+                    if best_bid <= price:
+                        triggered = True
+            else:  # SHORT
+                if kp_type in ('TP', 'EARLY_CLOSE'):
+                    if best_ask <= price:
+                        triggered = True
+                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION'):
+                    if best_ask >= price:
+                        triggered = True
+
+            if not triggered:
+                continue
+
+            # 标记为已触发，防止重复查 REST
+            self._key_price_triggered.add(oid)
+
+            # REST 确认：查交易所持仓
+            try:
+                positions = self.api.get_position(self.symbol)
+                has_position = False
+                for pos in positions:
+                    if Decimal(pos.get('positionAmt', 0)) != 0:
+                        has_position = True
+                        break
+
+                if has_position:
+                    # 持仓还在，订单可能未成交，重置触发标记
+                    if self.log_manager:
+                        self.log_manager.system.debug(
+                            f"[关键价格] {kp_type} 价格 {price} 穿透，但持仓仍在，订单可能未成交"
+                        )
+                    self._key_price_triggered.discard(oid)
+                else:
+                    # 持仓已消失 → 确认平仓
+                    if self.log_manager:
+                        self.log_manager.system.info(
+                            f"[关键价格] {kp_type} 价格 {price} 穿透，持仓已平仓"
+                        )
+                    await self._on_key_price_close(kp_type)
+                    return  # 已平仓，不再继续检查
+
+            except Exception as e:
+                if self.log_manager:
+                    self.log_manager.system.debug(f"[关键价格] REST 确认失败：{e}")
+                self._key_price_triggered.discard(oid)
+
+    async def _on_key_price_close(self, trigger_type: str):
+        """关键价格触发平仓后的处理：算 PnL、日志、清理挂单"""
+        entry_price = self.position['entry_price']
+        size = self.position['size']
+        side = self.position['side']
+
+        # 查最近成交获取平仓价和手续费
+        exit_price = Decimal('0')
+        commission = Decimal('0')
+        try:
+            pos_time = self.position.get('time')
+            start_ms = int(pos_time.timestamp() * 1000) - 2000 if pos_time else None
+            fills = self.api.get_fills(self.symbol, limit=5, startTime=start_ms)
+            total_fill_qty = Decimal('0')
+            for fill in fills:
+                fill_side = fill.get('side', '')
+                fill_qty = Decimal(fill.get('qty', '0'))
+                fill_price = Decimal(fill.get('price', '0'))
+                fill_comm = Decimal(fill.get('commission', '0'))
+                expected_side = 'SELL' if side == 'LONG' else 'BUY'
+                if fill_side == expected_side:
+                    total_fill_qty += fill_qty
+                    if exit_price == 0:
+                        exit_price = fill_price
+                    else:
+                        exit_price = (exit_price * (total_fill_qty - fill_qty) + fill_price * fill_qty) / total_fill_qty
+                    commission += fill_comm
+                    if total_fill_qty >= size:
+                        break
+        except Exception as e:
+            if self.log_manager:
+                self.log_manager.system.debug(f"[关键价格] 获取成交记录失败：{e}")
+
+        # 计算 PnL
+        if exit_price > 0:
+            if side == 'LONG':
+                pnl = (exit_price - entry_price) * size - commission
+            else:
+                pnl = (entry_price - exit_price) * size - commission
+        else:
+            pnl = Decimal('0')
+
+        pnl_str = f"{pnl:+.6f} USDT"
+
+        # 撤销交易所所有剩余挂单
+        try:
+            self.api.cancel_all_orders(self.symbol)
+            self.api.cancel_all_open_orders(self.symbol)
+            if self.log_manager:
+                self.log_manager.system.debug("[关键价格] 已撤销交易所所有挂单")
+        except Exception as e:
+            if self.log_manager:
+                self.log_manager.system.debug(f"[关键价格] 撤单失败：{e}")
+
+        # 日志和状态清理
+        action_name = {
+            'TP': '止盈成交',
+            'SL': '止损成交',
+            'STOP_MARKET': '保底止损成交',
+            'EARLY_CLOSE': '提前平仓成交',
+            'TRAILING_STOP': '移动止损成交',
+            'LOSS_PROTECTION': '浮亏保护成交',
+        }.get(trigger_type, '平仓成交')
+
+        self._add_action(action_name, f"PnL: {pnl_str}")
+        self.sync_account()
+
+        if self.logger:
+            self.logger.log_balance('position_closed', self.available_balance, {
+                'reason': f'KEY_PRICE_{trigger_type}',
+                'pnl': float(pnl),
+                'entry_price': float(entry_price),
+                'close_price': float(exit_price),
+                'commission': float(commission),
+            })
+
+        # 清空所有状态
+        self.position = None
+        self.tp_order = None
+        self.sl_order = None
+        self.stop_market_order = None
+        self.early_close_order = None
+        self.pending_order = None
+        self._key_prices = []
+        self._key_price_triggered.clear()
+
+        if self.trailing_stop_manager:
+            asyncio.create_task(self.trailing_stop_manager.on_position_closed())
+        if self.loss_protection_manager:
+            self.loss_protection_manager.on_position_closed()
+
+        asyncio.create_task(self._refresh_history_delayed())
 
     async def check_pending_order_filled(self) -> bool:
         """

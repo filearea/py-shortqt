@@ -15,8 +15,7 @@ def get_log_manager():
     return _log_manager
 
 def log(msg: str, level: str = 'info'):
-    """同时 print 和写入日志"""
-    print(msg)
+    """写入日志（不再 print，避免 TUI 抖动）"""
     lm = get_log_manager()
     if level == 'info':
         lm.system.info(msg)

@@ -205,9 +205,7 @@ class BinanceClient:
         
         if positionSide:
             params['positionSide'] = positionSide
-        
-        print(f"[API DEBUG] Algo 下单：{symbol} {side} {type} @ {price or priceMatch}, params={params}")
-        
+
         return self._post('/fapi/v1/algoOrder', params, signed=True)
     
     def cancel_all_open_orders(self, symbol: str) -> dict:
@@ -290,9 +288,7 @@ class BinanceClient:
         
         if positionSide:
             params['positionSide'] = positionSide
-        
-        print(f"[API DEBUG] 下单：{symbol} {side} {type} @ {price or priceMatch}, params={params}")
-        
+
         return self._post('/fapi/v1/order', params, signed=True)
     
     def cancel_order(self, symbol: str, order_id: int) -> dict:

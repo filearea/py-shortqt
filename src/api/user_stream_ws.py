@@ -77,8 +77,15 @@ class UserStreamWebSocket:
 
         while self.running:
             try:
-                connect_kwargs = {}
-                self._log(f"[UserStream] 直连（不走代理）：{self.ws_url}")
+                connect_kwargs = {
+                    'close_timeout': 5,
+                    'open_timeout': 10,
+                }
+                if self.proxy:
+                    connect_kwargs['proxy'] = self.proxy
+                    self._log(f"[UserStream] 通过代理连接：{self.ws_url}")
+                else:
+                    self._log(f"[UserStream] 直连（无代理）：{self.ws_url}")
                 async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
                     self.ws = ws
                     self.connected = True

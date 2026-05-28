@@ -150,7 +150,7 @@ class RealtimeRecorder:
             try:
                 self.on_new_kline(kline_dict)
             except Exception as e:
-                print(f"[recorder] on_new_kline 回调错误：{e}")
+                pass
 
     def save_kline(self, kline: Dict[str, Any]):
         """WebSocket K 线回调 — v1.5.3 不再写文件，仅供指标计算"""

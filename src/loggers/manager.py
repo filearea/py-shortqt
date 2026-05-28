@@ -66,8 +66,6 @@ class LogManager:
         
         # 写入索引文件
         self._write_index()
-        
-        print(f"✓ 日志系统初始化完成：{self.log_dir}")
     
     def _init_system_logger(self):
         """初始化系统日志"""
@@ -120,9 +118,8 @@ class LogManager:
         if level in self.level_map:
             py_level = self.level_map[level]
             self.system.set_level(py_level)
-            print(f"[OK] 日志级别已设置为：{level}")
         else:
-            print(f"✗ 无效的日志级别：{level}")
+            pass  # 无效的日志级别，忽略
     
     def debug(self, msg: str, module: str = 'system'):
         """DEBUG 日志"""
@@ -181,7 +178,6 @@ class LogManager:
             except:
                 pass
         
-        print(f"✓ 日志已保存至：{self.log_dir}")
 
 
 # 全局日志管理器实例

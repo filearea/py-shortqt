@@ -30,8 +30,6 @@ class MarketLogger:
         
         # 打开日志文件
         self.file = open(self.log_file, 'w', encoding='utf-8')
-        
-        print(f"✓ 市场日志文件：{self.log_file}")
     
     def log_snapshot(self, symbol: str, price: Decimal, 
                      volatility: dict, liquidity: dict, 
@@ -113,4 +111,3 @@ class MarketLogger:
         """关闭日志文件"""
         if self.file:
             self.file.close()
-            print(f"✓ 市场日志已保存：{self.log_file}")

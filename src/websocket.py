@@ -14,8 +14,9 @@ import websockets
 class BinanceListener:
     """币安 WebSocket 监听器"""
 
-    def __init__(self, symbol: str, ws_url: str):
+    def __init__(self, symbol: str, ws_url: str, log_func=None):
         self.symbol = symbol.lower()
+        self._log = log_func or print
         # 币安组合流格式：/stream?streams=symbol@stream1/symbol@stream2/...
         ws_base = ws_url.replace('/ws', '')  # 去掉 /ws 后缀
         self.ws_url = f"{ws_base}/stream?streams={self.symbol}@bookTicker/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m"
@@ -32,7 +33,7 @@ class BinanceListener:
         # 代理配置
         self.proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
         if self.proxy:
-            print(f"[WebSocket] 使用代理：{self.proxy}")
+            self._log(f"[WebSocket] 使用代理：{self.proxy}")
     
     def add_callback(self, callback):
         """添加数据回调"""
@@ -41,7 +42,7 @@ class BinanceListener:
     async def connect(self):
         """连接 WebSocket"""
         self.running = True
-        print(f"[WebSocket] 尝试连接：{self.ws_url}")
+        self._log(f"[WebSocket] 尝试连接：{self.ws_url}")
 
         reconnect_delay = 3  # 初始重连延迟（秒）
         max_reconnect_delay = 30  # 最大重连延迟
@@ -60,7 +61,7 @@ class BinanceListener:
                     timeout=15
                 )
                 self.connected = True
-                print("[OK] WebSocket 已连接")
+                self._log("[OK] WebSocket 已连接")
                 reconnect_delay = 3  # 连接成功后重置延迟
 
                 try:
@@ -80,24 +81,24 @@ class BinanceListener:
             except websockets.exceptions.ConnectionClosed:
                 self.connected = False
                 if self.running:
-                    print(f"⚠ 行情连接断开，{reconnect_delay}秒后重连...")
+                    self._log(f"⚠ 行情连接断开，{reconnect_delay}秒后重连...")
                     await asyncio.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
             except (RuntimeError, asyncio.CancelledError):
                 if self.running:
-                    print(f"⚠ 行情连接断开，{reconnect_delay}秒后重连...")
+                    self._log(f"⚠ 行情连接断开，{reconnect_delay}秒后重连...")
                     await asyncio.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
             except asyncio.TimeoutError:
                 self.connected = False
                 if self.running:
-                    print(f"⚠ 行情连接超时，{reconnect_delay}秒后重连...")
+                    self._log(f"⚠ 行情连接超时，{reconnect_delay}秒后重连...")
                     await asyncio.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
             except Exception as e:
                 self.connected = False
                 if self.running:
-                    print(f"⚠ 行情连接错误：{e}，{reconnect_delay}秒后重连...")
+                    self._log(f"⚠ 行情连接错误：{e}，{reconnect_delay}秒后重连...")
                     await asyncio.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
     

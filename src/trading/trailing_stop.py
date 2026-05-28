@@ -59,6 +59,12 @@ class TrailingStopManager:
         self._last_verify_result: Optional[bool] = None
         self._verify_cache_seconds: float = 3.0  # 3 秒缓存
 
+    def refresh_config(self, config: dict):
+        """运行时刷新配置（支持 TUI 修改后不重启生效）"""
+        self.config = config
+        self.enabled = config.get('enabled', False)
+        self.grid_count = max(3, config.get('grid_count', 5))
+
     def calculate_grid_prices(self, entry_price: Decimal, take_profit_price: Decimal, side: str):
         """
         计算移动止损网格价格

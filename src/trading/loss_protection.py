@@ -44,6 +44,12 @@ class LossProtectionManager:
         # 保护状态
         self.protected = False  # 是否已执行保护
         self.protection_time: Optional[datetime] = None  # 保护执行时间
+
+    def refresh_config(self, config: dict):
+        """运行时刷新配置（支持 TUI 修改后不重启生效）"""
+        self.config = config
+        self.enabled = config.get('enabled', False)
+        self.trigger_minutes = max(0.5, min(60, float(config.get('trigger_minutes', 5))))
         self.last_check_time: Optional[datetime] = None  # 最后检测时间
 
         # 持仓超时止损单（独立于移动止损，平仓时统一清理）

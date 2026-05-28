@@ -62,7 +62,7 @@ class MetricsRecorder:
             if len(self._metrics_cache) >= 50:
                 self.flush()
         except Exception as e:
-            print(f"[MetricsRecorder] 保存快照失败：{e}")
+            pass
     
     def flush(self):
         if not self._metrics_cache:
