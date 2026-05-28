@@ -85,11 +85,16 @@ class UserStreamWebSocket:
                     print(f"✓ 用户数据流已连接")
                     reconnect_delay = 3  # 连接成功后重置延迟
 
+                    _msg_count = 0
                     while self.running:
                         try:
                             message = await asyncio.wait_for(ws.recv(), timeout=30)
+                            _msg_count += 1
+                            if _msg_count <= 3:
+                                print(f"[UserStream] 收到第{_msg_count}条消息：{message[:200]}")
                             await self.process_message(message)
                         except asyncio.TimeoutError:
+                            print(f"[UserStream] 30秒无消息（已收{_msg_count}条）")
                             continue
                         except websockets.exceptions.ConnectionClosed:
                             print("用户数据流连接关闭")
@@ -119,14 +124,22 @@ class UserStreamWebSocket:
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
     
+    _event_count = {}
+
     async def process_message(self, message: str):
         """处理 WebSocket 消息"""
         import json
         import asyncio
-        
+
         data = json.loads(message)
         event_type = data.get('e')
-        
+
+        # 统计各类型事件
+        if event_type:
+            self._event_count[event_type] = self._event_count.get(event_type, 0) + 1
+            if self._event_count[event_type] <= 3:
+                print(f"[UserStream] 事件类型={event_type} (第{self._event_count[event_type]}次)")
+
         if event_type == 'ORDER_TRADE_UPDATE':
             order_data = data.get('o', {})
             for callback in self.order_callbacks:
