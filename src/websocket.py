@@ -52,8 +52,6 @@ class BinanceListener:
                     'close_timeout': 5,
                     'open_timeout': 10
                 }
-                if self.proxy:
-                    connect_kwargs['proxy'] = self.proxy
 
                 ws = await asyncio.wait_for(
                     websockets.connect(self.ws_url, **connect_kwargs),
