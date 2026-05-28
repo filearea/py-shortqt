@@ -296,7 +296,7 @@ class LiveTradingBot:
                 # 首次收到深度数据时打印日志
                 if not hasattr(self, '_depth_received'):
                     self._depth_received = True
-                    self.log_manager.system.info(f"[调试] 首次收到深度数据：bids={len(bids)}, asks={len(asks)}")
+                    self.log_manager.system.debug(f"[调试] 首次收到深度数据：bids={len(bids)}, asks={len(asks)}")
 
                 self.trader.update_orderbook(bids, asks)
 
@@ -366,7 +366,7 @@ class LiveTradingBot:
     def _apply_settings(self):
         """设置保存后生效：杠杆同步 + 移动止损/浮亏保护配置重读"""
         self.trader._add_action("[OK] 配置已保存并退出", "")
-        self.log_manager.system.info("设置操作：配置已保存并退出")
+        self.log_manager.system.debug("设置操作：配置已保存并退出")
 
         # 1. 更新杠杆
         api_lev, actual_lev = self.config_manager.get_leverage_config()
@@ -376,7 +376,7 @@ class LiveTradingBot:
         # 同步到币安 API
         try:
             self.trader.api.set_leverage(self.trader.symbol, api_lev)
-            self.log_manager.system.info(f"杠杆已同步到交易所：{api_lev}x")
+            self.log_manager.system.debug(f"杠杆已同步到交易所：{api_lev}x")
         except Exception as e:
             self.log_manager.system.debug(f"杠杆同步失败：{e}")
 
@@ -388,7 +388,7 @@ class LiveTradingBot:
         if self.trader.trailing_stop_manager:
             ts_config = self.config_manager.get_trailing_stop_config()
             self.trader.trailing_stop_manager.refresh_config(ts_config)
-            self.log_manager.system.info(
+            self.log_manager.system.debug(
                 f"移动止损配置已刷新：{'启用' if ts_config.get('enabled') else '关闭'}"
             ) if self.log_manager else None
 
@@ -396,15 +396,15 @@ class LiveTradingBot:
         if self.trader.loss_protection_manager:
             lp_config = self.config_manager.get_loss_protection_config()
             self.trader.loss_protection_manager.refresh_config(lp_config)
-            self.log_manager.system.info(
+            self.log_manager.system.debug(
                 f"浮亏保护配置已刷新：{'启用' if lp_config.get('enabled') else '关闭'}"
             ) if self.log_manager else None
 
-        self.log_manager.system.info(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
+        self.log_manager.system.debug(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
 
     async def _cleanup_resources(self, ws_task=None):
         """清理资源（确保 WebSocket 正确关闭）"""
-        self.log_manager.system.info("正在清理资源...")
+        self.log_manager.system.debug("正在清理资源...")
         self.running = False
         self.listener.running = False
 
@@ -418,7 +418,7 @@ class LiveTradingBot:
             except asyncio.TimeoutError:
                 self.log_manager.system.warning("WebSocket 任务超时，强制结束")
 
-        self.log_manager.system.info("资源已清理")
+        self.log_manager.system.debug("资源已清理")
     
     async def run(self):
         """运行主循环"""
@@ -717,7 +717,7 @@ class LiveTradingBot:
                     await asyncio.sleep(0.05)
         
         except KeyboardInterrupt:
-            self.log_manager.system.info("用户中断（窗口关闭）")
+            self.log_manager.system.debug("用户中断（窗口关闭）")
             history_task.cancel()
             await self._cleanup_resources(ws_task)
         except Exception as e:
@@ -726,21 +726,21 @@ class LiveTradingBot:
             await self._cleanup_resources(ws_task)
         finally:
             # 无论何种退出方式，都要记录余额日志
-            self.log_manager.system.info("正在同步账户信息...")
+            self.log_manager.system.debug("正在同步账户信息...")
             self.trader.sync_account()
-            self.log_manager.system.info(f"当前余额：{self.trader.available_balance:.4f} USDC")
+            self.log_manager.system.debug(f"当前余额：{self.trader.available_balance:.4f} USDC")
 
             # 输出数据记录统计
             stats = self.recorder.get_stats()
-            self.log_manager.system.info(f"数据记录统计 - K线保存：{stats['klines_saved']} 根，订单簿快照：{stats['orderbooks_saved']} 次")
+            self.log_manager.system.debug(f"数据记录统计 - K线保存：{stats['klines_saved']} 根，订单簿快照：{stats['orderbooks_saved']} 次")
 
-            self.log_manager.system.info("正在写入 shutdown 余额日志...")
+            self.log_manager.system.debug("正在写入 shutdown 余额日志...")
             try:
                 self.logger.log_balance('shutdown', self.trader.available_balance, {
                     'account': self.account_name,
                     'exit_type': 'finally_block'
                 })
-                self.log_manager.system.info("shutdown 余额日志已写入")
+                self.log_manager.system.debug("shutdown 余额日志已写入")
             except Exception as e:
                 self.log_manager.system.warning(f"shutdown 余额日志写入失败：{e}")
 
@@ -751,7 +751,7 @@ class LiveTradingBot:
             # 输出指标记录器统计
             if hasattr(self, 'metrics_recorder') and self.metrics_recorder:
                 stats = self.metrics_recorder.get_stats()
-                self.log_manager.system.info(f"指标数据统计 - 已保存：{stats['records_saved']} 条快照，保存间隔：{stats['save_interval']}秒，数据目录：{stats['data_dir']}")
+                self.log_manager.system.debug(f"指标数据统计 - 已保存：{stats['records_saved']} 条快照，保存间隔：{stats['save_interval']}秒，数据目录：{stats['data_dir']}")
         
         # 正常退出时也清理（Q 键退出时 running=False，但仍需清理）
         if not self.running:
@@ -761,7 +761,7 @@ class LiveTradingBot:
         self.logger.close()
         if hasattr(self, 'log_manager') and self.log_manager:
             self.log_manager.close()
-            self.log_manager.system.info(f"交易结束，最终余额：{self.trader.available_balance:.4f} USDC")
+            self.log_manager.system.debug(f"交易结束，最终余额：{self.trader.available_balance:.4f} USDC")
         
         print("\n" + "=" * 70)
         print("交易结束")

@@ -172,7 +172,7 @@ class LiveTrader:
         """启动用户数据流 WebSocket（可选功能，失败不影响主程序）"""
         try:
             self.listen_key = self.api.get_listen_key()
-            self.log_manager.system.info(f"listenKey已获取：{self.listen_key[:16]}...") if self.log_manager else None
+            self.log_manager.system.debug(f"listenKey已获取：{self.listen_key[:16]}...") if self.log_manager else None
             self.user_stream_ws = UserStreamWebSocket(
                 self.listen_key,
                 api_client=self.api,
@@ -337,7 +337,7 @@ class LiveTrader:
         order_type = order_data.get('ot')
         
         # 记录详细订单信息
-        self.log_manager.system.info(f"[订单更新] 状态={order_status}, 类型={order_type}, ID={order_id}, 方向={order_data.get('S', '?')}") if self.log_manager else None
+        self.log_manager.system.debug(f"[订单更新] 状态={order_status}, 类型={order_type}, ID={order_id}, 方向={order_data.get('S', '?')}") if self.log_manager else None
         self.log_manager.system.debug(f"  成交数量：{order_data.get('z', 0)}, 成交均价：{order_data.get('ap', 0)}") if self.log_manager else None
         self.log_manager.system.debug(f"  手续费：{order_data.get('fc', 0)} {order_data.get('fs', 'USDC')}") if self.log_manager else None
         
@@ -589,7 +589,7 @@ class LiveTrader:
         elif order_status == 'FILLED' and self.position:
             # 检查是否是止损方向的订单
             order_side = order_data.get('S', '')
-            self.log_manager.system.info(f"[平仓检测-Fallback] FILLED 订单方向={order_side}, 持仓方向={self.position['side']}") if self.log_manager else None
+            self.log_manager.system.debug(f"[平仓检测-Fallback] FILLED 订单方向={order_side}, 持仓方向={self.position['side']}") if self.log_manager else None
             if (self.position['side'] == 'LONG' and order_side == 'SELL') or \
                (self.position['side'] == 'SHORT' and order_side == 'BUY'):
                 fill_price = Decimal(order_data.get('ap', '0'))
@@ -699,7 +699,7 @@ class LiveTrader:
             if total_position_amt == 0:
                 # 无持仓 → 清空本地状态 + 撤销所有挂单
                 if self.position:
-                    self.log_manager.system.info(f"[持仓同步-_sync] 交易所无持仓，清理本地状态（持仓方向={self.position.get('side')}）") if self.log_manager else None
+                    self.log_manager.system.debug(f"[持仓同步-_sync] 交易所无持仓，清理本地状态（持仓方向={self.position.get('side')}）") if self.log_manager else None
                     self.sync_account()
                     self._add_action("持仓同步", "持仓已清空，撤销所有挂单")
 
@@ -1705,7 +1705,7 @@ class LiveTrader:
                 else:
                     # 持仓已消失 → 确认平仓
                     if self.log_manager:
-                        self.log_manager.system.info(
+                        self.log_manager.system.debug(
                             f"[关键价格] {kp_type} 价格 {price} 穿透，持仓已平仓"
                         )
                     await self._on_key_price_close(kp_type)
