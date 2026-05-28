@@ -16,9 +16,10 @@ class UserStreamWebSocket:
     LISTEN_KEY_EXPIRE_SECONDS = 3600  # listen key 有效期 60 分钟
     KEEP_ALIVE_INTERVAL = 1800  # 保活间隔 30 分钟
 
-    def __init__(self, listen_key: str, api_client=None, testnet: bool = False):
+    def __init__(self, listen_key: str, api_client=None, testnet: bool = False, log_func=None):
         self.listen_key = listen_key
         self.api_client = api_client  # 用于 keep-alive 调用
+        self._log = log_func or print  # 日志函数，默认 print
 
         if testnet:
             base_url = "wss://stream.binancefuture.com"
@@ -58,11 +59,11 @@ class UserStreamWebSocket:
             try:
                 if self.api_client:
                     self.api_client.keep_alive_listen_key(self.listen_key)
-                    print(f"[UserStream] listenKey 保活成功")
+                    self._log(f"[UserStream] listenKey 保活成功")
                 else:
-                    print(f"[UserStream] ⚠ 无 api_client，无法保活 listenKey")
+                    self._log(f"[UserStream] 无 api_client，无法保活 listenKey")
             except Exception as e:
-                print(f"[UserStream] ⚠ listenKey 保活失败：{e}")
+                self._log(f"[UserStream] listenKey 保活失败：{e}")
 
     async def connect(self):
         """连接 WebSocket"""
@@ -82,7 +83,7 @@ class UserStreamWebSocket:
                 async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
                     self.ws = ws
                     self.connected = True
-                    print(f"✓ 用户数据流已连接")
+                    self._log("✓ 用户数据流已连接")
                     reconnect_delay = 3  # 连接成功后重置延迟
 
                     _msg_count = 0
@@ -91,39 +92,39 @@ class UserStreamWebSocket:
                             message = await asyncio.wait_for(ws.recv(), timeout=30)
                             _msg_count += 1
                             if _msg_count <= 3:
-                                print(f"[UserStream] 收到第{_msg_count}条消息：{message[:200]}")
+                                self._log(f"[UserStream] 收到第{_msg_count}条消息：{message[:200]}")
                             await self.process_message(message)
                         except asyncio.TimeoutError:
-                            print(f"[UserStream] 30秒无消息（已收{_msg_count}条）")
+                            self._log(f"[UserStream] 30秒无消息（已收{_msg_count}条）")
                             continue
                         except websockets.exceptions.ConnectionClosed:
-                            print("用户数据流连接关闭")
+                            self._log("用户数据流连接关闭")
                             break
                         except OSError as e:
                             # Windows 网络错误（如 WinError 64）
-                            print(f"用户数据流网络错误：{e}")
+                            self._log(f"用户数据流网络错误：{e}")
                             break
 
             except OSError as e:
                 # Windows 网络错误（如 WinError 64 指定的网络名不再可用）
                 self.connected = False
-                print(f"用户数据流连接失败：{e}")
-                print(f"  {reconnect_delay}秒后重试...")
+                self._log(f"用户数据流连接失败：{e}")
+                self._log(f"  {reconnect_delay}秒后重试...")
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
 
             except websockets.exceptions.InvalidStatusCode:
                 self.connected = False
-                print(f"用户数据流连接失败：无效的 Listen Key，可能需要更新")
+                self._log("用户数据流连接失败：无效的 Listen Key，可能需要更新")
                 await asyncio.sleep(10)
 
             except Exception as e:
                 self.connected = False
-                print(f"用户数据流错误：{e}")
-                print(f"  {reconnect_delay}秒后重试...")
+                self._log(f"用户数据流错误：{e}")
+                self._log(f"  {reconnect_delay}秒后重试...")
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
-    
+
     _event_count = {}
 
     async def process_message(self, message: str):
@@ -138,7 +139,7 @@ class UserStreamWebSocket:
         if event_type:
             self._event_count[event_type] = self._event_count.get(event_type, 0) + 1
             if self._event_count[event_type] <= 3:
-                print(f"[UserStream] 事件类型={event_type} (第{self._event_count[event_type]}次)")
+                self._log(f"[UserStream] 事件类型={event_type} (第{self._event_count[event_type]}次)")
 
         if event_type == 'ORDER_TRADE_UPDATE':
             order_data = data.get('o', {})
@@ -148,8 +149,8 @@ class UserStreamWebSocket:
                     if asyncio.iscoroutine(result):
                         await result
                 except Exception as e:
-                    print(f"[订单回调错误] {e}")
-        
+                    self._log(f"[订单回调错误] {e}")
+
         elif event_type == 'ACCOUNT_UPDATE':
             account_data = data.get('a', {})
             for callback in self.account_callbacks:
@@ -158,8 +159,8 @@ class UserStreamWebSocket:
                     if asyncio.iscoroutine(result):
                         await result
                 except Exception as e:
-                    print(f"[账户回调错误] {e}")
-    
+                    self._log(f"[账户回调错误] {e}")
+
     async def close(self):
         """关闭连接"""
         self.running = False

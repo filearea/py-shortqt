@@ -171,7 +171,8 @@ class LiveTrader:
             self.user_stream_ws = UserStreamWebSocket(
                 self.listen_key,
                 api_client=self.api,
-                testnet=self.testnet
+                testnet=self.testnet,
+                log_func=lambda msg: self.log_manager.system.info(msg) if self.log_manager else None
             )
             self.user_stream_ws.add_order_callback(self._on_order_update)
             self.user_stream_ws.add_account_callback(self._on_account_update)
