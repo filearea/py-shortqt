@@ -17,8 +17,8 @@ from datetime import datetime, timedelta
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
     os.environ['PYTHONUTF8'] = '1'
-    # 设置控制台窗口尺寸（130 列 x 50 行）
-    os.system('mode con: cols=130 lines=50')
+    # 设置控制台窗口尺寸（135 列 x 50 行）
+    os.system('mode con: cols=135 lines=50')
 
     # 禁用控制台鼠标输入 + 关闭 QuickEdit，防止滚轮误触
     import ctypes

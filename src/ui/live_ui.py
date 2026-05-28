@@ -746,23 +746,23 @@ class LiveTradingUI:
         # 单行展示所有数据
         stats_text.append(f"交易:{round_count}次  ", style="cyan")
         stats_text.append(f"盈利:{win_count}次  ", style="green")
-        stats_text.append("胜率:", style="bold cyan")
-        if win_rate > 50:
-            stats_text.append(f"{win_rate:.1f}%  ", style="green")
-        elif win_rate > 0:
-            stats_text.append(f"{win_rate:.1f}%  ", style="yellow")
-        else:
-            stats_text.append("--  ", style="dim")
         stats_text.append("交易量:", style="bold cyan")
         stats_text.append(f"{_fmt_num(total_volume)}ETH  ", style="default")
         stats_text.append("累计盈亏:", style="bold cyan")
         pnl_val = float(total_pnl)
         if pnl_val > 0:
-            stats_text.append(f"+{pnl_val:.2f}U  ", style="green")
+            stats_text.append(f"+{_fmt_num(pnl_val)}U  ", style="green")
         elif pnl_val < 0:
-            stats_text.append(f"{pnl_val:.2f}U  ", style="red")
+            stats_text.append(f"{_fmt_num(pnl_val)}U  ", style="red")
         else:
             stats_text.append("0U  ", style="dim")
+        stats_text.append("胜率:", style="bold cyan")
+        if win_rate > 50:
+            stats_text.append(f"{win_rate:.2f}%  ", style="green")
+        elif win_rate > 0:
+            stats_text.append(f"{win_rate:.2f}%  ", style="yellow")
+        else:
+            stats_text.append("--  ", style="dim")
         stats_text.append("盈亏比:", style="bold cyan")
         if avg_pnl_ratio == float('inf'):
             stats_text.append("∞  ", style="green")
@@ -773,6 +773,14 @@ class LiveTradingUI:
                 stats_text.append(f"{avg_pnl_ratio:.2f}  ", style="yellow")
         else:
             stats_text.append("--  ", style="dim")
+        stats_text.append("期望:", style="bold cyan")
+        ev = stats.get('expected_value', 0)
+        if ev > 0:
+            stats_text.append(f"+{_fmt_num(ev)}U  ", style="green")
+        elif ev < 0:
+            stats_text.append(f"{_fmt_num(ev)}U  ", style="red")
+        else:
+            stats_text.append("0U  ", style="dim")
         stats_text.append("平均持仓时间:", style="bold cyan")
         stats_text.append(str(avg_hold), style="default")
 

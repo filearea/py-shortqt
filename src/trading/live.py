@@ -2138,17 +2138,18 @@ class LiveTrader:
         return pos_funding
 
     def _update_trade_stats_24h(self):
-        """计算近 24 小时交易统计"""
+        """计算近 24 小时交易统计（按仓位最后平仓时间筛选）"""
         import time
         now_ms = int(time.time() * 1000)
         day_ms = 86400000
+        pull_window_ms = 7 * day_ms  # 拉取 7 天成交，确保跨 24h 窗口的完整仓位能配对
 
-        # 拉取近 24 小时成交（全量，不限方向）
+        # 拉取近 7 天成交（全量，不限方向）
         try:
             all_fills = []
             from_id = None
             while True:
-                fills = self.api.get_fills(self.symbol, limit=1000, startTime=now_ms - day_ms, endTime=now_ms, fromId=from_id)
+                fills = self.api.get_fills(self.symbol, limit=1000, startTime=now_ms - pull_window_ms, endTime=now_ms, fromId=from_id)
                 if not fills:
                     break
                 all_fills.extend(fills)
@@ -2166,11 +2167,13 @@ class LiveTrader:
                 'open_count': 0, 'close_count': 0, 'win_count': 0,
                 'win_rate': 0, 'total_volume': Decimal('0'),
                 'total_pnl': Decimal('0'), 'avg_pnl_ratio': 0,
-                'avg_hold_time': '--'
+                'avg_hold_time': '--', 'expected_value': 0
             }
             return
 
         # 统计完整持仓轮次（每笔开仓 → 完全平仓算1轮）
+        # 先用 7 天数据配对，再用平仓时间筛选 24 小时内
+        cutoff_24h = now_ms - day_ms
         completed_rounds = 0
         total_volume = Decimal('0')
         total_pnl = Decimal('0')
@@ -2190,7 +2193,6 @@ class LiveTrader:
                 realized_pnl = Decimal(str(fill.get('realizedPnl', '0')))
                 is_buyer = fill.get('buyer', False)
                 is_open = (side == 'LONG' and is_buyer) or (side == 'SHORT' and not is_buyer)
-                total_volume += qty
                 trade_time_ms = fill.get('time', 0)
 
                 if is_open:
@@ -2198,29 +2200,35 @@ class LiveTrader:
                         current_open = {
                             'open_time_ms': trade_time_ms,
                             'total_qty': qty,
+                            'opened_qty': qty,
                             'total_cost': price * qty,
                             'realized_pnl': Decimal('0'),
                         }
                     else:
                         current_open['total_qty'] += qty
+                        current_open['opened_qty'] += qty
                         current_open['total_cost'] += price * qty
                 else:
                     if current_open:
                         current_open['total_qty'] -= qty
                         current_open['realized_pnl'] += realized_pnl
-                        hold_times.append(trade_time_ms - current_open['open_time_ms'])
+                        current_open['close_time_ms'] = trade_time_ms
 
                         if current_open['total_qty'] <= 0:
-                            # 一轮持仓结束
-                            completed_rounds += 1
-                            pnl = current_open['realized_pnl']
-                            total_pnl += pnl
-                            if pnl > 0:
-                                win_count += 1
-                                total_win_usd += pnl
-                            elif pnl < 0:
-                                loss_count += 1
-                                total_loss_usd += abs(pnl)
+                            close_ms = current_open.get('close_time_ms', trade_time_ms)
+                            # 按最后平仓时间筛选：只统计 24 小时内完全平仓的轮次
+                            if close_ms >= cutoff_24h:
+                                hold_times.append(close_ms - current_open['open_time_ms'])
+                                completed_rounds += 1
+                                pnl = current_open['realized_pnl']
+                                total_pnl += pnl
+                                total_volume += current_open['opened_qty']
+                                if pnl > 0:
+                                    win_count += 1
+                                    total_win_usd += pnl
+                                elif pnl < 0:
+                                    loss_count += 1
+                                    total_loss_usd += abs(pnl)
                             current_open = None
 
         closed_rounds = completed_rounds
@@ -2237,6 +2245,17 @@ class LiveTrader:
             avg_pnl_ratio = 0
         else:
             avg_pnl_ratio = 0
+
+        # 盈亏期望 = 胜率 × 平均盈利 - 败率 × 平均亏损
+        if closed_rounds > 0 and win_count > 0 and loss_count > 0:
+            wr = win_count / closed_rounds
+            expected_value = wr * float(avg_win) - (1 - wr) * float(avg_loss)
+        elif closed_rounds > 0 and win_count == closed_rounds:
+            expected_value = float(avg_win)  # 全胜
+        elif closed_rounds > 0 and loss_count == closed_rounds:
+            expected_value = -float(avg_loss)  # 全败
+        else:
+            expected_value = 0
 
         # 平均持仓时间 HH:MM:SS
         if hold_times:
@@ -2257,6 +2276,7 @@ class LiveTrader:
             'total_pnl': total_pnl,
             'avg_pnl_ratio': avg_pnl_ratio,
             'avg_hold_time': avg_hold_str,
+            'expected_value': expected_value,
         }
 
     async def cleanup(self):
