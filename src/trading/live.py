@@ -168,6 +168,7 @@ class LiveTrader:
         """启动用户数据流 WebSocket（可选功能，失败不影响主程序）"""
         try:
             self.listen_key = self.api.get_listen_key()
+            self.log_manager.system.info(f"listenKey已获取：{self.listen_key[:16]}...") if self.log_manager else None
             self.user_stream_ws = UserStreamWebSocket(
                 self.listen_key,
                 api_client=self.api,

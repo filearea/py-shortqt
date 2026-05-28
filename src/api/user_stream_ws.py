@@ -78,7 +78,9 @@ class UserStreamWebSocket:
         while self.running:
             try:
                 connect_kwargs = {'ping_timeout': 10, 'ping_interval': 20}
-                self._log(f"[UserStream] 尝试连接：{self.ws_url} (proxy={self.proxy})")
+                if self.proxy:
+                    connect_kwargs['proxy'] = self.proxy
+                self._log(f"[UserStream] 连接URL：{self.ws_url}")
                 async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
                     self.ws = ws
                     self.connected = True
