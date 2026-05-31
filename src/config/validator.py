@@ -28,12 +28,18 @@ class ConfigValidator:
                 errors.append("止盈点数不能小于 0.01")
             if points > 100:
                 errors.append("止盈点数不能大于 100")
-        else:
+        elif mode == 'percentage':
             percent = tp.get('percent', 0)
             if percent < 0.01:
                 errors.append("止盈百分比不能小于 0.01%")
             if percent > 10:
                 errors.append("止盈百分比不能大于 10%")
+        else:  # atr14
+            coeff = tp.get('atr14_coefficient', 1.0)
+            if coeff < 0.1:
+                errors.append("止盈 ATR14 系数不能小于 0.1")
+            if coeff > 10:
+                errors.append("止盈 ATR14 系数不能大于 10")
         
         # 2. 止损验证
         sl = config.get('stop_loss', {})
@@ -43,10 +49,16 @@ class ConfigValidator:
             points = abs(sl.get('trigger_points', 0))
             if points < 0.01:
                 errors.append("止损触发点数不能小于 0.01")
-        else:
+        elif trigger_mode == 'percentage':
             percent = abs(sl.get('trigger_percent', 0))
             if percent < 0.01:
                 errors.append("止损触发百分比不能小于 0.01%")
+        else:  # atr14
+            coeff = sl.get('atr14_coefficient', 1.0)
+            if coeff < 0.1:
+                errors.append("止损 ATR14 系数不能小于 0.1")
+            if coeff > 10:
+                errors.append("止损 ATR14 系数不能大于 10")
         
         # 滑点验证
         limit_mode = sl.get('limit_mode', 'queue')

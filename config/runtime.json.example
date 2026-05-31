@@ -2,12 +2,14 @@
     "take_profit": {
         "mode": "fixed",
         "points": 1.00,
-        "percent": 0.36
+        "percent": 0.36,
+        "atr14_coefficient": 1.0
     },
     "stop_loss": {
         "trigger_mode": "fixed",
         "trigger_points": 3.00,
         "trigger_percent": 0.50,
+        "atr14_coefficient": 1.0,
         "limit_mode": "queue",
         "limit_offset": 10.50
     },

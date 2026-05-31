@@ -25,23 +25,29 @@ class SettingsUI:
             {
                 'name': '交易参数',
                 'fields': [
-                    {'key': 'take_profit.mode', 'label': '止盈模式', 'type': 'select', 
-                     'options': ['fixed', 'percentage'], 'labels': ['固定点数', '百分比']},
-                    {'key': 'take_profit.points', 'label': '止盈点数', 'type': 'decimal', 
-                     'min': 0.01, 'max': 100, 'step': 0.01, 'unit': '点', 
+                    {'key': 'take_profit.mode', 'label': '止盈模式', 'type': 'select',
+                     'options': ['fixed', 'percentage', 'atr14'], 'labels': ['固定点数', '百分比', 'ATR14']},
+                    {'key': 'take_profit.points', 'label': '止盈点数', 'type': 'decimal',
+                     'min': 0.01, 'max': 100, 'step': 0.01, 'unit': '点',
                      'visible_cond': lambda c: c.get('take_profit', {}).get('mode') == 'fixed'},
-                    {'key': 'take_profit.percent', 'label': '止盈百分比', 'type': 'decimal', 
+                    {'key': 'take_profit.percent', 'label': '止盈百分比', 'type': 'decimal',
                      'min': 0.01, 'max': 10, 'step': 0.01, 'unit': '%',
                      'visible_cond': lambda c: c.get('take_profit', {}).get('mode') == 'percentage'},
-                    
+                    {'key': 'take_profit.atr14_coefficient', 'label': '止盈ATR14系数', 'type': 'decimal',
+                     'min': 0.1, 'max': 10, 'step': 0.1, 'unit': 'x',
+                     'visible_cond': lambda c: c.get('take_profit', {}).get('mode') == 'atr14'},
+
                     {'key': 'stop_loss.trigger_mode', 'label': '止损触发模式', 'type': 'select',
-                     'options': ['fixed', 'percentage'], 'labels': ['固定点数', '百分比']},
+                     'options': ['fixed', 'percentage', 'atr14'], 'labels': ['固定点数', '百分比', 'ATR14']},
                     {'key': 'stop_loss.trigger_points', 'label': '止损触发点数', 'type': 'decimal',
                      'min': 0.01, 'max': 100, 'step': 0.01, 'unit': '点',
                      'visible_cond': lambda c: c.get('stop_loss', {}).get('trigger_mode') == 'fixed'},
                     {'key': 'stop_loss.trigger_percent', 'label': '止损触发百分比', 'type': 'decimal',
                      'min': 0.01, 'max': 10, 'step': 0.01, 'unit': '%',
                      'visible_cond': lambda c: c.get('stop_loss', {}).get('trigger_mode') == 'percentage'},
+                    {'key': 'stop_loss.atr14_coefficient', 'label': '止损ATR14系数', 'type': 'decimal',
+                     'min': 0.1, 'max': 10, 'step': 0.1, 'unit': 'x',
+                     'visible_cond': lambda c: c.get('stop_loss', {}).get('trigger_mode') == 'atr14'},
                     
                     {'key': 'stop_loss.limit_mode', 'label': '实际止损价模式', 'type': 'select',
                      'options': ['queue', 'custom'], 'labels': ['同向价 1', '自定义滑点']},
@@ -216,9 +222,14 @@ class SettingsUI:
         notional = balance * actual_leverage
         size = notional / entry_price
         
+        # 获取 ATR 值（用于 ATR14 模式预览）
+        atr = None
+        if self.trader and hasattr(self.trader, 'indicators') and self.trader.indicators:
+            atr = self.trader.indicators.volatility.get_atr(14)
+
         # 计算止盈止损价格
-        tp_price = self.config_manager.get_take_profit_price(entry_price)
-        sl_trigger, _ = self.config_manager.get_stop_loss_params('ETHUSDC', entry_price, 'LONG', size)
+        tp_price = self.config_manager.get_take_profit_price(entry_price, 'LONG', atr)
+        sl_trigger, _ = self.config_manager.get_stop_loss_params('ETHUSDC', entry_price, 'LONG', size, atr)
         sm_price = self.config_manager.get_stop_market_price(
             entry_price, 'LONG', size, balance, Decimal('2060.00')
         )
@@ -232,8 +243,25 @@ class SettingsUI:
         tp_pnl_pct = (tp_pnl / balance * Decimal('100')) if balance > 0 else Decimal('0')
         sl_pnl_pct = (sl_pnl / balance * Decimal('100')) if balance > 0 else Decimal('0')
         max_loss_pct = Decimal(str(self.config_manager.get('stop_market.max_loss_percent', 30)))
-        
+
         lines.append(f"  仓位：{size:.3f} ETH (名义价值：{notional:.2f}U)")
+        # 如果当前模式是 ATR14，显示 ATR 计算详情
+        tp_mode = self.config_manager.get('take_profit.mode', 'fixed')
+        sl_mode = self.config_manager.get('stop_loss.trigger_mode', 'fixed')
+        if tp_mode == 'atr14':
+            tp_coeff = self.config_manager.get('take_profit.atr14_coefficient', 1.0)
+            if atr:
+                tp_dist = atr * tp_coeff
+                lines.append(f"  止盈 ATR14：{atr:.4f} × {tp_coeff:.1f} = {tp_dist:.2f} 点")
+            else:
+                lines.append(f"  止盈 ATR14：×{tp_coeff:.1f} (无 ATR 数据)")
+        if sl_mode == 'atr14':
+            sl_coeff = self.config_manager.get('stop_loss.atr14_coefficient', 1.0)
+            if atr:
+                sl_dist = atr * sl_coeff
+                lines.append(f"  止损 ATR14：{atr:.4f} × {sl_coeff:.1f} = {sl_dist:.2f} 点")
+            else:
+                lines.append(f"  止损 ATR14：×{sl_coeff:.1f} (无 ATR 数据)")
         lines.append(f"  止盈价：{tp_price:.2f}  止损触发：{sl_trigger:.2f}  保底：{sm_price:.2f}")
         lines.append(f"  止盈 PnL：+{tp_pnl:.2f}U (+{tp_pnl_pct:.1f}%)")
         lines.append(f"  止损亏损：{sl_pnl:.2f}U ({sl_pnl_pct:.1f}%)  保底最大损失：{max_loss_usd:.2f}U ({max_loss_pct:.1f}%)")

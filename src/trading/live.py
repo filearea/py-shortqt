@@ -21,10 +21,10 @@ from src.trading.loss_protection import LossProtectionManager
 class LiveTrader:
     """实盘交易器"""
     
-    def __init__(self, api_key: str, api_secret: str, symbol: str, 
+    def __init__(self, api_key: str, api_secret: str, symbol: str,
                  leverage_limit: int = 100, actual_leverage: int = 25,
                  testnet: bool = False, logger: TradeLogger = None,
-                 config_manager=None, log_manager=None):
+                 config_manager=None, log_manager=None, indicators_manager=None):
         self.symbol = symbol
         self.leverage_limit = leverage_limit
         self.actual_leverage = actual_leverage
@@ -32,6 +32,7 @@ class LiveTrader:
         self.logger = logger
         self.config_manager = config_manager
         self.log_manager: LogManager = log_manager  # 由 main_live.py 传入
+        self.indicators = indicators_manager  # 指标管理器，用于 ATR14 模式止盈止损
         
         self.api = BinanceClient(api_key, api_secret, testnet)
         self.listener = None  # 行情 WebSocket 监听器（从外部传入）
@@ -162,10 +163,12 @@ class LiveTrader:
             return True
         
         except BinanceAPIError as e:
-            self.log_manager.system.debug(f"✗ API 错误：[{e.code}] {e.msg}") if self.log_manager else None
+            msg = f"✗ API 错误：[{e.code}] {e.msg}"
+            (self.log_manager.system.error(msg, exc_info=True) if self.log_manager else print(msg))
             return False
         except Exception as e:
-            self.log_manager.system.debug(f"✗ 初始化失败：{e}") if self.log_manager else None
+            msg = f"✗ 初始化失败：{e}"
+            (self.log_manager.system.error(msg, exc_info=True) if self.log_manager else print(msg))
             return False
     
     async def _start_user_stream(self):
@@ -883,8 +886,12 @@ class LiveTrader:
             
             # 2. 从 config_manager 获取止盈止损配置
             if self.config_manager:
-                tp_price = self.config_manager.get_take_profit_price(entry_price, side)
-                sl_trigger, sl_algo_params = self.config_manager.get_stop_loss_params(self.symbol, entry_price, side, size)
+                # 获取 ATR(14) 值（用于 ATR14 模式）
+                atr = None
+                if self.indicators:
+                    atr = self.indicators.volatility.get_atr(14)
+                tp_price = self.config_manager.get_take_profit_price(entry_price, side, atr)
+                sl_trigger, sl_algo_params = self.config_manager.get_stop_loss_params(self.symbol, entry_price, side, size, atr)
                 
                 # 计算保底止损价格（基于用户配置的最大损失比例）
                 # 使用总权益 = 开仓后可用余额 + 开仓保证金（因为开仓后 position_margin 可能还没更新）

@@ -557,24 +557,41 @@ class LiveTradingUI:
                 acc_text.append("─" * 20 + "\n", style="dim")
                 
                 # 止盈
+                atr_val = None
+                if self.indicators:
+                    atr_val = self.indicators.volatility.get_atr(14)
                 tp_config = self.config_manager.get('take_profit', {})
                 tp_mode = tp_config.get('mode', 'fixed')
                 if tp_mode == 'fixed':
                     tp_value = tp_config.get('points', 1.00)
                     acc_text.append(f"止盈：+{tp_value:.2f}点\n", style="green")
-                else:
+                elif tp_mode == 'percentage':
                     tp_value = tp_config.get('percent', 0.36)
                     acc_text.append(f"止盈：+{tp_value:.2f}%\n", style="green")
-                
+                else:  # atr14
+                    tp_coeff = tp_config.get('atr14_coefficient', 1.0)
+                    if atr_val:
+                        tp_dist = atr_val * tp_coeff
+                        acc_text.append(f"止盈：ATR14 {atr_val:.4f}×{tp_coeff:.1f}={tp_dist:.2f}点\n", style="green")
+                    else:
+                        acc_text.append(f"止盈：ATR14 ×{tp_coeff:.1f} (无ATR数据)\n", style="green")
+
                 # 止损触发
                 sl_config = self.config_manager.get('stop_loss', {})
                 sl_trigger_mode = sl_config.get('trigger_mode', 'fixed')
                 if sl_trigger_mode == 'fixed':
                     sl_trigger_value = abs(sl_config.get('trigger_points', 3.00))
                     acc_text.append(f"止损：触发 -{sl_trigger_value:.2f}点 / 挂单 ", style="red")
-                else:
+                elif sl_trigger_mode == 'percentage':
                     sl_trigger_value = abs(sl_config.get('trigger_percent', 0.50))
                     acc_text.append(f"止损：触发 -{sl_trigger_value:.2f}% / 挂单 ", style="red")
+                else:  # atr14
+                    sl_coeff = sl_config.get('atr14_coefficient', 1.0)
+                    if atr_val:
+                        sl_dist = atr_val * sl_coeff
+                        acc_text.append(f"止损：触发 ATR14 {atr_val:.4f}×{sl_coeff:.1f}={sl_dist:.2f}点 / 挂单 ", style="red")
+                    else:
+                        acc_text.append(f"止损：触发 ATR14 ×{sl_coeff:.1f} (无ATR数据) / 挂单 ", style="red")
                 
                 # 挂单方式
                 sl_limit_mode = sl_config.get('limit_mode', 'queue')

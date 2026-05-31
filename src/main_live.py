@@ -131,7 +131,8 @@ class LiveTradingBot:
             testnet=TESTNET,
             logger=self.logger,
             config_manager=self.config_manager,  # 传入配置管理器
-            log_manager=self.log_manager  # v1.5.0 修复：直接传入 log_manager
+            log_manager=self.log_manager,  # v1.5.0 修复：直接传入 log_manager
+            indicators_manager=self.indicators  # v1.7.8: 传入指标管理器用于 ATR14 止盈止损
         )
         
         # 初始化行情 WebSocket
