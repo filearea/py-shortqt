@@ -2143,12 +2143,19 @@ class LiveTrader:
             long_fills = [f for f in all_fills if f.get('positionSide') == 'LONG']
             short_fills = [f for f in all_fills if f.get('positionSide') == 'SHORT']
 
-            # 4. 配对
-            history = []
-            history.extend(self._pair_positions('LONG', long_fills, funding))
-            history.extend(self._pair_positions('SHORT', short_fills, funding))
+            # 4. 获取 BNB 价格（用于手续费换算）
+            bnb_price = None
+            try:
+                bnb_price = Decimal(str(self.api.get_ticker_price('BNBUSDT')))
+            except Exception:
+                pass
 
-            # 5. 排序：未平仓/部分平仓在最上面，按最后操作时间倒序
+            # 5. 配对
+            history = []
+            history.extend(self._pair_positions('LONG', long_fills, funding, bnb_price))
+            history.extend(self._pair_positions('SHORT', short_fills, funding, bnb_price))
+
+            # 6. 排序：未平仓/部分平仓在最上面，按最后操作时间倒序
             STATUS_ORDER = {'未平仓': 0, '部分平仓': 1, '完全平仓': 2}
             history.sort(key=lambda x: (
                 STATUS_ORDER.get(x.get('status', '完全平仓'), 2),
@@ -2156,13 +2163,13 @@ class LiveTrader:
             ))
             self.position_history = history[:10]  # 最多保留 10 条
 
-            # 6. 更新 24h 交易统计
+            # 7. 更新 24h 交易统计
             self._update_trade_stats_24h()
 
         except Exception as e:
             self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
 
-    def _pair_positions(self, side: str, fills: list, funding: list) -> list:
+    def _pair_positions(self, side: str, fills: list, funding: list, bnb_price: Decimal = None) -> list:
         """将同一方向的成交配对成持仓记录（一个开仓周期只生成一条最终记录）"""
         if not fills:
             return []
@@ -2175,6 +2182,13 @@ class LiveTrader:
             price = Decimal(str(fill['price']))
             qty = Decimal(str(fill['qty']))
             fee = Decimal(str(fill.get('commission', '0')))
+            fee_asset = fill.get('commissionAsset', 'USDC')
+            # BNB 抵扣换算为 USDT 等值
+            fee_usd = fee
+            if fee_asset == 'BNB' and bnb_price and bnb_price > 0:
+                fee_usd = fee * bnb_price
+            elif fee_asset not in ('USDC', 'USDT'):
+                fee_usd = Decimal('0')
             realized_pnl = Decimal(str(fill.get('realizedPnl', '0')))
             trade_time_ms = fill.get('time', 0)
             trade_time = datetime.fromtimestamp(trade_time_ms / 1000)
@@ -2191,7 +2205,7 @@ class LiveTrader:
                         'total_close_qty': Decimal('0'),
                         'total_open_cost': price * qty,
                         'total_close_cost': Decimal('0'),
-                        'total_fee': fee,
+                        'total_fee': fee_usd,
                         'realized_pnl_sum': Decimal('0'),
                         'open_time': trade_time,
                         'open_time_ms': trade_time_ms,
@@ -2202,13 +2216,13 @@ class LiveTrader:
                     # 加仓
                     current['total_opened_qty'] += qty
                     current['total_open_cost'] += price * qty
-                    current['total_fee'] += fee
+                    current['total_fee'] += fee_usd
             else:
                 if current:
                     current['total_close_qty'] += qty
                     current['total_close_cost'] += price * qty
                     current['realized_pnl_sum'] += realized_pnl
-                    current['total_fee'] += fee
+                    current['total_fee'] += fee_usd
                     current['close_time'] = trade_time
                     current['close_time_ms'] = trade_time_ms
 

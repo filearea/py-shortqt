@@ -133,6 +133,11 @@ class BinanceClient:
         """获取交易规则"""
         params = {'symbol': symbol} if symbol else {}
         return self._get('/fapi/v1/exchangeInfo', params)
+
+    def get_ticker_price(self, symbol: str) -> float:
+        """获取最新成交价"""
+        data = self._get('/fapi/v1/ticker/price', {'symbol': symbol})
+        return float(data['price'])
     
     # ==================== 账户接口（需要签名）====================
     
