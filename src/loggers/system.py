@@ -4,8 +4,6 @@
 """
 
 import logging
-import sys
-import traceback
 from pathlib import Path
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
@@ -37,25 +35,14 @@ class SystemLogger:
         )
         file_handler.setLevel(logging.DEBUG)
         
-        # 控制台 handler（显示 INFO 及以上）
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        
         # 格式
         file_format = logging.Formatter(
             '%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s | %(filename)s:%(lineno)d | %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        console_format = logging.Formatter(
-            '%(asctime)s | %(levelname)-8s | %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        
+
         file_handler.setFormatter(file_format)
-        console_handler.setFormatter(console_format)
-        
         self.logger.addHandler(file_handler)
-        self.logger.addHandler(console_handler)
     
     def set_level(self, level: int):
         """设置日志级别"""
