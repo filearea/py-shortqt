@@ -65,15 +65,17 @@ class BinanceClient:
         
         return self._handle_response(response)
     
-    def get_klines(self, symbol: str, interval: str, limit: int = 100) -> list:
+    def get_klines(self, symbol: str, interval: str, limit: int = 100, startTime: int = None, endTime: int = None) -> list:
         """
         获取 K 线数据（公开接口，无需签名）
-        
+
         Args:
             symbol: 交易对（如 ETHUSDC）
             interval: 时间间隔（1m, 5m, 1h 等）
             limit: 返回数量（最多 1500）
-        
+            startTime: 起始时间戳（毫秒）
+            endTime: 结束时间戳（毫秒）
+
         Returns:
             K 线数据列表 [[timestamp, open, high, low, close, volume, ...], ...]
         """
@@ -82,6 +84,10 @@ class BinanceClient:
             'interval': interval,
             'limit': limit
         }
+        if startTime is not None:
+            params['startTime'] = startTime
+        if endTime is not None:
+            params['endTime'] = endTime
         weight = BINANCE_WEIGHTS.get('GET /fapi/v1/klines', 1)
         return self._get('/fapi/v1/klines', params, signed=False, weight=weight)
     

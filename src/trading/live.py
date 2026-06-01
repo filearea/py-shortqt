@@ -63,6 +63,10 @@ class LiveTrader:
         # 历史持仓
         self.position_history: list = []
 
+        # BNB 价格缓存（用于手续费换算）
+        self._bnb_prices: dict = {}       # {timestamp_sec: Decimal}
+        self._bnb_last_fetch_ms: int = 0
+
         # 24 小时交易统计
         self.trade_stats_24h: dict = {}
 
@@ -2107,6 +2111,31 @@ class LiveTrader:
         except:
             pass
 
+    async def _ensure_bnb_prices(self):
+        """增量更新 BNB 价格缓存，避免每次持仓变动都全量拉取"""
+        now_ms = int(datetime.now().timestamp() * 1000)
+        if self._bnb_last_fetch_ms == 0:
+            # 首次拉满 1500 根 1m K线
+            try:
+                klines = self.api.get_klines('BNBUSDT', '1m', limit=1500)
+                for k in klines:
+                    ts = k[0] // 1000
+                    self._bnb_prices[ts] = Decimal(str(k[4]))
+                self._bnb_last_fetch_ms = max(k[0] for k in klines) if klines else now_ms
+            except Exception as e:
+                self.log_manager.system.warning(f"[BNB费率] K线拉取失败：{e}") if self.log_manager else None
+        else:
+            # 增量拉取：从上次最后时间到现在
+            try:
+                klines = self.api.get_klines('BNBUSDT', '1m', startTime=self._bnb_last_fetch_ms, limit=500)
+                for k in klines:
+                    ts = k[0] // 1000
+                    self._bnb_prices[ts] = Decimal(str(k[4]))
+                if klines:
+                    self._bnb_last_fetch_ms = max(k[0] for k in klines)
+            except Exception as e:
+                self.log_manager.system.debug(f"[BNB费率] 增量拉取失败：{e}") if self.log_manager else None
+
     async def _refresh_history_delayed(self, delay: float = 5.0):
         """延迟刷新历史持仓（等 Binance 同步 trade 记录）"""
         await asyncio.sleep(delay)
@@ -2143,27 +2172,19 @@ class LiveTrader:
             long_fills = [f for f in all_fills if f.get('positionSide') == 'LONG']
             short_fills = [f for f in all_fills if f.get('positionSide') == 'SHORT']
 
-            # 4. 获取 BNB 历史价格（用于手续费换算，取成交时刻价格）
-            bnb_prices = {}  # {timestamp_sec: price}
+            # 4. BNB 价格缓存（增量更新，失败回退实时价）
+            await self._ensure_bnb_prices()
             bnb_fallback = Decimal('0')
-            try:
-                bnb_klines = self.api.get_klines('BNBUSDT', '1m', limit=min(days * 1440, 1500))
-                for k in bnb_klines:
-                    ts = k[0] // 1000  # 开盘时间（秒）
-                    bnb_prices[ts] = Decimal(str(k[4]))  # 收盘价
-            except Exception as e:
-                self.log_manager.system.warning(f"[BNB费率] K线拉取失败：{e}") if self.log_manager else None
-            # K 线拉取失败时，回退到当前 BNB 价格
-            if not bnb_prices:
+            if not self._bnb_prices:
                 try:
                     bnb_fallback = Decimal(str(self.api.get_ticker_price('BNBUSDT')))
                 except Exception as e:
-                    self.log_manager.system.error(f"[BNB费率] 实时价格获取也失败：{e}") if self.log_manager else None
+                    self.log_manager.system.error(f"[BNB费率] 实时价格获取失败：{e}") if self.log_manager else None
 
             # 5. 配对
             history = []
-            history.extend(self._pair_positions('LONG', long_fills, funding, bnb_prices, bnb_fallback))
-            history.extend(self._pair_positions('SHORT', short_fills, funding, bnb_prices, bnb_fallback))
+            history.extend(self._pair_positions('LONG', long_fills, funding, self._bnb_prices, bnb_fallback))
+            history.extend(self._pair_positions('SHORT', short_fills, funding, self._bnb_prices, bnb_fallback))
 
             # 6. 排序：未平仓/部分平仓在最上面，按最后操作时间倒序
             STATUS_ORDER = {'未平仓': 0, '部分平仓': 1, '完全平仓': 2}
