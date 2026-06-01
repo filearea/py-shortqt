@@ -2143,17 +2143,20 @@ class LiveTrader:
             long_fills = [f for f in all_fills if f.get('positionSide') == 'LONG']
             short_fills = [f for f in all_fills if f.get('positionSide') == 'SHORT']
 
-            # 4. 获取 BNB 价格（用于手续费换算）
-            bnb_price = None
+            # 4. 获取 BNB 历史价格（用于手续费换算，取成交时刻价格）
+            bnb_prices = {}  # {timestamp_sec: price}
             try:
-                bnb_price = Decimal(str(self.api.get_ticker_price('BNBUSDT')))
+                bnb_klines = self.api.get_klines('BNBUSDT', '1m', limit=min(days * 1440, 10000))
+                for k in bnb_klines:
+                    ts = k[0] // 1000  # 开盘时间（秒）
+                    bnb_prices[ts] = Decimal(str(k[4]))  # 收盘价
             except Exception:
                 pass
 
             # 5. 配对
             history = []
-            history.extend(self._pair_positions('LONG', long_fills, funding, bnb_price))
-            history.extend(self._pair_positions('SHORT', short_fills, funding, bnb_price))
+            history.extend(self._pair_positions('LONG', long_fills, funding, bnb_prices))
+            history.extend(self._pair_positions('SHORT', short_fills, funding, bnb_prices))
 
             # 6. 排序：未平仓/部分平仓在最上面，按最后操作时间倒序
             STATUS_ORDER = {'未平仓': 0, '部分平仓': 1, '完全平仓': 2}
@@ -2169,13 +2172,30 @@ class LiveTrader:
         except Exception as e:
             self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
 
-    def _pair_positions(self, side: str, fills: list, funding: list, bnb_price: Decimal = None) -> list:
+    def _pair_positions(self, side: str, fills: list, funding: list, bnb_prices: dict = None) -> list:
         """将同一方向的成交配对成持仓记录（一个开仓周期只生成一条最终记录）"""
         if not fills:
             return []
 
         positions = []
         current = None
+        bnb_prices = bnb_prices or {}
+
+        def _get_bnb_price(trade_time_ms: int) -> Decimal:
+            """根据成交时间戳查找最接近的 BNB 价格（1分钟K线）"""
+            if not bnb_prices:
+                return None
+            ts = trade_time_ms // 1000
+            # 对齐到分钟
+            minute_ts = (ts // 60) * 60
+            if minute_ts in bnb_prices:
+                return bnb_prices[minute_ts]
+            # 前后 1 分钟找最近的
+            for offset in range(1, 3):
+                for candidate in (minute_ts - offset * 60, minute_ts + offset * 60):
+                    if candidate in bnb_prices:
+                        return bnb_prices[candidate]
+            return None
 
         # 时间字段用 'time'（不是 tradeTime）
         for fill in sorted(fills, key=lambda x: x.get('time', 0)):
@@ -2183,10 +2203,14 @@ class LiveTrader:
             qty = Decimal(str(fill['qty']))
             fee = Decimal(str(fill.get('commission', '0')))
             fee_asset = fill.get('commissionAsset', 'USDC')
-            # BNB 抵扣换算为 USDT 等值
+            # BNB 抵扣换算为 USDT 等值（按成交时刻的 BNB 价格）
             fee_usd = fee
-            if fee_asset == 'BNB' and bnb_price and bnb_price > 0:
-                fee_usd = fee * bnb_price
+            if fee_asset == 'BNB':
+                bnb_p = _get_bnb_price(fill.get('time', 0))
+                if bnb_p and bnb_p > 0:
+                    fee_usd = fee * bnb_p
+                else:
+                    fee_usd = Decimal('0')
             elif fee_asset not in ('USDC', 'USDT'):
                 fee_usd = Decimal('0')
             realized_pnl = Decimal(str(fill.get('realizedPnl', '0')))
