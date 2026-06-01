@@ -13,6 +13,7 @@ from .volatility import VolatilityAnalyzer
 from .liquidity import LiquidityAnalyzer
 from .scorer import ScalpingScorer
 from .tick_tracker import TickTracker
+from .price_range import PriceRangeTracker
 
 
 class IndicatorsManager:
@@ -22,6 +23,7 @@ class IndicatorsManager:
         self.volatility = VolatilityAnalyzer(max_klines=200)
         self.liquidity = LiquidityAnalyzer(max_levels=50, price_step=0.5)
         self.tick_tracker = TickTracker(window_seconds=30.0)
+        self.price_range = PriceRangeTracker(window_minutes=30.0)
         self.scorer = ScalpingScorer()
 
         # 动态参数（由交易系统传入）
@@ -55,7 +57,9 @@ class IndicatorsManager:
         更新 bookTicker 价格流（每秒约 5 次）
         记录到 tick 追踪器，用于震荡检测
         """
-        self.tick_tracker.add_tick(time.time(), float(price))
+        ts = time.time()
+        self.tick_tracker.add_tick(ts, float(price))
+        self.price_range.add_tick(ts, float(price))
 
     # ─── 动态参数设置 ──────────────────────────────────────────
 

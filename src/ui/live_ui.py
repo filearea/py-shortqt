@@ -100,7 +100,9 @@ class LiveTradingUI:
         asks = list(self.trader.orderbook.get('asks', [])[:levels])
         bids = list(self.trader.orderbook.get('bids', [])[:levels])
 
-        top_layout["orderbook"].update(Panel(self._render_orderbook_levels(asks, bids, levels), title="订单簿"))
+        # 订单簿：header（价格范围3行）+ 买卖盘
+        ob_renderable = self._render_orderbook_with_header(asks, bids, levels)
+        top_layout["orderbook"].update(Panel(ob_renderable, title="订单簿"))
         top_layout["history"].update(Panel(self._render_position_history(), title="历史持仓"))
         top_layout["account"].update(Panel(self._render_account(), title="账户"))
         layout["top"].update(top_layout)
@@ -248,6 +250,52 @@ class LiveTradingUI:
                 ob_table.add_row(f"[green]{price:.2f}[/green]", f"{qty:.3f}")
 
         return ob_table
+
+    def _render_orderbook_with_header(self, asks: list, bids: list, max_levels: int):
+        """订单簿 + 近X分钟价格范围头部"""
+        from rich.table import Table as RTable
+        wrapper = RTable(show_header=False, box=None, padding=(0, 0))
+        wrapper.add_column("", ratio=1, width=25)
+        wrapper.add_row(self._render_price_range_header())
+        wrapper.add_row(self._render_orderbook_levels(asks, bids, max_levels))
+        return wrapper
+
+    def _render_price_range_header(self) -> Text:
+        """渲染近X分钟最高/最低价（3行）"""
+        header = Text()
+
+        minutes = 30
+        if self.config_manager:
+            minutes = self.config_manager.get('price_range.minutes', 30)
+
+        high = None
+        low = None
+        if self.indicators and hasattr(self.indicators, 'price_range'):
+            high = self.indicators.price_range.get_high()
+            low = self.indicators.price_range.get_low()
+
+        current = float(self.trader.last_price) if self.trader.last_price else None
+
+        header.append(f"{minutes} 分钟内\n", style="dim")
+
+        if high is not None:
+            pct = f"+{(high - current) / current * 100:.2f}%" if current and current > 0 else ""
+            header.append(f"最高：{high:.2f}", style="green")
+            if pct:
+                header.append(f"  {pct}", style="green")
+        else:
+            header.append("最高：--", style="dim")
+        header.append("\n")
+
+        if low is not None:
+            pct = f"{(low - current) / current * 100:.2f}%" if current and current > 0 else ""
+            header.append(f"最低：{low:.2f}", style="red")
+            if pct:
+                header.append(f"  {pct}", style="red")
+        else:
+            header.append("最低：--", style="dim")
+
+        return header
 
     def _render_orderbook_levels(self, asks: list, bids: list, max_levels: int) -> Table:
         """渲染订单簿买卖盘（接收已截断的 asks/bids 列表）"""
@@ -523,6 +571,16 @@ class LiveTradingUI:
                     pnl = (entry - self.trader.last_price) * size
                 c = "green" if pnl >= 0 else "red"
                 acc_text.append(f"\n浮动：{pnl:+.6f} USDT", style=c)  # PnL 6 位
+
+                # 最高浮盈 / 最高浮亏
+                max_pnl = getattr(self.trader, '_max_float_pnl', None)
+                max_pnl_price = getattr(self.trader, '_max_float_pnl_price', None)
+                min_pnl = getattr(self.trader, '_min_float_pnl', None)
+                min_pnl_price = getattr(self.trader, '_min_float_pnl_price', None)
+                if max_pnl is not None and max_pnl_price is not None:
+                    acc_text.append(f"\n最高浮盈：{max_pnl:+.6f}U @ {max_pnl_price:.2f}", style="green")
+                if min_pnl is not None and min_pnl_price is not None:
+                    acc_text.append(f"\n最高浮亏：{min_pnl:+.6f}U @ {min_pnl_price:.2f}", style="red")
         
         elif self.trader.pending_order:
             order = self.trader.pending_order

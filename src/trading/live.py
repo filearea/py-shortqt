@@ -1556,6 +1556,20 @@ class LiveTrader:
     def update_price(self, price: Decimal):
         """更新最新价格"""
         self.last_price = price
+        # 持仓期间追踪最大浮盈/浮亏
+        if self.position and self.last_price:
+            entry = self.position['entry_price']
+            size = self.position['size']
+            if self.position['side'] == 'LONG':
+                pnl = (price - entry) * size
+            else:
+                pnl = (entry - price) * size
+            if not hasattr(self, '_max_float_pnl') or self._max_float_pnl is None or pnl > self._max_float_pnl:
+                self._max_float_pnl = pnl
+                self._max_float_pnl_price = price
+            if not hasattr(self, '_min_float_pnl') or self._min_float_pnl is None or pnl < self._min_float_pnl:
+                self._min_float_pnl = pnl
+                self._min_float_pnl_price = price
     
     def update_orderbook(self, bids: List, asks: List):
         """更新深度数据"""
@@ -1944,6 +1958,11 @@ class LiveTrader:
         }
         self.pending_order = None
         self._order_placed_at = None
+        # 重置最大浮盈/浮亏追踪
+        self._max_float_pnl = None
+        self._max_float_pnl_price = None
+        self._min_float_pnl = None
+        self._min_float_pnl_price = None
 
         # 记录信号特征
         if self.logger:

@@ -7,6 +7,7 @@
 import asyncio
 import sys
 import os
+import time
 import argparse
 import json
 from pathlib import Path
@@ -100,6 +101,9 @@ class LiveTradingBot:
         self.indicators = IndicatorsManager()
         # 设置交易参数（默认值，后续从配置同步）
         self.indicators.set_trading_params(tp_points=0.99, sl_points=3.99, leverage=50, balance_usdt=50.0)
+        # 同步近X分钟价格范围窗口
+        pr_minutes = self.config_manager.get('price_range.minutes', 30)
+        self.indicators.price_range.set_window(float(pr_minutes))
         
         # 初始化市场日志记录器（v1.4.0 新增）
         self.market_logger = MarketLogger(project_root / "logs")
@@ -248,7 +252,10 @@ class LiveTradingBot:
                     'is_closed': True
                 }
                 self.indicators.update_kline(kline)
-            
+
+            # 从历史 K 线填充近X分钟价格范围
+            self._seed_price_range(closed_klines)
+
             # 更新 recorder 的防重时间戳
             if closed_klines:
                 self.recorder._last_kline_ts = closed_klines[-1][0]
@@ -364,6 +371,39 @@ class LiveTradingBot:
         self.in_settings = True
         return True
 
+    def _seed_price_range(self, klines: list = None):
+        """
+        从历史 K 线填充 PriceRangeTracker
+        klines: 可选，已有的 K 线数据。为 None 时从 API 获取。
+        """
+        pr_minutes = self.config_manager.get('price_range.minutes', 30)
+        cutoff_ms = int((time.time() - pr_minutes * 60) * 1000)
+
+        source = klines
+        if source is None:
+            try:
+                limit = pr_minutes + 5
+                source = self.trader.api.get_klines(self.symbol, '1m', limit=limit)
+                if not source:
+                    return
+            except Exception:
+                return
+
+        self.indicators.price_range.clear()
+        seeds = []
+        for k in source:
+            if len(k) < 6:
+                continue
+            if k[0] < cutoff_ms:
+                continue
+            ts_sec = k[0] / 1000.0
+            seeds.append((ts_sec, float(k[2]), float(k[3])))
+        if seeds:
+            self.indicators.price_range.seed_from_klines(seeds)
+            self.log_manager.system.debug(
+                f'价格范围已刷新：{len(seeds)} 根 K 线（{pr_minutes} 分钟）'
+            )
+
     def _apply_settings(self):
         """设置保存后生效：杠杆同步 + 移动止损/浮亏保护配置重读"""
         self.trader._add_action("[OK] 配置已保存并退出", "")
@@ -400,6 +440,14 @@ class LiveTradingBot:
             self.log_manager.system.debug(
                 f"浮亏保护配置已刷新：{'启用' if lp_config.get('enabled') else '关闭'}"
             ) if self.log_manager else None
+
+        # 4. 刷新近X分钟价格范围（重设窗口 + 从API拉K线填充历史数据）
+        pr_minutes = self.config_manager.get('price_range.minutes', 30)
+        if self.indicators and hasattr(self.indicators, 'price_range'):
+            self.indicators.price_range.set_window(float(pr_minutes))
+            self._seed_price_range()  # 重新从API拉K线，确保新时间范围有数据
+            self.log_manager.system.debug(f"价格范围窗口已更新：{pr_minutes} 分钟"
+                                          ) if self.log_manager else None
 
         self.log_manager.system.debug(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
 

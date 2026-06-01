@@ -86,6 +86,8 @@ class SettingsUI:
                 'name': '系统设置',
                 'fields': [
                     {'key': 'sound.enabled', 'label': '音效开关', 'type': 'bool'},
+                    {'key': 'price_range.minutes', 'label': '近X分钟价格范围', 'type': 'int',
+                     'min': 1, 'max': 120, 'step': 1, 'unit': '分钟'},
                 ]
             }
         ]

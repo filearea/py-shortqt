@@ -50,6 +50,10 @@ class ConfigManager:
         "loss_protection": {
             "enabled": True,
             "trigger_minutes": 5
+        },
+        # v1.7.9 新增：近X分钟价格范围显示
+        "price_range": {
+            "minutes": 30
         }
     }
     

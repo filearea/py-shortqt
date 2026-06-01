@@ -9,6 +9,7 @@ from .volatility import VolatilityAnalyzer
 from .liquidity import LiquidityAnalyzer
 from .scorer import ScalpingScorer
 from .tick_tracker import TickTracker
+from .price_range import PriceRangeTracker
 from .manager import IndicatorsManager
 
 __all__ = [
@@ -16,5 +17,6 @@ __all__ = [
     'LiquidityAnalyzer',
     'ScalpingScorer',
     'TickTracker',
+    'PriceRangeTracker',
     'IndicatorsManager',
 ]
