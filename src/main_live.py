@@ -101,10 +101,6 @@ class LiveTradingBot:
         self.indicators = IndicatorsManager()
         # 设置交易参数（默认值，后续从配置同步）
         self.indicators.set_trading_params(tp_points=0.99, sl_points=3.99, leverage=50, balance_usdt=50.0)
-        # 同步近X分钟价格范围窗口
-        pr_minutes = self.config_manager.get('price_range.minutes', 30)
-        self.indicators.price_range.set_window(float(pr_minutes))
-        
         # 初始化市场日志记录器（v1.4.0 新增）
         self.market_logger = MarketLogger(project_root / "logs")
         
@@ -119,7 +115,11 @@ class LiveTradingBot:
         # 初始化配置管理器
         self.log_manager.system.info("正在初始化配置管理器...")
         self.config_manager = ConfigManager(project_root / "config" / "runtime.json")
-        
+
+        # 同步近X分钟价格范围窗口
+        pr_minutes = self.config_manager.get('price_range.minutes', 30)
+        self.indicators.price_range.set_window(float(pr_minutes))
+
         # 获取杠杆配置
         self.log_manager.system.info("正在读取杠杆配置...")
         api_lev, actual_lev = self.config_manager.get_leverage_config()
