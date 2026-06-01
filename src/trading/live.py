@@ -2172,19 +2172,13 @@ class LiveTrader:
             long_fills = [f for f in all_fills if f.get('positionSide') == 'LONG']
             short_fills = [f for f in all_fills if f.get('positionSide') == 'SHORT']
 
-            # 4. BNB 价格缓存（增量更新，失败回退实时价）
+            # 4. 确保 BNB 价格缓存就绪
             await self._ensure_bnb_prices()
-            bnb_fallback = Decimal('0')
-            if not self._bnb_prices:
-                try:
-                    bnb_fallback = Decimal(str(self.api.get_ticker_price('BNBUSDT')))
-                except Exception as e:
-                    self.log_manager.system.error(f"[BNB费率] 实时价格获取失败：{e}") if self.log_manager else None
 
             # 5. 配对
             history = []
-            history.extend(self._pair_positions('LONG', long_fills, funding, self._bnb_prices, bnb_fallback))
-            history.extend(self._pair_positions('SHORT', short_fills, funding, self._bnb_prices, bnb_fallback))
+            history.extend(self._pair_positions('LONG', long_fills, funding))
+            history.extend(self._pair_positions('SHORT', short_fills, funding))
 
             # 6. 排序：未平仓/部分平仓在最上面，按最后操作时间倒序
             STATUS_ORDER = {'未平仓': 0, '部分平仓': 1, '完全平仓': 2}
@@ -2200,48 +2194,50 @@ class LiveTrader:
         except Exception as e:
             self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
 
-    def _pair_positions(self, side: str, fills: list, funding: list, bnb_prices: dict = None, bnb_fallback: Decimal = None) -> list:
+    def _get_bnb_price_for_time(self, trade_time_ms: int) -> Decimal:
+        """根据成交时间戳获取 BNB 价格（缓存K线优先，失败回退实时价）"""
+        ts = trade_time_ms // 1000
+        if self._bnb_prices:
+            minute_ts = (ts // 60) * 60
+            if minute_ts in self._bnb_prices:
+                return self._bnb_prices[minute_ts]
+            for offset in range(1, 3):
+                for candidate in (minute_ts - offset * 60, minute_ts + offset * 60):
+                    if candidate in self._bnb_prices:
+                        return self._bnb_prices[candidate]
+        # 回退实时价
+        try:
+            return Decimal(str(self.api.get_ticker_price('BNBUSDT')))
+        except Exception:
+            return None
+
+    def _convert_fee_usd(self, fill: dict) -> Decimal:
+        """将单笔成交的手续费换算为 USD 等值（兼容 BNB 抵扣）"""
+        fee = Decimal(str(fill.get('commission', '0')))
+        fee_asset = fill.get('commissionAsset', 'USDC')
+        if fee_asset == 'BNB':
+            bnb_p = self._get_bnb_price_for_time(fill.get('time', 0))
+            if bnb_p and bnb_p > 0:
+                return fee * bnb_p
+            # 所有价格查找都失败时保留原始 BNB 数量，不置零
+            return fee
+        if fee_asset not in ('USDC', 'USDT'):
+            return Decimal('0')
+        return fee
+
+    def _pair_positions(self, side: str, fills: list, funding: list) -> list:
         """将同一方向的成交配对成持仓记录（一个开仓周期只生成一条最终记录）"""
         if not fills:
             return []
 
         positions = []
         current = None
-        bnb_prices = bnb_prices or {}
-        bnb_fallback = bnb_fallback or Decimal('0')
-
-        def _get_bnb_price(trade_time_ms: int) -> Decimal:
-            """根据成交时间戳查找最接近的 BNB 价格（1分钟K线），失败回退到实时价"""
-            ts = trade_time_ms // 1000
-            # 优先从 K 线匹配
-            if bnb_prices:
-                minute_ts = (ts // 60) * 60
-                if minute_ts in bnb_prices:
-                    return bnb_prices[minute_ts]
-                for offset in range(1, 3):
-                    for candidate in (minute_ts - offset * 60, minute_ts + offset * 60):
-                        if candidate in bnb_prices:
-                            return bnb_prices[candidate]
-            # 回退到实时价
-            if bnb_fallback > 0:
-                return bnb_fallback
-            return None
 
         # 时间字段用 'time'（不是 tradeTime）
         for fill in sorted(fills, key=lambda x: x.get('time', 0)):
             price = Decimal(str(fill['price']))
             qty = Decimal(str(fill['qty']))
-            fee = Decimal(str(fill.get('commission', '0')))
-            fee_asset = fill.get('commissionAsset', 'USDC')
-            # BNB 抵扣换算为 USDT 等值（按成交时刻的 BNB 价格，失败回退实时价）
-            fee_usd = fee
-            if fee_asset == 'BNB':
-                bnb_p = _get_bnb_price(fill.get('time', 0))
-                if bnb_p and bnb_p > 0:
-                    fee_usd = fee * bnb_p
-                # 所有价格查找都失败时保留原始 BNB 数量，不置零
-            elif fee_asset not in ('USDC', 'USDT'):
-                fee_usd = Decimal('0')
+            fee_usd = self._convert_fee_usd(fill)
             realized_pnl = Decimal(str(fill.get('realizedPnl', '0')))
             trade_time_ms = fill.get('time', 0)
             trade_time = datetime.fromtimestamp(trade_time_ms / 1000)
@@ -2404,6 +2400,7 @@ class LiveTrader:
                 price = Decimal(str(fill['price']))
                 qty = Decimal(str(fill['qty']))
                 realized_pnl = Decimal(str(fill.get('realizedPnl', '0')))
+                fee_usd = self._convert_fee_usd(fill)
                 is_buyer = fill.get('buyer', False)
                 is_open = (side == 'LONG' and is_buyer) or (side == 'SHORT' and not is_buyer)
                 trade_time_ms = fill.get('time', 0)
@@ -2416,6 +2413,7 @@ class LiveTrader:
                             'opened_qty': qty,
                             'total_cost': price * qty,
                             'realized_pnl': Decimal('0'),
+                            'total_fee': Decimal('0'),
                         }
                     else:
                         current_open['total_qty'] += qty
@@ -2425,6 +2423,7 @@ class LiveTrader:
                     if current_open:
                         current_open['total_qty'] -= qty
                         current_open['realized_pnl'] += realized_pnl
+                        current_open['total_fee'] += fee_usd
                         current_open['close_time_ms'] = trade_time_ms
 
                         if current_open['total_qty'] <= 0:
@@ -2433,7 +2432,7 @@ class LiveTrader:
                             if close_ms >= cutoff_24h:
                                 hold_times.append(close_ms - current_open['open_time_ms'])
                                 completed_rounds += 1
-                                pnl = current_open['realized_pnl']
+                                pnl = current_open['realized_pnl'] - current_open['total_fee']
                                 total_pnl += pnl
                                 total_volume += current_open['opened_qty']
                                 if pnl > 0:
