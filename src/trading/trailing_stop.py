@@ -195,16 +195,25 @@ class TrailingStopManager:
                 except Exception:
                     pass
 
+                # 计算持仓时长
+                pos_time = pos.get('time')
+                duration_str = ""
+                if pos_time:
+                    elapsed = int((datetime.now() - pos_time).total_seconds())
+                    h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
+                    duration_str = f" | 持仓 {h:02d}:{m:02d}:{s:02d}"
+
                 # 计算 PnL
                 if close_price and entry_price and size:
                     if side == 'LONG':
                         pnl = (close_price - entry_price) * size
                     else:
                         pnl = (entry_price - close_price) * size
-                    self.trader._add_action("持仓同步",
-                        f"交易所已无持仓 | PnL: {pnl:+.2f} USDT (成交价 {close_price:.2f})")
+                    self.trader._add_action("持仓同步成交",
+                        f"交易所已无持仓 | PnL: {pnl:+.2f} USDT{duration_str} | 平仓均价 {close_price:.2f}")
                 else:
-                    self.trader._add_action("持仓同步", "交易所已无持仓，清理本地状态")
+                    self.trader._add_action("持仓同步成交",
+                        f"交易所已无持仓，清理本地状态{duration_str}")
 
                 if self.trader.log_manager:
                     if close_price:

@@ -284,15 +284,24 @@ class LiveTrader:
                 except Exception:
                     pass
 
+                # 计算持仓时长
+                duration_str = ""
+                if pos_time:
+                    elapsed = int((datetime.now() - pos_time).total_seconds())
+                    h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
+                    duration_str = f" | 持仓 {h:02d}:{m:02d}:{s:02d}"
+
                 if exit_price > 0:
                     if pos_side == 'LONG':
                         pnl = (exit_price - entry_price) * pos_size - commission
                     else:
                         pnl = (entry_price - exit_price) * pos_size - commission
                     pnl_str = f"{pnl:+.6f} USDT"
-                    self._add_action("持仓同步成交", f"PnL: {pnl_str}")
+                    self._add_action("持仓同步成交",
+                        f"PnL: {pnl_str}{duration_str} | 平仓均价 {exit_price:.2f}")
                 else:
-                    self._add_action("持仓同步成交", "持仓已清除（无法获取平仓价）")
+                    self._add_action("持仓同步成交",
+                        f"持仓已清除（无法获取平仓价）{duration_str}")
 
                 # 主动刷新账户余额
                 self.sync_account()
@@ -343,6 +352,25 @@ class LiveTrader:
         self.log_manager.system.debug(f"[订单更新] 状态={order_status}, 类型={order_type}, ID={order_id}, 方向={order_data.get('S', '?')}") if self.log_manager else None
         self.log_manager.system.debug(f"  成交数量：{order_data.get('z', 0)}, 成交均价：{order_data.get('ap', 0)}") if self.log_manager else None
         self.log_manager.system.debug(f"  手续费：{order_data.get('fc', 0)} {order_data.get('fs', 'USDC')}") if self.log_manager else None
+
+        # 新版 TradingLogger — 记录订单生命周期
+        if self.log_manager:
+            try:
+                if order_status == 'FILLED':
+                    self.log_manager.trading.log_order_filled(
+                        order_id=str(order_id),
+                        avg_price=float(order_data.get('ap', 0)),
+                        filled_qty=float(order_data.get('z', 0)),
+                        commission=float(order_data.get('fc', 0)),
+                        commission_asset=str(order_data.get('fs', 'USDC')),
+                    )
+                elif order_status in ('CANCELED', 'EXPIRED', 'REJECTED'):
+                    self.log_manager.trading.log_order_canceled(
+                        order_id=str(order_id),
+                        reason=order_status,
+                    )
+            except Exception:
+                pass
         
         # 开仓挂单成交
         if self.pending_order and self.pending_order.get('orderId') == order_id:
@@ -704,7 +732,7 @@ class LiveTrader:
                 if self.position:
                     self.log_manager.system.debug(f"[持仓同步-_sync] 交易所无持仓，清理本地状态（持仓方向={self.position.get('side')}）") if self.log_manager else None
                     self.sync_account()
-                    self._add_action("持仓同步", "持仓已清空，撤销所有挂单")
+                    self._add_action("持仓同步成交", "持仓已清空，撤销所有挂单")
 
                     # 批量撤销所有订单（普通订单 + 条件单）
                     try:
@@ -738,11 +766,13 @@ class LiveTrader:
                         self.log_manager.system.debug(f"[浮动盈亏] PnL: {unrealized_pnl:+.2f} USDT") if self.log_manager else None
                         self._add_action("持仓更新", f"{side} {actual_size} @ {entry_price} | PnL: {unrealized_pnl:+.2f}")
                 
+                # 保留原始开仓时间，不被同步覆盖
+                old_time = self.position.get('time') if self.position else None
                 self.position = {
                     'side': side,
                     'entry_price': entry_price,
                     'size': actual_size,
-                    'time': datetime.now()
+                    'time': old_time or datetime.now()
                 }
         
         except Exception as e:
@@ -792,6 +822,23 @@ class LiveTrader:
         # 根据 action 触发音效
         self._trigger_sound(action)
 
+        # 平仓动作：附加最大浮盈浮亏
+        close_actions = ('止盈成交', '止损成交', '保底止损成交', '提前平仓成交',
+                         '移动止损成交', '手动平仓成交', '持仓同步成交', '浮亏保护成交')
+        is_close = any(kw in action for kw in close_actions)
+        if is_close:
+            max_pnl = getattr(self, '_max_float_pnl', None)
+            max_pnl_price = getattr(self, '_max_float_pnl_price', None)
+            min_pnl = getattr(self, '_min_float_pnl', None)
+            min_pnl_price = getattr(self, '_min_float_pnl_price', None)
+            extras = []
+            if max_pnl is not None and max_pnl_price is not None:
+                extras.append(f"最大浮盈 {max_pnl:+.6f}U @ {max_pnl_price:.2f}")
+            if min_pnl is not None and min_pnl_price is not None:
+                extras.append(f"最大浮亏 {min_pnl:+.6f}U @ {min_pnl_price:.2f}")
+            if extras:
+                details = f"{details} | {' | '.join(extras)}"
+
         # 内存日志（用于 TUI 显示）
         self.action_log.append({'time': datetime.now(), 'action': action, 'details': details})
         if len(self.action_log) > 20:
@@ -821,6 +868,9 @@ class LiveTrader:
                         
                         self.logger.log_trade('开仓成交', {'details': details})
                         self.logger.log_position(side, price, size, 0)
+                        # 新版 TradingLogger
+                        if self.log_manager:
+                            self.log_manager.trading.log_position_open(side, price, size)
                     except Exception as e:
                         # 解析失败，记录原始日志
                         self.logger.log_trade('开仓成交', {'details': details, 'error': str(e)})
@@ -839,9 +889,78 @@ class LiveTrader:
                     self.logger.log_trade('平仓成交', {'details': details, 'pnl': pnl})
                     self.logger.log_pnl('平仓成交', pnl)
                     self.logger.log_position('CLOSE', 0, 0, pnl)
+                else:
+                    # 其他成交类型（持仓同步成交等）
+                    pnl = float(details.split('PnL:')[1].strip().split(' ')[0]) if 'PnL:' in details else 0
+                    self.logger.log_trade(action, {'details': details, 'pnl': pnl})
+                    self.logger.log_pnl(action, pnl)
+                    self.logger.log_position('CLOSE', 0, 0, pnl)
+                # 新版 TradingLogger — 统一下平仓日志
+                if is_close and self.log_manager:
+                    self._log_close_to_trading_logger(action, details)
             elif '挂单' in action or '已下' in action:
                 self.logger.log_order(action, {'details': details})
+            else:
+                # 其他操作日志（持仓超时、撤销挂单、开仓撤销 等）
+                self.logger.log_trade(action, {'details': details})
     
+    def _log_close_to_trading_logger(self, action: str, details: str):
+        """将平仓事件写入新版 TradingLogger"""
+        try:
+            import re as _re
+            pos = self.position
+            if not pos:
+                return
+            side = pos.get('side', '')
+            entry_price = float(pos.get('entry_price', 0))
+            size = float(pos.get('size', 0))
+            pnl = 0.0
+            m = _re.search(r'PnL:\s*([+-]?[\d.]+)', details)
+            if m:
+                pnl = float(m.group(1))
+            exit_price = 0.0
+            m = _re.search(r'平仓均价\s*([\d.]+)', details)
+            if m:
+                exit_price = float(m.group(1))
+            duration_sec = None
+            pos_time = pos.get('time')
+            if pos_time:
+                duration_sec = (datetime.now() - pos_time).total_seconds()
+            pnl_pct = (pnl / (entry_price * size) * 100) if entry_price and size else 0.0
+
+            reason_map = {
+                '止盈': 'TP',
+                '止损': 'SL',
+                '保底止损': 'STOP_MARKET',
+                '提前平仓': 'MANUAL',
+                '移动止损': 'TS',
+                '手动平仓': 'MANUAL',
+                '持仓同步': 'SYNC',
+                '浮亏保护': 'LOSS_PROTECTION',
+            }
+            reason = 'UNKNOWN'
+            for kw, mapped in reason_map.items():
+                if kw in action:
+                    reason = mapped
+                    break
+
+            max_pnl = getattr(self, '_max_float_pnl', None)
+            max_pnl_price = getattr(self, '_max_float_pnl_price', None)
+            min_pnl = getattr(self, '_min_float_pnl', None)
+            min_pnl_price = getattr(self, '_min_float_pnl_price', None)
+
+            self.log_manager.trading.log_position_close(
+                side=side, exit_price=exit_price, size=size,
+                pnl=pnl, pnl_pct=pnl_pct, reason=reason,
+                entry_price=entry_price, duration_sec=duration_sec,
+                max_float_pnl=float(max_pnl) if max_pnl is not None else None,
+                max_float_pnl_price=float(max_pnl_price) if max_pnl_price is not None else None,
+                min_float_pnl=float(min_pnl) if min_pnl is not None else None,
+                min_float_pnl_price=float(min_pnl_price) if min_pnl_price is not None else None,
+            )
+        except Exception:
+            pass
+
     async def _safe_place_tp_sl_orders(self):
         """安全地下止盈止损单（包装异常处理）"""
         try:
@@ -1801,7 +1920,8 @@ class LiveTrader:
             'LOSS_PROTECTION': '浮亏保护成交',
         }.get(trigger_type, '平仓成交')
 
-        self._add_action(action_name, f"PnL: {pnl_str}")
+        self._add_action(action_name,
+            f"PnL: {pnl_str} | 平仓均价 {exit_price:.2f}" if exit_price > 0 else f"PnL: {pnl_str}")
         self.sync_account()
 
         if self.logger:

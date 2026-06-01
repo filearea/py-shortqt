@@ -143,7 +143,9 @@ class TradingLogger:
     
     def log_position_close(self, side: str, exit_price: float, size: float,
                            pnl: float, pnl_pct: float, reason: str,
-                           entry_price: float = None, duration_sec: float = None):
+                           entry_price: float = None, duration_sec: float = None,
+                           max_float_pnl: float = None, max_float_pnl_price: float = None,
+                           min_float_pnl: float = None, min_float_pnl_price: float = None):
         """记录平仓"""
         data = {
             'ts': datetime.now().isoformat(),
@@ -155,7 +157,11 @@ class TradingLogger:
             'pnl': pnl,
             'pnl_pct': pnl_pct,
             'reason': reason,  # 'TP', 'SL', 'MANUAL', 'STOP_MARKET'
-            'duration_sec': duration_sec
+            'duration_sec': duration_sec,
+            'max_float_pnl': max_float_pnl,
+            'max_float_pnl_price': max_float_pnl_price,
+            'min_float_pnl': min_float_pnl,
+            'min_float_pnl_price': min_float_pnl_price,
         }
         self._write_line(data)
     

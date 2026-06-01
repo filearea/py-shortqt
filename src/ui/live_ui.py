@@ -5,6 +5,7 @@
 
 import os
 import re
+from datetime import datetime
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
@@ -279,7 +280,7 @@ class LiveTradingUI:
         header.append(f"{minutes} 分钟内\n", style="dim")
 
         if high is not None:
-            pct = f"+{(high - current) / current * 100:.2f}%" if current and current > 0 else ""
+            pct = f"+{(high - current) / current * 100:.4f}%" if current and current > 0 else ""
             header.append(f"最高：{high:.2f}", style="green")
             if pct:
                 header.append(f"  {pct}", style="green")
@@ -288,7 +289,7 @@ class LiveTradingUI:
         header.append("\n")
 
         if low is not None:
-            pct = f"{(low - current) / current * 100:.2f}%" if current and current > 0 else ""
+            pct = f"{(low - current) / current * 100:.4f}%" if current and current > 0 else ""
             header.append(f"最低：{low:.2f}", style="red")
             if pct:
                 header.append(f"  {pct}", style="red")
@@ -494,7 +495,14 @@ class LiveTradingUI:
                 pnl_color = "green" if pnl >= 0 else "red"
                 return f" ({pnl:+.2f}U)", pnl_color
 
-            acc_text.append(f"持仓：{side}\n", style=f"bold {color}")
+            pos_time = pos.get('time')
+            if pos_time:
+                elapsed = int((datetime.now() - pos_time).total_seconds())
+                h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
+                duration_str = f"{h:02d}:{m:02d}:{s:02d}"
+            else:
+                duration_str = "--:--:--"
+            acc_text.append(f"持仓：{side}  {duration_str}\n", style=f"bold {color}")
             acc_text.append(f"开仓价：{entry:.2f}\n")  # 价格 2 位
             acc_text.append(f"数量：{size:.3f} ETH\n\n")
 
