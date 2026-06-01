@@ -2145,18 +2145,25 @@ class LiveTrader:
 
             # 4. 获取 BNB 历史价格（用于手续费换算，取成交时刻价格）
             bnb_prices = {}  # {timestamp_sec: price}
+            bnb_fallback = Decimal('0')
             try:
-                bnb_klines = self.api.get_klines('BNBUSDT', '1m', limit=min(days * 1440, 10000))
+                bnb_klines = self.api.get_klines('BNBUSDT', '1m', limit=min(days * 1440, 1500))
                 for k in bnb_klines:
                     ts = k[0] // 1000  # 开盘时间（秒）
                     bnb_prices[ts] = Decimal(str(k[4]))  # 收盘价
-            except Exception:
-                pass
+            except Exception as e:
+                self.log_manager.system.warning(f"[BNB费率] K线拉取失败：{e}") if self.log_manager else None
+            # K 线拉取失败时，回退到当前 BNB 价格
+            if not bnb_prices:
+                try:
+                    bnb_fallback = Decimal(str(self.api.get_ticker_price('BNBUSDT')))
+                except Exception as e:
+                    self.log_manager.system.error(f"[BNB费率] 实时价格获取也失败：{e}") if self.log_manager else None
 
             # 5. 配对
             history = []
-            history.extend(self._pair_positions('LONG', long_fills, funding, bnb_prices))
-            history.extend(self._pair_positions('SHORT', short_fills, funding, bnb_prices))
+            history.extend(self._pair_positions('LONG', long_fills, funding, bnb_prices, bnb_fallback))
+            history.extend(self._pair_positions('SHORT', short_fills, funding, bnb_prices, bnb_fallback))
 
             # 6. 排序：未平仓/部分平仓在最上面，按最后操作时间倒序
             STATUS_ORDER = {'未平仓': 0, '部分平仓': 1, '完全平仓': 2}
@@ -2172,7 +2179,7 @@ class LiveTrader:
         except Exception as e:
             self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
 
-    def _pair_positions(self, side: str, fills: list, funding: list, bnb_prices: dict = None) -> list:
+    def _pair_positions(self, side: str, fills: list, funding: list, bnb_prices: dict = None, bnb_fallback: Decimal = None) -> list:
         """将同一方向的成交配对成持仓记录（一个开仓周期只生成一条最终记录）"""
         if not fills:
             return []
@@ -2180,21 +2187,23 @@ class LiveTrader:
         positions = []
         current = None
         bnb_prices = bnb_prices or {}
+        bnb_fallback = bnb_fallback or Decimal('0')
 
         def _get_bnb_price(trade_time_ms: int) -> Decimal:
-            """根据成交时间戳查找最接近的 BNB 价格（1分钟K线）"""
-            if not bnb_prices:
-                return None
+            """根据成交时间戳查找最接近的 BNB 价格（1分钟K线），失败回退到实时价"""
             ts = trade_time_ms // 1000
-            # 对齐到分钟
-            minute_ts = (ts // 60) * 60
-            if minute_ts in bnb_prices:
-                return bnb_prices[minute_ts]
-            # 前后 1 分钟找最近的
-            for offset in range(1, 3):
-                for candidate in (minute_ts - offset * 60, minute_ts + offset * 60):
-                    if candidate in bnb_prices:
-                        return bnb_prices[candidate]
+            # 优先从 K 线匹配
+            if bnb_prices:
+                minute_ts = (ts // 60) * 60
+                if minute_ts in bnb_prices:
+                    return bnb_prices[minute_ts]
+                for offset in range(1, 3):
+                    for candidate in (minute_ts - offset * 60, minute_ts + offset * 60):
+                        if candidate in bnb_prices:
+                            return bnb_prices[candidate]
+            # 回退到实时价
+            if bnb_fallback > 0:
+                return bnb_fallback
             return None
 
         # 时间字段用 'time'（不是 tradeTime）
@@ -2203,14 +2212,13 @@ class LiveTrader:
             qty = Decimal(str(fill['qty']))
             fee = Decimal(str(fill.get('commission', '0')))
             fee_asset = fill.get('commissionAsset', 'USDC')
-            # BNB 抵扣换算为 USDT 等值（按成交时刻的 BNB 价格）
+            # BNB 抵扣换算为 USDT 等值（按成交时刻的 BNB 价格，失败回退实时价）
             fee_usd = fee
             if fee_asset == 'BNB':
                 bnb_p = _get_bnb_price(fill.get('time', 0))
                 if bnb_p and bnb_p > 0:
                     fee_usd = fee * bnb_p
-                else:
-                    fee_usd = Decimal('0')
+                # 所有价格查找都失败时保留原始 BNB 数量，不置零
             elif fee_asset not in ('USDC', 'USDT'):
                 fee_usd = Decimal('0')
             realized_pnl = Decimal(str(fill.get('realizedPnl', '0')))
