@@ -66,6 +66,8 @@ class LiveTrader:
         # BNB 价格缓存（用于手续费换算）
         self._bnb_prices: dict = {}       # {timestamp_sec: Decimal}
         self._bnb_last_fetch_ms: int = 0
+        self._bnb_ticker_price: Decimal = Decimal('0')
+        self._bnb_ticker_ts: float = 0
 
         # 24 小时交易统计
         self.trade_stats_24h: dict = {}
@@ -2112,12 +2114,12 @@ class LiveTrader:
             pass
 
     async def _ensure_bnb_prices(self):
-        """增量更新 BNB 价格缓存，避免每次持仓变动都全量拉取"""
+        """增量更新 BNB 价格缓存（在线程池执行，避免阻塞事件循环）"""
         now_ms = int(datetime.now().timestamp() * 1000)
         if self._bnb_last_fetch_ms == 0:
             # 首次拉满 1500 根 1m K线
             try:
-                klines = self.api.get_klines('BNBUSDT', '1m', limit=1500)
+                klines = await asyncio.to_thread(self.api.get_klines, 'BNBUSDT', '1m', limit=1500)
                 for k in klines:
                     ts = k[0] // 1000
                     self._bnb_prices[ts] = Decimal(str(k[4]))
@@ -2127,7 +2129,10 @@ class LiveTrader:
         else:
             # 增量拉取：从上次最后时间到现在
             try:
-                klines = self.api.get_klines('BNBUSDT', '1m', startTime=self._bnb_last_fetch_ms, limit=500)
+                klines = await asyncio.to_thread(
+                    self.api.get_klines, 'BNBUSDT', '1m',
+                    startTime=self._bnb_last_fetch_ms, limit=500
+                )
                 for k in klines:
                     ts = k[0] // 1000
                     self._bnb_prices[ts] = Decimal(str(k[4]))
@@ -2142,31 +2147,37 @@ class LiveTrader:
         await self.fetch_position_history()
 
     async def fetch_position_history(self, days: int = 7):
-        """从币安拉取成交记录，配对生成历史持仓"""
+        """从币安拉取成交记录，配对生成历史持仓（API 调用在线程池执行）"""
         try:
-            import time
-            now_ms = int(time.time() * 1000)
+            import time as _time
+            now_ms = int(_time.time() * 1000)
             start_ms = now_ms - days * 86400000
 
-            # 1. 分页拉取所有成交
+            # 1. 分页拉取所有成交（线程池，不阻塞事件循环）
             all_fills = []
             from_id = None
             while True:
-                fills = self.api.get_fills(self.symbol, limit=1000, startTime=start_ms, endTime=now_ms, fromId=from_id)
+                fills = await asyncio.to_thread(
+                    self.api.get_fills, self.symbol, limit=1000,
+                    startTime=start_ms, endTime=now_ms, fromId=from_id
+                )
                 if not fills:
                     break
                 all_fills.extend(fills)
                 if len(fills) < 1000:
                     break
                 from_id = fills[-1].get('id') + 1
-                if len(all_fills) > 10000:  # 安全上限
+                if len(all_fills) > 10000:
                     break
 
             if not all_fills:
                 return
 
-            # 2. 拉取资费记录
-            funding = self.api.get_income_history(self.symbol, incomeType='FUNDING_FEE', startTime=start_ms, endTime=now_ms, limit=1000)
+            # 2. 拉取资费记录（线程池）
+            funding = await asyncio.to_thread(
+                self.api.get_income_history, self.symbol, incomeType='FUNDING_FEE',
+                startTime=start_ms, endTime=now_ms, limit=1000
+            )
 
             # 3. 按 positionSide 分组
             long_fills = [f for f in all_fills if f.get('positionSide') == 'LONG']
@@ -2180,16 +2191,16 @@ class LiveTrader:
             history.extend(self._pair_positions('LONG', long_fills, funding))
             history.extend(self._pair_positions('SHORT', short_fills, funding))
 
-            # 6. 排序：未平仓/部分平仓在最上面，按最后操作时间倒序
+            # 6. 排序
             STATUS_ORDER = {'未平仓': 0, '部分平仓': 1, '完全平仓': 2}
             history.sort(key=lambda x: (
                 STATUS_ORDER.get(x.get('status', '完全平仓'), 2),
                 -x.get('last_action_time_ms', 0),
             ))
-            self.position_history = history[:10]  # 最多保留 10 条
+            self.position_history = history[:10]
 
-            # 7. 更新 24h 交易统计
-            self._update_trade_stats_24h()
+            # 7. 更新 24h 交易统计（复用已拉取的 fills，避免重复 API 调用）
+            self._update_trade_stats_24h(all_fills)
 
         except Exception as e:
             self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
@@ -2205,9 +2216,14 @@ class LiveTrader:
                 for candidate in (minute_ts - offset * 60, minute_ts + offset * 60):
                     if candidate in self._bnb_prices:
                         return self._bnb_prices[candidate]
-        # 回退实时价
+        # 回退缓存实时价（60s 内不重复请求）
+        now = time.time()
+        if now - self._bnb_ticker_ts < 60 and self._bnb_ticker_price > 0:
+            return self._bnb_ticker_price
         try:
-            return Decimal(str(self.api.get_ticker_price('BNBUSDT')))
+            self._bnb_ticker_price = Decimal(str(self.api.get_ticker_price('BNBUSDT')))
+            self._bnb_ticker_ts = now
+            return self._bnb_ticker_price
         except Exception:
             return None
 
@@ -2346,30 +2362,31 @@ class LiveTrader:
                 pos_funding += Decimal(str(f.get('income', '0')))
         return pos_funding
 
-    def _update_trade_stats_24h(self):
+    def _update_trade_stats_24h(self, all_fills: list = None):
         """计算近 24 小时交易统计（按仓位最后平仓时间筛选）"""
-        import time
-        now_ms = int(time.time() * 1000)
+        import time as _time
+        now_ms = int(_time.time() * 1000)
         day_ms = 86400000
-        pull_window_ms = 7 * day_ms  # 拉取 7 天成交，确保跨 24h 窗口的完整仓位能配对
 
-        # 拉取近 7 天成交（全量，不限方向）
-        try:
-            all_fills = []
-            from_id = None
-            while True:
-                fills = self.api.get_fills(self.symbol, limit=1000, startTime=now_ms - pull_window_ms, endTime=now_ms, fromId=from_id)
-                if not fills:
-                    break
-                all_fills.extend(fills)
-                if len(fills) < 1000:
-                    break
-                from_id = fills[-1].get('id') + 1
-                if len(all_fills) > 10000:
-                    break
-        except Exception:
-            self.trade_stats_24h = {'error': True}
-            return
+        # 如果外部已传入 fills（来自 fetch_position_history），直接复用避免重复 API 调用
+        if all_fills is None:
+            pull_window_ms = 7 * day_ms
+            try:
+                all_fills = []
+                from_id = None
+                while True:
+                    fills = self.api.get_fills(self.symbol, limit=1000, startTime=now_ms - pull_window_ms, endTime=now_ms, fromId=from_id)
+                    if not fills:
+                        break
+                    all_fills.extend(fills)
+                    if len(fills) < 1000:
+                        break
+                    from_id = fills[-1].get('id') + 1
+                    if len(all_fills) > 10000:
+                        break
+            except Exception:
+                self.trade_stats_24h = {'error': True}
+                return
 
         if not all_fills:
             self.trade_stats_24h = {

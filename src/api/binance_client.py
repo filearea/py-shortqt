@@ -59,9 +59,9 @@ class BinanceClient:
             # 签名后，把参数字符串直接拼接到 URL（避免 requests 再次编码）
             query_string = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
             url = f"{url}?{query_string}"
-            response = self.session.get(url)
+            response = self.session.get(url, timeout=10)
         else:
-            response = self.session.get(url, params=params)
+            response = self.session.get(url, params=params, timeout=10)
         
         return self._handle_response(response)
     
@@ -99,9 +99,9 @@ class BinanceClient:
             params = build_signed_params(params or {}, self.api_secret)
             # 签名后，把参数字符串直接作为 data 发送（避免 requests 再次编码）
             data = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
-            response = self.session.post(url, data=data)
+            response = self.session.post(url, data=data, timeout=10)
         else:
-            response = self.session.post(url, data=params)
+            response = self.session.post(url, data=params, timeout=10)
         
         return self._handle_response(response)
     
@@ -114,9 +114,9 @@ class BinanceClient:
             # 签名后，把参数字符串直接拼接到 URL
             query_string = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
             url = f"{url}?{query_string}"
-            response = self.session.delete(url)
+            response = self.session.delete(url, timeout=10)
         else:
-            response = self.session.delete(url, params=params)
+            response = self.session.delete(url, params=params, timeout=10)
         
         return self._handle_response(response)
     
@@ -364,7 +364,7 @@ class BinanceClient:
     def _put(self, path: str, params: dict = None) -> dict:
         """PUT 请求（用于 listenKey 保活）"""
         url = f"{self.base_url}{path}"
-        response = self.session.put(url, params=params)
+        response = self.session.put(url, params=params, timeout=10)
         return self._handle_response(response)
 
 
