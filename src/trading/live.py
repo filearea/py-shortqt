@@ -2183,8 +2183,9 @@ class LiveTrader:
             long_fills = [f for f in all_fills if f.get('positionSide') == 'LONG']
             short_fills = [f for f in all_fills if f.get('positionSide') == 'SHORT']
 
-            # 4. 确保 BNB 价格缓存就绪
-            await self._ensure_bnb_prices()
+            # 4. 仅当存在 BNB 抵扣手续费时才拉取 BNB 价格缓存
+            if any(f.get('commissionAsset') == 'BNB' for f in all_fills):
+                await self._ensure_bnb_prices()
 
             # 5. 配对
             history = []
