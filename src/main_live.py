@@ -556,10 +556,12 @@ class LiveTradingBot:
         except Exception as e:
             self.log_manager.system.warning(f"历史数据补全失败：{e}，程序将继续运行")
         
-        # 5. 启动历史持仓轮询（每 20 秒刷新一次）
+        # 5. 启动历史持仓轮询
+        #    持仓变更由事件驱动 _refresh_history_delayed 实时刷新，
+        #    空闲时每 5 分钟兜底同步一次，避免无谓 API 消耗。
         async def _history_poll():
             while self.running:
-                await asyncio.sleep(20)
+                await asyncio.sleep(300)
                 try:
                     await self.trader.fetch_position_history()
                 except Exception:
