@@ -517,14 +517,14 @@ class LiveTradingBot:
                 error_msg = str(e)
                 if "too many requests" in error_msg.lower() or "banned" in error_msg.lower():
                     print(f"\n[ERROR] API 请求频率过高，IP 可能被限制")
-                    print(f"错误：{e}")
+                    print(f"完整错误：{e}")
                     print("\n建议：")
                     print("1. 等待 1-2 分钟让 IP 解封")
                     print("2. 检查是否有多个程序同时运行")
                     print("3. 使用 WebSocket 订阅代替轮询")
                     return
                 if retry < max_retries - 1:
-                    print(f"初始化错误：{e}，{retry + 1}/{max_retries}，5 秒后重试...")
+                    print(f"初始化失败：{e}，{retry + 1}/{max_retries}，5 秒后重试...")
                     await asyncio.sleep(5)
                 else:
                     print(f"\n[ERROR] 实盘初始化失败：{e}，退出")
@@ -877,7 +877,11 @@ async def main(account_name: str = None):
     print()
     
     # 创建并运行机器人
-    bot = LiveTradingBot(api_key, api_secret, name)
+    try:
+        bot = LiveTradingBot(api_key, api_secret, name)
+    except Exception as e:
+        print(f"\n[ERROR] 机器人初始化失败：{e}")
+        return
     await bot.run()
 
 

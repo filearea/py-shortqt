@@ -50,6 +50,55 @@ def _fmt_time(dt, now=None) -> str:
     return dt.strftime('%m-%d %H:%M')
 
 
+class DepthPressureTracker:
+    """买卖盘占优滚动采样器 — 100ms 采样，5 分钟窗口，百分比展示"""
+
+    def __init__(self, window_minutes: int = 5, sample_interval_ms: int = 100):
+        from collections import deque
+        import time as _time
+        self._deque = deque
+        self._time = _time
+        self._sample_interval = sample_interval_ms / 1000.0
+        self._window = window_minutes * 60.0
+        self._buy_ts = deque()
+        self._sell_ts = deque()
+        self._last_sample = 0.0
+
+    def sample(self, imbalance: float):
+        """采样：imbalance > 0.15 买盘+1，< -0.15 卖盘+1，势均力敌不+分"""
+        now = self._time.time()
+        if now - self._last_sample < self._sample_interval:
+            return
+        self._last_sample = now
+        if imbalance > 0.15:
+            self._buy_ts.append(now)
+        elif imbalance < -0.15:
+            self._sell_ts.append(now)
+        self._prune(now)
+
+    def _prune(self, now: float):
+        cutoff = now - self._window
+        while self._buy_ts and self._buy_ts[0] < cutoff:
+            self._buy_ts.popleft()
+        while self._sell_ts and self._sell_ts[0] < cutoff:
+            self._sell_ts.popleft()
+
+    def get_ratio(self) -> tuple:
+        """返回 (buy_percent, sell_percent)，无数据返回 (0, 0)"""
+        now = self._time.time()
+        self._prune(now)
+        b, s = len(self._buy_ts), len(self._sell_ts)
+        total = b + s
+        if total == 0:
+            return 0.0, 0.0
+        return b / total * 100, s / total * 100
+
+    @property
+    def total_samples(self) -> int:
+        self._prune(self._time.time())
+        return len(self._buy_ts) + len(self._sell_ts)
+
+
 class LiveTradingUI:
     """实盘交易界面 - v1.4.0"""
     
@@ -63,6 +112,7 @@ class LiveTradingUI:
         self.stop_loss = stop_loss
         self.config_manager = config_manager  # 配置管理器，用于读取止盈止损配置
         self.indicators = indicators  # v1.4.0 新增：指标管理器
+        self.depth_pressure = DepthPressureTracker(window_minutes=5, sample_interval_ms=100)  # v1.7.13: 买卖盘压力滚动采样
     
     def render(self, console_height: int = None) -> Layout:
         """渲染界面 - v1.6.6 布局"""
@@ -764,17 +814,16 @@ class LiveTradingUI:
         liq_row.append(f" 买:{bid_str}ETH", style="green")
         liq_row.append(f" 卖:{ask_str}ETH", style="red")
 
-        # 深度对比（固定4字文案，不抖动）
+        # 买卖盘压力滚动采样（100ms 采样，5 分钟窗口百分比展示）
         if total_depth > 0:
             imbalance = (bid_depth - ask_depth) / total_depth
-            if abs(imbalance) <= 0.15:
-                liq_row.append(" 势均力敌", style="dim")
-            elif imbalance > 0.15:
-                liq_row.append(" 买盘占优", style="green")
-            else:
-                liq_row.append(" 卖盘占优", style="red")
+            self.depth_pressure.sample(imbalance)
+        buy_pct, sell_pct = self.depth_pressure.get_ratio()
+        if self.depth_pressure.total_samples > 0:
+            liq_row.append(f" 买盘{buy_pct:.2f}%:卖盘{sell_pct:.2f}%",
+                          style="green" if buy_pct >= sell_pct else "red")
         else:
-            liq_row.append(" 势均力敌", style="dim")
+            liq_row.append(" 采样中...", style="dim")
         
         # 第三行：综合评分 + 方向 + 分类评分
         score_row = Text()

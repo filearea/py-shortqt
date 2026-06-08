@@ -170,11 +170,15 @@ class LiveTrader:
         
         except BinanceAPIError as e:
             msg = f"✗ API 错误：[{e.code}] {e.msg}"
-            (self.log_manager.system.error(msg, exc_info=True) if self.log_manager else print(msg))
+            print(msg)
+            if self.log_manager:
+                self.log_manager.system.error(msg, exc_info=True)
             return False
         except Exception as e:
             msg = f"✗ 初始化失败：{e}"
-            (self.log_manager.system.error(msg, exc_info=True) if self.log_manager else print(msg))
+            print(msg)
+            if self.log_manager:
+                self.log_manager.system.error(msg, exc_info=True)
             return False
     
     async def _start_user_stream(self):
