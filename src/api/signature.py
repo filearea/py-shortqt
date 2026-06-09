@@ -9,6 +9,17 @@ import hashlib
 import time
 from urllib.parse import urlencode
 
+# 本地时间与币安服务器时间的偏移量（毫秒），正数表示本地慢于服务器
+_time_offset = 0
+
+
+def sync_time(server_time_ms: int) -> int:
+    """根据服务器时间计算时间偏移量，后续 get_timestamp() 会自动修正"""
+    global _time_offset
+    local_now = int(time.time() * 1000)
+    _time_offset = server_time_ms - local_now
+    return _time_offset
+
 
 def generate_signature(secret: str, params: dict) -> str:
     """
@@ -38,8 +49,8 @@ def generate_signature(secret: str, params: dict) -> str:
 
 
 def get_timestamp() -> int:
-    """获取当前时间戳（毫秒）"""
-    return int(time.time() * 1000)
+    """获取当前时间戳（毫秒），自动加上服务器时间偏移量"""
+    return int(time.time() * 1000) + _time_offset
 
 
 def build_signed_params(params: dict, secret: str, recv_window: int = 5000) -> dict:

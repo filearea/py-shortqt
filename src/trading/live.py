@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Optional, Dict, List
 
 from src.api.binance_client import BinanceClient, BinanceAPIError
+from src.api.signature import get_timestamp
 from src.api.user_stream_ws import UserStreamWebSocket
 from src.logger import TradeLogger
 from src.trading.trailing_stop import TrailingStopManager
@@ -134,8 +135,9 @@ class LiveTrader:
         self.log_manager.system.debug("=" * 70) if self.log_manager else None
         
         try:
-            server_time = self.api.get_server_time()
-            self.log_manager.system.debug(f"✓ API 连接成功，服务器时间：{datetime.fromtimestamp(server_time/1000)}") if self.log_manager else None
+            offset = self.api.sync_time()
+            server_time_ms = get_timestamp()
+            self.log_manager.system.debug(f"✓ API 连接成功，服务器时间：{datetime.fromtimestamp(server_time_ms/1000)}（偏移：{offset:+d}ms）") if self.log_manager else None
             
             account = self.api.get_account()
             for asset in account.get('assets', []):

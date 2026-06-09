@@ -10,7 +10,7 @@ from pathlib import Path
 import json
 import asyncio
 
-from .signature import build_signed_params, get_timestamp
+from .signature import build_signed_params, get_timestamp, sync_time
 from .rate_limiter import RateLimiter, BINANCE_WEIGHTS
 
 
@@ -134,6 +134,11 @@ class BinanceClient:
         """获取服务器时间"""
         data = self._get('/fapi/v1/time')
         return data['serverTime']
+
+    def sync_time(self) -> int:
+        """同步本地时间与服务器时间，返回偏移量（毫秒）"""
+        server_time = self.get_server_time()
+        return sync_time(server_time)
     
     def get_exchange_info(self, symbol: str = None) -> dict:
         """获取交易规则"""
