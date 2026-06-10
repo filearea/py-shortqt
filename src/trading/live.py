@@ -73,6 +73,10 @@ class LiveTrader:
         # 24 小时交易统计
         self.trade_stats_24h: dict = {}
 
+        # 隐私脱敏：启动时快照账户余额作为百分比基数
+        self._privacy_baseline: Optional[Decimal] = None
+        self._privacy_baseline_set: bool = False
+
         # 账户信息
         self.available_balance: Decimal = Decimal('0')
         self.position_margin: Decimal = Decimal('0')
@@ -129,6 +133,74 @@ class LiveTrader:
         ]):
             self.play_ding(3)  # 平仓响三声
 
+    def format_money(self, value: Decimal) -> str:
+        """格式化金额用于 TUI 显示（自动应用隐私脱敏）
+
+        脱敏关闭：返回绝对金额字符串，如 "1.5 USDT"
+        脱敏开启：返回相对百分比字符串，如 "0.250%"
+        注意：此方法仅用于 TUI 显示，日志写入使用原始金额
+        """
+        privacy_enabled = False
+        if self.config_manager:
+            privacy_enabled = self.config_manager.get('privacy.enabled', False)
+
+        if not privacy_enabled or self._privacy_baseline is None or self._privacy_baseline == 0:
+            f_val = float(value)
+            if f_val == 0:
+                return '0 USDT'
+            formatted = f'{f_val:.6f}'.rstrip('0').rstrip('.')
+            return f"{formatted} USDT"
+        else:
+            pct = float(value / self._privacy_baseline * Decimal('100'))
+            if pct == 0:
+                return '0.000%'
+            # 保留3位小数，去尾零
+            formatted = f'{pct:.3f}'.rstrip('0').rstrip('.')
+            return f"{formatted}%"
+
+    def mask_log_text(self, detail: str) -> str:
+        """对日志文本中的金额进行脱敏匹配替换
+
+        匹配 USDT/USDC/U 前的浮点数（含正负号），替换为百分比。
+        脱敏关闭时直接返回原字符串。
+        """
+        privacy_enabled = False
+        if self.config_manager:
+            privacy_enabled = self.config_manager.get('privacy.enabled', False)
+
+        if not privacy_enabled or self._privacy_baseline is None or self._privacy_baseline == 0:
+            return detail
+
+        import re
+        # 匹配：可选正负号 + 浮点数 + U(随后的 SDT/SDC 可选)
+        pattern = re.compile(r'([+-]?\d+\.\d+)\s*(USDT|USDC|U)\b')
+
+        def _replacer(m):
+            amount_str = m.group(1)
+            try:
+                amount = Decimal(amount_str)
+                pct = float(amount / self._privacy_baseline * Decimal('100'))
+                formatted = f'{pct:.3f}'.rstrip('0').rstrip('.')
+                return f"{formatted}%"
+            except Exception:
+                return m.group(0)
+
+        return pattern.sub(_replacer, detail)
+
+    def _get_calendar_day_cutoff_ms(self, tz_str: str, now_ms: int) -> int:
+        """计算给定 UTC 时区今天 00:00:00 对应的 UTC 毫秒时间戳"""
+        import calendar as _calendar
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        try:
+            offset_hours = float(tz_str)
+        except (ValueError, TypeError):
+            offset_hours = 8.0
+        tz = _tz(_td(hours=offset_hours))
+        now_dt = _dt.fromtimestamp(now_ms / 1000.0, tz=tz)
+        today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff_dt_utc = today_start.astimezone(_tz.utc)
+        return int(_calendar.timegm(cutoff_dt_utc.timetuple()) * 1000)
+
     async def initialize(self) -> bool:
         """初始化"""
         self.log_manager.system.debug("\n初始化实盘交易...") if self.log_manager else None
@@ -143,8 +215,12 @@ class LiveTrader:
             for asset in account.get('assets', []):
                 if asset['asset'] == 'USDC':
                     self.available_balance = Decimal(asset['availableBalance'])
+                    # 记录启动时余额基数（用于金额脱敏）
+                    if not self._privacy_baseline_set and self.available_balance > 0:
+                        self._privacy_baseline = self.available_balance
+                        self._privacy_baseline_set = True
                     break
-            
+
             self.log_manager.system.debug(f"✓ 账户余额：{self.available_balance} USDC") if self.log_manager else None
             self.api.set_leverage(self.symbol, self.leverage_limit)
             self.log_manager.system.debug(f"✓ 杠杆已设置：{self.leverage_limit}x") if self.log_manager else None
@@ -2113,6 +2189,10 @@ class LiveTrader:
             for asset in account.get('assets', []):
                 if asset['asset'] == 'USDC':
                     self.available_balance = Decimal(asset['availableBalance'])
+                    # 兜底：如果 initialize 中未设置基数，此处设置
+                    if not self._privacy_baseline_set and self.available_balance > 0:
+                        self._privacy_baseline = self.available_balance
+                        self._privacy_baseline_set = True
                     break
             self.position_margin = Decimal(account.get('totalPositionInitialMargin', 0))
             self.order_margin = Decimal(account.get('totalOpenOrderInitialMargin', 0))
@@ -2370,10 +2450,17 @@ class LiveTrader:
         return pos_funding
 
     def _update_trade_stats_24h(self, all_fills: list = None):
-        """计算近 24 小时交易统计（按仓位最后平仓时间筛选）"""
+        """计算交易统计（按配置周期筛选 -- 近24小时或自然日）"""
         import time as _time
         now_ms = int(_time.time() * 1000)
         day_ms = 86400000
+
+        # 读取统计周期配置
+        if self.config_manager:
+            stats_period = self.config_manager.get('stats_period', {})
+            mode = stats_period.get('mode', '24h')
+        else:
+            mode = '24h'
 
         # 如果外部已传入 fills（来自 fetch_position_history），直接复用避免重复 API 调用
         if all_fills is None:
@@ -2406,7 +2493,11 @@ class LiveTrader:
 
         # 统计完整持仓轮次（每笔开仓 → 完全平仓算1轮）
         # 先用 7 天数据配对，再用平仓时间筛选 24 小时内
-        cutoff_24h = now_ms - day_ms
+        if mode == 'calendar_day':
+            tz_str = self.config_manager.get('stats_period.timezone', '+8') if self.config_manager else '+8'
+            cutoff_24h = self._get_calendar_day_cutoff_ms(tz_str, now_ms)
+        else:
+            cutoff_24h = now_ms - day_ms
         completed_rounds = 0
         total_volume = Decimal('0')
         total_pnl = Decimal('0')

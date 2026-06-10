@@ -160,7 +160,18 @@ class LiveTradingUI:
 
         layout["footer"].update(Panel(self._render_log(), title="日志"))
         layout["indicators"].update(Panel(self._render_indicators(), title="盘面指标"))
-        layout["stats"].update(Panel(self._render_stats(), title="数据统计（24h）"))
+        # 动态标题：根据配置显示统计周期
+        if self.trader and hasattr(self.trader, 'config_manager') and self.trader.config_manager:
+            stats_period = self.trader.config_manager.get('stats_period', {})
+            mode = stats_period.get('mode', '24h')
+            if mode == 'calendar_day':
+                tz = stats_period.get('timezone', '+8')
+                stats_title = f"数据统计（自然日 UTC{tz}）"
+            else:
+                stats_title = "数据统计（24h）"
+        else:
+            stats_title = "数据统计（24h）"
+        layout["stats"].update(Panel(self._render_stats(), title=stats_title))
 
         return layout
     
@@ -461,11 +472,11 @@ class LiveTradingUI:
             if status == '未平仓':
                 history_text.append("PnL: --", style="yellow")
             elif pnl and pnl > 0:
-                history_text.append(f"PnL: +{_fmt_num(pnl)}U", style="green")
+                history_text.append(f"PnL: +{self.trader.format_money(pnl)}", style="green")
             elif pnl and pnl < 0:
-                history_text.append(f"PnL: {_fmt_num(pnl)}U", style="red")
+                history_text.append(f"PnL: {self.trader.format_money(pnl)}", style="red")
             else:
-                history_text.append("PnL: 0U", style="gray")
+                history_text.append(f"PnL: {self.trader.format_money(Decimal('0'))}", style="gray")
 
             history_text.append("\n")
 
@@ -489,19 +500,19 @@ class LiveTradingUI:
             history_text.append("\n")
 
             # 第4行：费用
-            history_text.append(f"手续费 {_fmt_num(fee)}U  ", style="dim")
+            history_text.append(f"手续费 {self.trader.format_money(fee)}  ", style="dim")
             if status == '未平仓':
                 history_text.append("资费 --  ", style="dim")
                 history_text.append("净利 --", style="dim")
             else:
                 net_pnl = pnl - fee - funding if pnl else Decimal('0')
-                history_text.append(f"资费 {_fmt_num(funding)}U  ", style="dim")
+                history_text.append(f"资费 {self.trader.format_money(funding)}  ", style="dim")
                 if net_pnl > 0:
-                    history_text.append(f"净利 +{_fmt_num(net_pnl)}U", style="green")
+                    history_text.append(f"净利 +{self.trader.format_money(net_pnl)}", style="green")
                 elif net_pnl < 0:
-                    history_text.append(f"净利 {_fmt_num(net_pnl)}U", style="red")
+                    history_text.append(f"净利 {self.trader.format_money(net_pnl)}", style="red")
                 else:
-                    history_text.append("净利 0U", style="gray")
+                    history_text.append(f"净利 {self.trader.format_money(Decimal('0'))}", style="gray")
             history_text.append("\n")
 
             # 空行分隔
@@ -523,9 +534,9 @@ class LiveTradingUI:
         total_occupied = position_margin + order_margin
         
         acc_text.append("可用：", style="default")
-        acc_text.append(f"{available:.6f} U\n", style="green")
+        acc_text.append(f"{self.trader.format_money(self.trader.available_balance)}\n", style="green")
         acc_text.append("占用：", style="default")
-        acc_text.append(f"{total_occupied:.6f} U\n\n", style="yellow")
+        acc_text.append(f"{self.trader.format_money(Decimal(str(total_occupied)))}\n\n", style="yellow")
         
         # 持仓信息
         if self.trader.position:
@@ -543,7 +554,8 @@ class LiveTradingUI:
                 else:
                     pnl = (entry - price) * size
                 pnl_color = "green" if pnl >= 0 else "red"
-                return f" ({pnl:+.2f}U)", pnl_color
+                sign = '+' if pnl >= 0 else ''
+                return f" ({sign}{self.trader.format_money(pnl)})", pnl_color
 
             pos_time = pos.get('time')
             if pos_time:
@@ -628,7 +640,8 @@ class LiveTradingUI:
                 else:
                     pnl = (entry - self.trader.last_price) * size
                 c = "green" if pnl >= 0 else "red"
-                acc_text.append(f"\n浮动：{pnl:+.6f} USDT", style=c)  # PnL 6 位
+                sign_pnl = '+' if pnl >= 0 else ''
+                acc_text.append(f"\n浮动：{sign_pnl}{self.trader.format_money(pnl)}", style=c)  # PnL 6 位
 
                 # 最高浮盈 / 最高浮亏
                 max_pnl = getattr(self.trader, '_max_float_pnl', None)
@@ -636,9 +649,11 @@ class LiveTradingUI:
                 min_pnl = getattr(self.trader, '_min_float_pnl', None)
                 min_pnl_price = getattr(self.trader, '_min_float_pnl_price', None)
                 if max_pnl is not None and max_pnl_price is not None:
-                    acc_text.append(f"\n最高浮盈：{max_pnl:+.6f}U @ {max_pnl_price:.2f}", style="green")
+                    sign_max = '+' if max_pnl >= 0 else ''
+                    acc_text.append(f"\n最高浮盈：{sign_max}{self.trader.format_money(max_pnl)} @ {max_pnl_price:.2f}", style="green")
                 if min_pnl is not None and min_pnl_price is not None:
-                    acc_text.append(f"\n最高浮亏：{min_pnl:+.6f}U @ {min_pnl_price:.2f}", style="red")
+                    sign_min = '+' if min_pnl >= 0 else ''
+                    acc_text.append(f"\n最高浮亏：{sign_min}{self.trader.format_money(min_pnl)} @ {min_pnl_price:.2f}", style="red")
         
         elif self.trader.pending_order:
             order = self.trader.pending_order
@@ -881,13 +896,12 @@ class LiveTradingUI:
         stats_text.append("交易量:", style="bold cyan")
         stats_text.append(f"{_fmt_num(total_volume)}ETH  ", style="default")
         stats_text.append("累计盈亏:", style="bold cyan")
-        pnl_val = float(total_pnl)
-        if pnl_val > 0:
-            stats_text.append(f"+{_fmt_num(pnl_val)}U  ", style="green")
-        elif pnl_val < 0:
-            stats_text.append(f"{_fmt_num(pnl_val)}U  ", style="red")
+        if total_pnl > 0:
+            stats_text.append(f"+{self.trader.format_money(total_pnl)}  ", style="green")
+        elif total_pnl < 0:
+            stats_text.append(f"{self.trader.format_money(total_pnl)}  ", style="red")
         else:
-            stats_text.append("0U  ", style="dim")
+            stats_text.append(f"{self.trader.format_money(Decimal('0'))}  ", style="dim")
         stats_text.append("胜率:", style="bold cyan")
         if win_rate > 50:
             stats_text.append(f"{win_rate:.2f}%  ", style="green")
@@ -908,11 +922,11 @@ class LiveTradingUI:
         stats_text.append("期望:", style="bold cyan")
         ev = stats.get('expected_value', 0)
         if ev > 0:
-            stats_text.append(f"+{_fmt_num(ev)}U  ", style="green")
+            stats_text.append(f"+{self.trader.format_money(Decimal(str(ev)))}  ", style="green")
         elif ev < 0:
-            stats_text.append(f"{_fmt_num(ev)}U  ", style="red")
+            stats_text.append(f"{self.trader.format_money(Decimal(str(ev)))}  ", style="red")
         else:
-            stats_text.append("0U  ", style="dim")
+            stats_text.append(f"{self.trader.format_money(Decimal('0'))}  ", style="dim")
         stats_text.append("平均持仓时间:", style="bold cyan")
         stats_text.append(str(avg_hold), style="default")
 
@@ -946,119 +960,124 @@ class LiveTradingUI:
 
                 # --- 优先：含 PnL 的日志，按盈亏着色 ---
                 pnl_style = _pnl_style_from_details(details)
+                # 对日志文本进行金额脱敏（仅TUI显示，日志文件保留原始值）
+                if hasattr(self.trader, 'mask_log_text'):
+                    details_masked = self.trader.mask_log_text(details)
+                else:
+                    details_masked = details
 
                 # 0. 部分成交/超时撤单（优先匹配）
                 if '部分成交' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="bold yellow")
-                    log_text.append(f"{details}\n", style="yellow")
+                    log_text.append(f"{details_masked}\n", style="yellow")
 
                 elif '超时撤单' in action_name:
                     if '失败' in action_name:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold red")
-                        log_text.append(f"{details}\n", style="red")
+                        log_text.append(f"{details_masked}\n", style="red")
                     else:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold cyan")
-                        log_text.append(f"{details}\n", style="cyan")
+                        log_text.append(f"{details_masked}\n", style="cyan")
 
                 # 1. 成交类 — 含 PnL 的按盈亏，否则按类型
                 elif '成交' in action_name:
                     if pnl_style:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style=f"bold {pnl_style}")
-                        log_text.append(f"{details}\n", style=pnl_style)
+                        log_text.append(f"{details_masked}\n", style=pnl_style)
                     elif '开仓' in action_name:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold cyan")
-                        log_text.append(f"{details}\n", style="cyan")
+                        log_text.append(f"{details_masked}\n", style="cyan")
                     elif '止盈' in action_name:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold green")
-                        log_text.append(f"{details}\n", style="green")
+                        log_text.append(f"{details_masked}\n", style="green")
                     elif '止损' in action_name or '保底止损' in action_name:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold red")
-                        log_text.append(f"{details}\n", style="red")
+                        log_text.append(f"{details_masked}\n", style="red")
                     else:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold yellow")
-                        log_text.append(f"{details}\n", style="yellow")
+                        log_text.append(f"{details_masked}\n", style="yellow")
 
                 # 2. 下单类（止盈/止损/保底/开仓/提前平仓）
                 elif '已下' in action_name or '挂单' in action_name:
                     if '止盈' in action_name:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold green")
-                        log_text.append(f"{details}\n", style="green")
+                        log_text.append(f"{details_masked}\n", style="green")
                     elif '止损' in action_name or '保底' in action_name:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold red")
-                        log_text.append(f"{details}\n", style="red")
+                        log_text.append(f"{details_masked}\n", style="red")
                     else:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold blue")
-                        log_text.append(f"{details}\n", style="blue")
+                        log_text.append(f"{details_masked}\n", style="blue")
 
                 # 3. 撤销/取消类
                 elif '撤销' in action_name or '取消' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="dim yellow")
-                    log_text.append(f"{details}\n", style="dim yellow")
+                    log_text.append(f"{details_masked}\n", style="dim yellow")
 
                 # 4. 持仓同步/更新类
                 elif '持仓同步' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="bold cyan")
-                    log_text.append(f"{details}\n", style=pnl_style if pnl_style else "cyan")
+                    log_text.append(f"{details_masked}\n", style=pnl_style if pnl_style else "cyan")
 
                 # 5. 持仓超时（浮亏保护 / 浮盈保本）
                 elif '持仓超时' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="bold yellow")
-                    log_text.append(f"{details}\n", style=pnl_style if pnl_style else "yellow")
+                    log_text.append(f"{details_masked}\n", style=pnl_style if pnl_style else "yellow")
 
                 # 6. 移动止损
                 elif '移动止损' in action_name:
                     if '失败' in action_name or '失败' in details:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold red")
-                        log_text.append(f"{details}\n", style="red")
+                        log_text.append(f"{details_masked}\n", style="red")
                     else:
                         log_text.append(f"{time_str}  ", style="dim")
                         log_text.append(f"{action_name}  ", style="bold cyan")
-                        log_text.append(f"{details}\n", style="cyan")
+                        log_text.append(f"{details_masked}\n", style="cyan")
 
                 # 7. 恢复/保护类（止盈恢复、浮盈保护等）
                 elif '恢复' in action_name or '保护' in action_name or '保本' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="bold green")
-                    log_text.append(f"{details}\n", style="green")
+                    log_text.append(f"{details_masked}\n", style="green")
 
                 # 8. 错误/失败类
                 elif '错误' in action_name or '失败' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="bold red")
-                    log_text.append(f"{details}\n", style="red")
+                    log_text.append(f"{details_masked}\n", style="red")
 
                 # 9. 初始化/开始
                 elif '初始化' in action_name or '开始' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="bold green")
-                    log_text.append(f"{details}\n", style="green")
+                    log_text.append(f"{details_masked}\n", style="green")
 
                 # 10. 检测类
                 elif '检测' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="dim")
-                    log_text.append(f"{details}\n", style="default")
+                    log_text.append(f"{details_masked}\n", style="default")
 
                 # 11. 异常类
                 elif '异常' in action_name:
                     log_text.append(f"{time_str}  ", style="dim")
                     log_text.append(f"{action_name}  ", style="bold red")
-                    log_text.append(f"{details}\n", style="red")
+                    log_text.append(f"{details_masked}\n", style="red")
 
                 # 12. 默认
                 else:

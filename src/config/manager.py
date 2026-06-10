@@ -54,6 +54,15 @@ class ConfigManager:
         # v1.7.9 新增：近X分钟价格范围显示
         "price_range": {
             "minutes": 30
+        },
+        # v1.8.0 新增：统计周期配置
+        "stats_period": {
+            "mode": "24h",
+            "timezone": "+8"
+        },
+        # v1.8.0 新增：金额脱敏配置
+        "privacy": {
+            "enabled": False
         }
     }
     

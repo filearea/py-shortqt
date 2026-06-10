@@ -1,15 +1,17 @@
 {
     "take_profit": {
-        "mode": "fixed",
-        "points": 1.0,
-        "percent": 2.0
+        "mode": "atr14",
+        "points": 0.15,
+        "percent": 2.0,
+        "atr14_coefficient": 0.34
     },
     "stop_loss": {
-        "trigger_mode": "fixed",
-        "trigger_points": 6.0,
+        "trigger_mode": "atr14",
+        "trigger_points": 2.0,
         "trigger_percent": 0.5,
         "limit_mode": "queue",
-        "limit_offset": 25.0
+        "limit_offset": 25.0,
+        "atr14_coefficient": 1.5
     },
     "stop_market": {
         "max_loss_percent": 25.0
@@ -21,11 +23,24 @@
     "order_timeout_seconds": 2.0,
     "trailing_stop": {
         "enabled": true,
-        "grid_count": 10
+        "grid_count": 6
     },
     "loss_protection": {
         "enabled": true,
-        "trigger_minutes": 0.5
+        "trigger_minutes": 1.5
     },
-    "last_modified": "2026-04-05T19:07:57.313406"
+    "last_modified": "2026-06-10T22:30:11.125609",
+    "sound": {
+        "enabled": true
+    },
+    "price_range": {
+        "minutes": 30
+    },
+    "stats_period": {
+        "mode": "24h",
+        "timezone": "+8"
+    },
+    "privacy": {
+        "enabled": false
+    }
 }

@@ -88,6 +88,11 @@ class SettingsUI:
                     {'key': 'sound.enabled', 'label': '音效开关', 'type': 'bool'},
                     {'key': 'price_range.minutes', 'label': '近X分钟价格范围', 'type': 'int',
                      'min': 1, 'max': 120, 'step': 1, 'unit': '分钟'},
+                    {'key': 'stats_period.mode', 'label': '统计周期模式', 'type': 'select',
+                     'options': ['24h', 'calendar_day'], 'labels': ['近24小时', '自然日']},
+                    {'key': 'stats_period.timezone', 'label': '自然日时区', 'type': 'string',
+                     'visible_cond': lambda c: c.get('stats_period', {}).get('mode') == 'calendar_day'},
+                    {'key': 'privacy.enabled', 'label': '金额脱敏', 'type': 'bool'},
                 ]
             }
         ]
@@ -214,7 +219,13 @@ class SettingsUI:
             entry_price = Decimal('2150.00')
             balance = Decimal('35.00')
         
-        lines.append(f"[bold]实时计算预览（开仓价 {entry_price:.2f}，多单，保证金 {balance:.2f}U）[/bold]")
+        # 格式化金额（支持脱敏）
+        if self.trader:
+            balance_str = self.trader.format_money(balance)
+        else:
+            balance_str = f"{balance:.2f} USDT"
+
+        lines.append(f"[bold]实时计算预览（开仓价 {entry_price:.2f}，多单，保证金 {balance_str}）[/bold]")
         
         # 获取实际杠杆，计算仓位
         leverage_config = self.config_manager.get('leverage', {})
@@ -246,7 +257,12 @@ class SettingsUI:
         sl_pnl_pct = (sl_pnl / balance * Decimal('100')) if balance > 0 else Decimal('0')
         max_loss_pct = Decimal(str(self.config_manager.get('stop_market.max_loss_percent', 30)))
 
-        lines.append(f"  仓位：{size:.3f} ETH (名义价值：{notional:.2f}U)")
+        # 格式化名义价值
+        if self.trader:
+            notional_str = self.trader.format_money(notional)
+        else:
+            notional_str = f"{notional:.2f} USDT"
+        lines.append(f"  仓位：{size:.3f} ETH (名义价值：{notional_str})")
         # 如果当前模式是 ATR14，显示 ATR 计算详情
         tp_mode = self.config_manager.get('take_profit.mode', 'fixed')
         sl_mode = self.config_manager.get('stop_loss.trigger_mode', 'fixed')
@@ -265,8 +281,17 @@ class SettingsUI:
             else:
                 lines.append(f"  止损 ATR14：×{sl_coeff:.1f} (无 ATR 数据)")
         lines.append(f"  止盈价：{tp_price:.2f}  止损触发：{sl_trigger:.2f}  保底：{sm_price:.2f}")
-        lines.append(f"  止盈 PnL：+{tp_pnl:.2f}U (+{tp_pnl_pct:.1f}%)")
-        lines.append(f"  止损亏损：{sl_pnl:.2f}U ({sl_pnl_pct:.1f}%)  保底最大损失：{max_loss_usd:.2f}U ({max_loss_pct:.1f}%)")
+        # 格式化 PnL 预览金额
+        if self.trader:
+            tp_pnl_str = f"+{self.trader.format_money(tp_pnl)}" if tp_pnl >= 0 else self.trader.format_money(tp_pnl)
+            sl_pnl_str = self.trader.format_money(sl_pnl)
+            max_loss_str = self.trader.format_money(max_loss_usd)
+        else:
+            tp_pnl_str = f"+{tp_pnl:.2f} USDT" if tp_pnl >= 0 else f"{tp_pnl:.2f} USDT"
+            sl_pnl_str = f"{sl_pnl:.2f} USDT"
+            max_loss_str = f"{max_loss_usd:.2f} USDT"
+        lines.append(f"  止盈 PnL：{tp_pnl_str} (+{tp_pnl_pct:.1f}%)")
+        lines.append(f"  止损亏损：{sl_pnl_str} ({sl_pnl_pct:.1f}%)  保底最大损失：{max_loss_str} ({max_loss_pct:.1f}%)")
         
         # 盈亏比
         tp_diff = tp_price - entry_price
@@ -349,6 +374,11 @@ class SettingsUI:
         lines = []
 
         for i, field in enumerate(self.tabs[3]['fields']):
+            # 检查可见性条件
+            if 'visible_cond' in field:
+                if not field['visible_cond'](config):
+                    continue
+
             is_selected = (i == self.current_field)
             value = self._get_nested_value(config, field['key'])
 
@@ -357,16 +387,61 @@ class SettingsUI:
 
                 if is_selected:
                     if self.editing:
-                        option_strs = [f"[green]●开启[/green]" if value else "○开启", "●关闭" if not value else "○关闭"]
+                        option_strs = [f"[green]●开启[/green]" if value else "○开启",
+                                      "●关闭" if not value else "○关闭"]
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] {' '.join(option_strs)}  ←→切换  Enter 确认")
                     else:
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][←→切换][/dim]")
                 else:
                     lines.append(f"  {field['label']}: {label}")
 
+            elif field['type'] in ['int', 'float']:
+                unit = field.get('unit', '')
+
+                if is_selected:
+                    if self.editing:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{self.input_buffer}_[/green]  [dim][数字输入 Enter 确认][/dim]")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{value}{unit}[/green]  [dim][←→调整 或 Enter 输入][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {value}{unit}")
+
+            elif field['type'] == 'select':
+                options = field['options']
+                labels = field.get('labels', options)
+                current_idx = options.index(value) if value in options else 0
+                label = labels[current_idx]
+
+                if is_selected:
+                    if self.editing:
+                        option_strs = []
+                        for j, opt_label in enumerate(labels):
+                            if j == current_idx:
+                                option_strs.append(f"[green]●{opt_label}[/green]")
+                            else:
+                                option_strs.append(f"○{opt_label}")
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] {' '.join(option_strs)}  ←→切换  Enter 确认")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][←→切换][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {label}")
+
+            elif field['type'] == 'string':
+                display = value if value else field.get('placeholder', '')
+
+                if is_selected:
+                    if self.editing:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{self.input_buffer}_[/green]  [dim][文本输入 Enter 确认][/dim]")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{display}[/green]  [dim][Enter 编辑][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {display}")
+
         lines.append("")
         lines.append("─" * 50)
         lines.append("[dim]音效：开仓成交、平仓等操作时播放提示音[/dim]")
+        lines.append("[dim]统计周期：近24小时为滚动窗口，自然日为指定时区的当日0点-24点[/dim]")
+        lines.append("[dim]金额脱敏：开启后 TUI 中金额显示为相对于启动时余额的百分比[/dim]")
 
         return lines
 
@@ -700,18 +775,33 @@ class SettingsUI:
         
         return 'continue'
 
+    def _get_visible_system_fields(self) -> List[Tuple[int, dict]]:
+        """获取系统设置标签页可见字段列表"""
+        config = self.config_manager.get_config()
+        visible = []
+        for i, field in enumerate(self.tabs[3]['fields']):
+            if 'visible_cond' in field:
+                if not field['visible_cond'](config):
+                    continue
+            visible.append((i, field))
+        return visible
+
     def _handle_system_tab_key(self, key: str) -> str:
         """处理系统设置标签页的按键"""
         config = self.config_manager.get_config()
-        fields = self.tabs[3]['fields']
+        visible_fields = self._get_visible_system_fields()
 
-        max_field = len(fields) - 1
+        if not visible_fields:
+            return 'continue'
+
+        max_field = len(visible_fields) - 1
         if self.current_field > max_field:
             self.current_field = max_field
         if self.current_field < 0:
             self.current_field = 0
 
-        field = fields[self.current_field]
+        visible_idx = self.current_field
+        field_idx, field = visible_fields[visible_idx]
 
         if self.editing:
             if field['type'] == 'bool':
@@ -724,13 +814,97 @@ class SettingsUI:
                 elif key == 'enter':
                     self.editing = False
                     self.input_buffer = ""
+
+            elif field['type'] == 'select':
+                if key == 'left':
+                    options = field['options']
+                    current = self._get_nested_value(config, field['key'])
+                    current_idx = options.index(current) if current in options else 0
+                    new_idx = (current_idx - 1) % len(options)
+                    self._set_nested_value(config, field['key'], options[new_idx])
+                    self.config_manager.config = config
+                    self.modified = True
+                elif key == 'right':
+                    options = field['options']
+                    current = self._get_nested_value(config, field['key'])
+                    current_idx = options.index(current) if current in options else 0
+                    new_idx = (current_idx + 1) % len(options)
+                    self._set_nested_value(config, field['key'], options[new_idx])
+                    self.config_manager.config = config
+                    self.modified = True
+                elif key == 'enter':
+                    self.editing = False
+                    self.input_buffer = ""
+
+            elif field['type'] in ['decimal', 'int', 'float']:
+                if key == 'enter':
+                    if self.input_buffer:
+                        try:
+                            if field['type'] == 'int':
+                                new_value = int(self.input_buffer)
+                            else:
+                                new_value = float(self.input_buffer)
+                            new_value = max(field.get('min', 0), min(field.get('max', 999), new_value))
+                            self._set_nested_value(config, field['key'], new_value)
+                            self.config_manager.config = config
+                            self.modified = True
+                        except ValueError:
+                            pass
+                    self.editing = False
+                    self.input_buffer = ""
+                elif key.isdigit() or key == '.':
+                    self.input_buffer += key
+                elif key == '-' and len(self.input_buffer) == 0:
+                    self.input_buffer += key
+                elif key == 'backspace':
+                    if self.input_buffer:
+                        self.input_buffer = self.input_buffer[:-1]
+                elif key == 'left':
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 1)
+                        current -= step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self.input_buffer = str(current)
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
+                elif key == 'right':
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 1)
+                        current += step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self.input_buffer = str(current)
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
+
+            elif field['type'] == 'string':
+                if key == 'enter':
+                    if self.input_buffer:
+                        self._set_nested_value(config, field['key'], self.input_buffer)
+                        self.config_manager.config = config
+                        self.modified = True
+                    self.editing = False
+                    self.input_buffer = ""
+                elif key == 'backspace':
+                    if self.input_buffer:
+                        self.input_buffer = self.input_buffer[:-1]
+                elif len(key) == 1 and key.isprintable() and key not in ('\x1b', '\n', '\r'):
+                    if len(self.input_buffer) < 20:
+                        self.input_buffer += key
         else:
             if key == 'up':
                 self.current_field = max(0, self.current_field - 1)
             elif key == 'down':
                 self.current_field = min(max_field, self.current_field + 1)
             elif key == 'enter':
-                self.input_buffer = ""
+                if field['type'] in ['decimal', 'int', 'float', 'string']:
+                    current = self._get_nested_value(config, field['key'])
+                    self.input_buffer = str(current) if current is not None else ""
+                else:
+                    self.input_buffer = ""
                 self.editing = True
                 return 'enter_edit'
             elif key == 'left':
@@ -740,6 +914,23 @@ class SettingsUI:
                     self._set_nested_value(config, field['key'], new_value)
                     self.config_manager.config = config
                     self.modified = True
+                elif field['type'] == 'select':
+                    options = field['options']
+                    current = self._get_nested_value(config, field['key'])
+                    current_idx = options.index(current) if current in options else 0
+                    new_idx = (current_idx - 1) % len(options)
+                    self._set_nested_value(config, field['key'], options[new_idx])
+                    self.config_manager.config = config
+                    self.modified = True
+                elif field['type'] in ['decimal', 'int', 'float']:
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 1)
+                        current -= step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
             elif key == 'right':
                 if field['type'] == 'bool':
                     current = self._get_nested_value(config, field['key'])
@@ -747,6 +938,23 @@ class SettingsUI:
                     self._set_nested_value(config, field['key'], new_value)
                     self.config_manager.config = config
                     self.modified = True
+                elif field['type'] == 'select':
+                    options = field['options']
+                    current = self._get_nested_value(config, field['key'])
+                    current_idx = options.index(current) if current in options else 0
+                    new_idx = (current_idx + 1) % len(options)
+                    self._set_nested_value(config, field['key'], options[new_idx])
+                    self.config_manager.config = config
+                    self.modified = True
+                elif field['type'] in ['decimal', 'int', 'float']:
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 1)
+                        current += step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
 
         return 'continue'
 
