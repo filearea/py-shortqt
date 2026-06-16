@@ -737,6 +737,9 @@ class LiveTradingBot:
                             elif key_char == 'h':
                                 # 手动触发持仓同步
                                 await self.trader.sync_position_from_exchange()
+                            elif key_char == 'r':
+                                # 重置脱敏基数（仅在脱敏开启时生效）
+                                self.trader.reset_privacy_baseline()
                             elif key_char == 'q':
                                 self.running = False
                     except Exception as e:

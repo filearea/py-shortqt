@@ -158,6 +158,23 @@ class LiveTrader:
             formatted = f'{pct:.3f}'.rstrip('0').rstrip('.')
             return f"{formatted}%"
 
+    def reset_privacy_baseline(self) -> bool:
+        """重置脱敏基数为当前可用余额
+
+        仅在隐私脱敏开启且当前余额>0时生效。
+        返回 True 表示已重置，False 表示跳过（脱敏未开启或余额为零）。
+        """
+        privacy_enabled = False
+        if self.config_manager:
+            privacy_enabled = self.config_manager.get('privacy.enabled', False)
+        if not privacy_enabled:
+            return False
+        if self.available_balance <= 0:
+            return False
+        self._privacy_baseline = self.available_balance
+        self._add_action("脱敏基数已重置", "")
+        return True
+
     def mask_log_text(self, detail: str) -> str:
         """对日志文本中的金额进行脱敏匹配替换
 
