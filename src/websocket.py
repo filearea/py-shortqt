@@ -19,7 +19,7 @@ class BinanceListener:
         self._log = log_func or print
         # 币安组合流格式：/stream?streams=symbol@stream1/symbol@stream2/...
         ws_base = ws_url.replace('/ws', '')  # 去掉 /ws 后缀
-        self.ws_url = f"{ws_base}/stream?streams={self.symbol}@bookTicker/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m"
+        self.ws_url = f"{ws_base}/stream?streams={self.symbol}@bookTicker/{self.symbol}@depth20@100ms/{self.symbol}@kline_1m/{self.symbol}@aggTrade"
         self.last_price = None
         self.orderbook = {'bids': [], 'asks': []}
         self.current_kline = None
@@ -157,6 +157,17 @@ class BinanceListener:
                 # 触发 K 线更新回调
                 for callback in self.callbacks:
                     await callback('kline', kline)
+
+            elif event_type == 'aggTrade':
+                # v1.10.0：聚合成交流（用于主动成交比率）
+                trade = {
+                    'price': Decimal(data.get('p', '0')),
+                    'qty': Decimal(data.get('q', '0')),  # 成交量
+                    'm': data.get('m', True),  # true=买方是maker(卖方taker), false=买方是taker
+                    'ts': data.get('T', 0)  # 成交时间
+                }
+                for callback in self.callbacks:
+                    asyncio.create_task(callback('aggTrade', trade))
 
             else:
                 # 可能是深度快照（没有 'e' 字段）

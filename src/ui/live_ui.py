@@ -463,7 +463,7 @@ class LiveTradingUI:
             history_text.append("暂无历史持仓", style="dim")
             return history_text
 
-        positions = self.trader.position_history[:10]
+        positions = list(self.trader.position_history)[-10:]
         total_count = len(self.trader.position_history) if hasattr(self.trader, 'position_history') else 0
 
         for i, pos in enumerate(positions):
@@ -938,13 +938,19 @@ class LiveTradingUI:
                 vol_parts.append(clean_line)
         vol_row.append(" | ".join(vol_parts[:5]))  # 最多显示 5 个
 
-        # ATR(14) 显示
+        # ATR(14) 显示（含 24h 百分位评价）
         vol_row.append("  |  ", style="dim")
         vol_row.append("ATR(14)：", style="bold cyan")
         if atr_14 is not None:
             vol_row.append(f"{atr_14:.4f}", style="cyan")
             if atr_vol_pct is not None:
                 vol_row.append(f" ({atr_vol_pct:.3f}%)", style="yellow")
+            # v1.10.0：24h 百分位评价
+            atr14_pct = vol_snapshot.get('atr14_percentile', 0)
+            atr14_ref = vol_snapshot.get('atr14_ref', 'normal')
+            if atr14_pct > 0:
+                ref_emoji = {'low': '🔴', 'normal': '🟡', 'elevated': '🟢', 'high': '🔴'}.get(atr14_ref, '🟡')
+                vol_row.append(f" [P{atr14_pct} {ref_emoji}]")
         else:
             vol_row.append("--", style="dim")
 
@@ -983,7 +989,17 @@ class LiveTradingUI:
                           style="green" if buy_pct >= sell_pct else "red")
         else:
             liq_row.append(" 采样中...", style="dim")
-        
+
+        # v1.10.0：主动成交比率（Taker Buy/Sell）
+        if self.trader and hasattr(self.trader, 'indicators') and self.trader.indicators:
+            taker = self.trader.indicators.get_taker_ratio()
+            buy_pct = taker.get('buy_pct', 50)
+            sell_pct = taker.get('sell_pct', 50)
+            liq_row.append("  主动: ", style="dim")
+            liq_row.append(f"买 {buy_pct:.1f}%", style="green" if buy_pct > 55 else "")
+            liq_row.append("  ", style="dim")
+            liq_row.append(f"卖 {sell_pct:.1f}%", style="red" if sell_pct > 55 else "")
+
         # 第三行：综合评分 + 方向 + 分类评分
         score_row = Text()
         score_row.append(f"综合：{score['score']:.1f}/100 ", style=f"bold {score['color']}")

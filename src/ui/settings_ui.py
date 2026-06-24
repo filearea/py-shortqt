@@ -116,6 +116,18 @@ class SettingsUI:
                     {'key': 'stats_period.timezone', 'label': '自然日时区', 'type': 'string',
                      'visible_cond': lambda c: c.get('stats_period', {}).get('mode') == 'calendar_day'},
                     {'key': 'privacy.enabled', 'label': '金额脱敏', 'type': 'bool'},
+                    # v1.10.0：代理配置
+                    {'key': 'proxy.enabled', 'label': '启用代理', 'type': 'bool'},
+                    {'key': 'proxy.host', 'label': '代理地址', 'type': 'string',
+                     'visible_cond': lambda c: c.get('proxy', {}).get('enabled', False)},
+                    {'key': 'proxy.port', 'label': '代理端口', 'type': 'int',
+                     'min': 1, 'max': 65535, 'step': 1,
+                     'visible_cond': lambda c: c.get('proxy', {}).get('enabled', False)},
+                    # v1.10.0：Web 服务配置
+                    {'key': 'web_ui.enabled', 'label': '启用 Web 服务', 'type': 'bool'},
+                    {'key': 'web_ui.port', 'label': 'Web 监听端口', 'type': 'int',
+                     'min': 1024, 'max': 65535, 'step': 1,
+                     'visible_cond': lambda c: c.get('web_ui', {}).get('enabled', False)},
                 ]
             }
         ]
@@ -553,6 +565,8 @@ class SettingsUI:
         lines.append("[dim]音效：开仓成交、平仓等操作时播放提示音[/dim]")
         lines.append("[dim]统计周期：近24小时为滚动窗口，自然日为指定时区的当日0点-24点[/dim]")
         lines.append("[dim]金额脱敏：开启后 TUI 中金额显示为相对于启动时余额的百分比[/dim]")
+        lines.append("[dim]代理配置：修改后需重启生效（WebSocket 连接在启动时读取代理）[/dim]")
+        lines.append("[dim]Web 服务：启用后手机浏览器可访问 K 线看板和交易界面[/dim]")
 
         return lines
 

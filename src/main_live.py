@@ -39,12 +39,33 @@ if sys.platform == 'win32':
     sys.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l')
     sys.stdout.flush()
 
-# 配置代理（REST API 和 WebSocket 都走本地代理）
-os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7890'
-os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
-
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
+
+# 配置代理（从 runtime.json 读取，优先于环境变量）
+def _load_proxy_config():
+    """从 runtime.json 读取代理配置并设置环境变量"""
+    try:
+        cfg_path = project_root / "config" / "runtime.json"
+        if cfg_path.exists():
+            import json as _json
+            with open(cfg_path, 'r', encoding='utf-8') as _f:
+                cfg = _json.load(_f)
+            proxy = cfg.get('proxy', {})
+            if proxy.get('enabled', False):
+                host = proxy.get('host', '127.0.0.1')
+                port = proxy.get('port', 7890)
+                proxy_url = f'http://{host}:{port}'
+                os.environ['HTTP_PROXY'] = proxy_url
+                os.environ['HTTPS_PROXY'] = proxy_url
+                return
+    except Exception:
+        pass
+    # 默认代理（向后兼容）
+    os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7890'
+    os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
+
+_load_proxy_config()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
@@ -62,6 +83,7 @@ from src.indicators import IndicatorsManager
 from src.recorder import RealtimeRecorder
 from src.metrics_recorder import MetricsRecorder
 from src import __version__
+from src.web import start_web_server
 
 try:
     from rich.live import Live
@@ -93,6 +115,7 @@ class LiveTradingBot:
         
         # 错误日志列表（用于 TUI 显示）
         self.error_log = []
+        self.web_server = None  # v1.10.0 Web 服务
         
         # 兼容旧日志（保留给 LiveTrader 使用）
         self.logger = TradeLogger(project_root / "logs")
@@ -253,13 +276,47 @@ class LiveTradingBot:
                 }
                 self.indicators.update_kline(kline)
 
+            # v1.10.0：跨日补齐 — 当天不足15根闭合K线时，从前一天文件加载
+            need_kline_count = 15 + 1  # ATR14 需要 14+1 根
+            if len(self.indicators.volatility.klines) < need_kline_count:
+                yesterday = today - timedelta(days=1)
+                yesterday_str = yesterday.strftime('%Y-%m-%d')
+                yesterday_file = KLINES_DIR / self.symbol / f'{yesterday_str}.jsonl'
+                if yesterday_file.exists():
+                    self.log_manager.system.info(f'当天K线不足({len(self.indicators.volatility.klines)}根)，从昨日文件补齐...')
+                    yesterday_klines = []
+                    with open(yesterday_file, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    d = json.loads(line)
+                                    yesterday_klines.append({
+                                        'timestamp': d['timestamp'],
+                                        'open': Decimal(str(d['open'])),
+                                        'high': Decimal(str(d['high'])),
+                                        'low': Decimal(str(d['low'])),
+                                        'close': Decimal(str(d['close'])),
+                                        'volume': Decimal(str(d.get('volume', 0))),
+                                        'is_closed': True
+                                    })
+                                except (json.JSONDecodeError, KeyError):
+                                    continue
+                    # 按时间排序取尾部
+                    yesterday_klines.sort(key=lambda k: k['timestamp'])
+                    needed = need_kline_count - len(self.indicators.volatility.klines)
+                    tail = yesterday_klines[-needed:]
+                    self.log_manager.system.info(f'从昨日补入 {len(tail)} 根K线（{yesterday_str}）')
+                    for k in tail:
+                        self.indicators.update_kline(k)
+
             # 从历史 K 线填充近X分钟价格范围
             self._seed_price_range(closed_klines)
 
             # 更新 recorder 的防重时间戳
             if closed_klines:
                 self.recorder._last_kline_ts = closed_klines[-1][0]
-            
+
             self.log_manager.system.info(f'历史 K 线初始化完成：写入 {count} 根，指标加载 {len(closed_klines)} 根（跳过最后一条未关闭）')
         
         except Exception as e:
@@ -319,6 +376,10 @@ class LiveTradingBot:
                 asks_decimal = [(a[0], a[1]) for a in ob['asks']]
                 self.indicators.update_orderbook(bids_decimal, asks_decimal)
                 self.recorder.save_orderbook(bids_decimal, asks_decimal)
+
+                # v1.10.0：推送到 Web UI
+                if self.web_server:
+                    self.web_server.update_depth(bids_decimal, asks_decimal)
             
             elif event_type == 'kline':
                 # WebSocket kline 事件（用于 current_kline 跟踪）
@@ -327,12 +388,25 @@ class LiveTradingBot:
                     return
 
                 self.indicators.update_kline(data)
+                # v1.10.0：记录 ATR14% 到 24h 历史队列
+                self.indicators.volatility.track_atr14_percentile()
                 
                 # v1.4.1 新增：实时保存 K 线数据
                 self.recorder.save_kline(data)
                 
                 # v1.4.2 新增：每 30 秒保存指标快照
                 self.metrics_recorder.save_snapshot(self.indicators, self.trader)
+
+                # v1.10.0：推 K 线缓存到 Web UI
+                if self.web_server and hasattr(self.indicators.volatility, '_klines'):
+                    self.web_server.update_klines_cache(list(self.indicators.volatility._klines))
+
+            elif event_type == 'aggTrade':
+                # v1.10.0：主动成交比率
+                self.indicators.update_agg_trade(data)
+                ratio = self.indicators.get_taker_ratio()
+                if self.web_server:
+                    self.web_server.update_taker_ratio(ratio['buy_pct'], ratio['sell_pct'])
         except Exception as e:
             error_msg = f"市场数据处理异常：{e}"
             self.log_manager.system.debug(error_msg)
@@ -471,6 +545,14 @@ class LiveTradingBot:
         self.running = False
         self.listener.running = False
 
+        # v1.10.0：停止 Web 服务
+        if self.web_server:
+            try:
+                await self.web_server.stop()
+                self.log_manager.system.debug("Web 服务已停止")
+            except Exception as e:
+                self.log_manager.system.warning(f"Web 服务停止异常: {e}")
+
         # 关闭用户数据流 WebSocket
         await self.trader.cleanup()
 
@@ -569,7 +651,21 @@ class LiveTradingBot:
             self.log_manager.system.info("历史数据补全完成")
         except Exception as e:
             self.log_manager.system.warning(f"历史数据补全失败：{e}，程序将继续运行")
-        
+
+        # v1.10.0：启动 Web 服务（移动端 Web UI）
+        if self.config_manager.is_web_ui_enabled():
+            try:
+                web_cfg = self.config_manager.get_web_ui_config()
+                self.web_server = await start_web_server(
+                    trader=self.trader,
+                    host=web_cfg.get('host', '0.0.0.0'),
+                    port=web_cfg.get('port', 8099),
+                    log_manager=self.log_manager
+                )
+                self.log_manager.system.info(f"Web UI 已启动: http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}")
+            except Exception as e:
+                self.log_manager.system.error(f"Web 服务启动失败: {e}")
+
         # 5. 启动历史持仓轮询
         #    持仓变更由事件驱动 _refresh_history_delayed 实时刷新，
         #    空闲时每 5 分钟兜底同步一次，避免无谓 API 消耗。
@@ -582,6 +678,19 @@ class LiveTradingBot:
                     pass
 
         history_task = asyncio.create_task(_history_poll())
+
+        # v1.10.0：ATR14 24h 百分位每小时重算
+        async def _atr14_percentile_recompute():
+            # 初始延迟 60 秒，等待 K 线数据积累
+            await asyncio.sleep(60)
+            while self.running:
+                try:
+                    self.indicators.volatility.recompute_atr14_percentile()
+                except Exception:
+                    pass
+                await asyncio.sleep(3600)
+
+        atr14_pct_task = asyncio.create_task(_atr14_percentile_recompute())
 
         # 6. 主循环
         self.log_manager.system.info("进入主循环")

@@ -6,6 +6,7 @@ v1.5.0 - 新增移动止损 + 浮亏保护
 
 import asyncio
 import time
+from collections import deque
 from pathlib import Path
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime
@@ -62,7 +63,7 @@ class LiveTrader:
         self.sl_order_backup: Optional[Dict] = None
 
         # 历史持仓
-        self.position_history: list = []
+        self.position_history = deque(maxlen=500)  # v1.10.0: 最多保留500条
 
         # BNB 价格缓存（用于手续费换算）
         self._bnb_prices: dict = {}       # {timestamp_sec: Decimal}
@@ -118,16 +119,28 @@ class LiveTrader:
         self._rest_fallback_task: Optional[asyncio.Task] = None
         self._rest_fallback_interval: float = 3.0  # REST 轮询间隔（秒）
 
+        self._has_web_clients = False  # v1.10.0：由 Web 服务更新，控制 TUI 音效
         self.running = False
         self.connected = False
 
-    def play_ding(self, count: int = 1):
+    def play_ding(self, count: int = 1, throttle_key: str = None):
         """播放提示音（count 控制响几声）"""
         if not self._ding_path:
             return
-        # 检查音效开关
         if self.config_manager and not self.config_manager.is_sound_enabled():
             return
+        # v1.10.0：如果 Web UI 有客户端连接，TUI 端不播放音效（手机端已播）
+        if getattr(self, '_has_web_clients', False):
+            return
+        # v1.10.0：5秒节流，同类型音效不重复播放
+        if throttle_key:
+            now = time.time()
+            if not hasattr(self, '_sound_throttle'):
+                self._sound_throttle = {}
+            last = self._sound_throttle.get(throttle_key, 0)
+            if now - last < 5:
+                return
+            self._sound_throttle[throttle_key] = now
         try:
             import winsound
             for _ in range(count):
@@ -138,16 +151,16 @@ class LiveTrader:
     def _trigger_sound(self, action: str):
         """根据 action 名称自动触发对应音效"""
         if '开仓成交' in action or '开仓成交（部分）' in action:
-            self.play_ding(1)  # 开仓响一声
+            self.play_ding(1, throttle_key='open')  # 开仓响一声，5秒内不重复
         elif '持仓超时' in action:
-            self.play_ding(4)  # 持仓超时响四声
+            self.play_ding(4)  # 不节流（极少触发）
         elif any(kw in action for kw in [
             '止盈成交', '止损成交', '保底止损成交',
             '提前平仓成交', '移动止损成交',
             '手动平仓成交', '持仓同步成交',
             '浮亏保护成交',
         ]):
-            self.play_ding(3)  # 平仓响三声
+            self.play_ding(3, throttle_key='close')  # 平仓响三声，5秒内不重复
 
     def format_money(self, value: Decimal) -> str:
         """格式化金额用于 TUI 显示（自动应用隐私脱敏）
@@ -2521,7 +2534,8 @@ class LiveTrader:
                 STATUS_ORDER.get(x.get('status', '完全平仓'), 2),
                 -x.get('last_action_time_ms', 0),
             ))
-            self.position_history = history[:10]
+            self.position_history.clear()
+            self.position_history.extend(history[:500])  # v1.10.0: deque maxlen=500
 
             # 7. 更新 24h 交易统计（复用已拉取的 fills，避免重复 API 调用）
             self._update_trade_stats_24h(all_fills)

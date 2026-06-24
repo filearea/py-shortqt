@@ -72,6 +72,18 @@ class ConfigManager:
             "ladder_mode": "fixed",
             "ladder_min": 1.00,
             "ladder_max": 10.00
+        },
+        # v1.10.0 新增：代理服务配置
+        "proxy": {
+            "enabled": False,
+            "host": "127.0.0.1",
+            "port": 7890
+        },
+        # v1.10.0 新增：Web 服务配置
+        "web_ui": {
+            "enabled": False,
+            "host": "0.0.0.0",
+            "port": 8099
         }
     }
     
@@ -398,3 +410,31 @@ class ConfigManager:
     def is_batch_mode_enabled(self) -> bool:
         """分批模式是否启用"""
         return self.config.get('batch_mode', {}).get('enabled', False)
+
+    # v1.10.0 新增：代理配置
+
+    def get_proxy_config(self) -> dict:
+        """获取代理配置"""
+        return self.config.get('proxy', {
+            'enabled': False,
+            'host': '127.0.0.1',
+            'port': 7890
+        })
+
+    def is_proxy_enabled(self) -> bool:
+        """代理是否启用"""
+        return self.config.get('proxy', {}).get('enabled', False)
+
+    # v1.10.0 新增：Web 服务配置
+
+    def get_web_ui_config(self) -> dict:
+        """获取 Web UI 配置"""
+        return self.config.get('web_ui', {
+            'enabled': False,
+            'host': '0.0.0.0',
+            'port': 8099
+        })
+
+    def is_web_ui_enabled(self) -> bool:
+        """Web UI 是否启用"""
+        return self.config.get('web_ui', {}).get('enabled', False)

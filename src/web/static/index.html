@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>py-shortqt</title>
+<style>
+/* ====== ApeBot Design Tokens ====== */
+:root {
+  --color-up: #f6465d;
+  --color-down: #0ecb81;
+  --color-positive: #0ecb81;
+  --color-negative: #f6465d;
+  --color-brand: #fcd535;
+  --color-warning: #f0b90b;
+  --color-bg: #0b0e11;
+  --color-surface: #1e2329;
+  --color-border: #2b3139;
+  --color-text: #eaecef;
+  --color-text-secondary: #848e9c;
+  --color-text-muted: #5e6673;
+  --font-mono: 'SF Mono','Cascadia Code','Consolas',monospace;
+  --font-sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  --radius: 6px;
+  --radius-sm: 4px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:var(--color-bg);color:var(--color-text);
+  font-family:var(--font-sans);font-size:13px;
+  overflow-x:hidden;overscroll-behavior:none;
+  -webkit-tap-highlight-color:transparent;
+  user-select:none;-webkit-user-select:none;
+}
+::-webkit-scrollbar{display:none}
+body{scrollbar-width:none}
+
+/* ====== Layout ====== */
+#app{display:flex;flex-direction:column;height:100dvh;max-width:600px;margin:0 auto}
+#main-view{flex:1;overflow-y:auto;padding:8px 10px;padding-bottom:100px}
+#bottom-bar{position:fixed;bottom:0;left:0;right:0;max-width:600px;margin:0 auto;background:var(--color-surface);border-top:1px solid var(--color-border);z-index:100}
+
+/* ====== Top Bar ====== */
+#top-bar{padding:6px 10px;background:var(--color-surface);border-bottom:1px solid var(--color-border)}
+#top-bar .row1{display:flex;align-items:center;justify-content:space-between}
+#top-bar .status{font-size:12px;font-weight:600;min-width:80px}
+#top-bar .price{font-size:18px;font-weight:700;font-family:var(--font-mono)}
+#top-bar .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-left:4px}
+#top-bar .status-dot.online{background:var(--color-positive)}
+#top-bar .status-dot.offline{background:var(--color-negative)}
+#top-bar .row2{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--color-text-secondary);margin-top:2px}
+#top-bar .balance{color:var(--color-brand);font-weight:600}
+#top-bar .balance.masked{cursor:pointer}
+
+/* ====== K-line ====== */
+#kline-section{margin:6px 0}
+#kline-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.btn-group{display:flex;gap:2px}
+.btn-group button{
+  padding:4px 10px;font-size:11px;font-weight:600;border:1px solid var(--color-border);
+  background:var(--color-bg);color:var(--color-text-secondary);border-radius:var(--radius-sm);cursor:pointer
+}
+.btn-group button.active{background:var(--color-brand);color:#0b0e11;border-color:var(--color-brand)}
+#kline-chart{width:100%;height:200px;background:var(--color-bg);border-radius:var(--radius);overflow:hidden}
+#kline-chart.collapsed{height:0}
+
+/* ====== Position Card ====== */
+.card{background:var(--color-surface);border-radius:var(--radius);padding:8px 10px;margin:6px 0;border:1px solid var(--color-border)}
+.card-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer}
+.card-header .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:3px}
+.tag-long{background:var(--color-up);color:#fff}
+.tag-short{background:var(--color-down);color:#fff}
+.card-header .pnl{font-size:20px;font-weight:700;font-family:var(--font-mono)}
+.card-body{display:none;margin-top:8px}
+.card-body.open{display:block}
+.card-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:11px}
+.card-grid .lbl{color:var(--color-text-muted)}
+.card-grid .val{color:var(--color-text);font-family:var(--font-mono)}
+.batch-list{margin-top:6px;font-size:11px}
+.batch-list .lbl{color:var(--color-text-muted);margin-bottom:2px}
+.batch-list .row{display:flex;justify-content:space-between;font-family:var(--font-mono);padding:1px 0}
+.batch-list .more{color:var(--color-text-muted);font-style:italic}
+
+/* ====== Orderbook + Indicators ====== */
+#ob-ind-row{display:flex;gap:8px;margin:6px 0}
+#orderbook{flex:1;min-width:0;font-size:11px;font-family:var(--font-mono)}
+#orderbook .ob-row{display:flex;justify-content:space-between;padding:1px 4px;position:relative}
+#orderbook .ob-row.ask{color:var(--color-down)}
+#orderbook .ob-row.bid{color:var(--color-up)}
+#orderbook .ob-row .depth-bar{position:absolute;right:0;top:0;height:100%;opacity:0.12;border-radius:2px}
+#orderbook .ob-row.ask .depth-bar{background:var(--color-down)}
+#orderbook .ob-row.bid .depth-bar{background:var(--color-up)}
+#orderbook .ob-spread{text-align:center;padding:2px 0;color:var(--color-text-secondary);border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
+#indicators{flex:1;min-width:0;font-size:12px}
+#indicators .ind-item{padding:3px 0;border-bottom:1px solid var(--color-border)}
+#indicators .ind-item:last-child{border-bottom:none}
+#indicators .ind-lbl{color:var(--color-text-muted);font-size:10px}
+#indicators .ind-val{font-family:var(--font-mono)}
+#indicators .ind-sub{font-size:10px;color:var(--color-text-secondary)}
+#indicators .ind-pressure{min-width:56px;text-align:right}
+
+/* ====== Last Position + Logs ====== */
+#last-pos{font-size:11px;margin:4px 0}
+#last-pos .lp-pnl{font-size:22px;font-weight:700;font-family:var(--font-mono)}
+#log-area{font-size:10px;font-family:var(--font-mono);color:var(--color-text-secondary);max-height:80px;overflow-y:auto;margin:4px 0}
+
+/* ====== Action Buttons ====== */
+#action-bar{padding:6px 10px}
+#action-bar .btn-row{display:flex;gap:6px;margin:3px 0}
+.btn{
+  padding:10px 0;font-size:14px;font-weight:700;border:none;border-radius:var(--radius);
+  cursor:pointer;text-align:center;color:#fff
+}
+.btn:active{opacity:0.8}
+.btn-lg{flex:1;font-size:16px;padding:14px 0}
+.btn-buy{background:var(--color-up)}
+.btn-sell{background:var(--color-down)}
+.btn-danger{background:var(--color-negative)}
+.btn-warning{background:var(--color-warning);color:#0b0e11}
+.btn-secondary{background:#2b3139;color:var(--color-text)}
+.btn:disabled{opacity:0.35;pointer-events:none}
+
+/* ====== Bottom Tabs ====== */
+#tab-bar{display:flex;border-top:1px solid var(--color-border)}
+#tab-bar button{
+  flex:1;padding:10px 0;font-size:12px;font-weight:600;border:none;
+  background:var(--color-surface);color:var(--color-text-secondary);cursor:pointer
+}
+#tab-bar button.active{color:var(--color-brand);border-top:2px solid var(--color-brand)}
+
+/* ====== Overlay ====== */
+.overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100dvh;background:var(--color-bg);z-index:200;flex-direction:column}
+.overlay.open{display:flex}
+.overlay-header{display:flex;align-items:center;justify-content:space-between;padding:10px;border-bottom:1px solid var(--color-border)}
+.overlay-header h2{font-size:16px}
+.overlay-body{flex:1;overflow-y:auto;padding:10px}
+.overlay-footer{padding:10px;border-top:1px solid var(--color-border);display:flex;gap:8px}
+.overlay-footer button{flex:1}
+
+/* ====== Settings ====== */
+.settings-subtabs{display:flex;gap:2px;margin-bottom:10px;flex-wrap:wrap}
+.settings-subtabs button{
+  padding:6px 10px;font-size:11px;font-weight:600;border:1px solid var(--color-border);
+  background:var(--color-bg);color:var(--color-text-secondary);border-radius:var(--radius-sm);cursor:pointer
+}
+.settings-subtabs button.active{background:var(--color-brand);color:#0b0e11;border-color:var(--color-brand)}
+.setting-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--color-border)}
+.setting-row .s-lbl{font-size:13px}
+.setting-row .s-val{font-size:13px;color:var(--color-brand);font-family:var(--font-mono);cursor:pointer}
+.setting-row select,.setting-row input{
+  background:var(--color-surface);color:var(--color-text);border:1px solid var(--color-border);
+  border-radius:var(--radius-sm);padding:4px 8px;font-size:13px;font-family:var(--font-mono)
+}
+.setting-row input{width:100px;text-align:right}
+.setting-row select{width:120px}
+.setting-hint{font-size:10px;color:var(--color-text-muted);margin-top:4px}
+
+/* ====== History ====== */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
+.stat-card{background:var(--color-surface);border-radius:var(--radius);padding:8px;text-align:center}
+.stat-card .sv{font-size:18px;font-weight:700;font-family:var(--font-mono)}
+.stat-card .sl{font-size:10px;color:var(--color-text-muted)}
+.history-item{background:var(--color-surface);border-radius:var(--radius);padding:8px;margin:4px 0;font-size:11px}
+.history-item .h-row{display:flex;justify-content:space-between;padding:1px 0}
+
+/* ====== Modal ====== */
+.modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:300;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal-box{background:var(--color-surface);border-radius:8px;padding:20px;min-width:280px;max-width:90vw;text-align:center}
+.modal-box h3{margin-bottom:12px}
+.modal-box .countdown{font-size:36px;font-weight:700;color:var(--color-brand);margin:12px 0}
+.modal-box .btn-row{display:flex;gap:8px;margin-top:12px}
+
+/* ====== Toast ====== */
+#toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:400;padding:8px 20px;border-radius:20px;font-size:13px;font-weight:600;transition:opacity 0.3s;opacity:0;pointer-events:none}
+#toast.show{opacity:1}
+#toast.success{background:#0ecb81;color:#fff}
+#toast.warning{background:#f0b90b;color:#0b0e11}
+#toast.error{background:#f6465d;color:#fff}
+#toast.info{background:#1e53e5;color:#fff}
+
+/* ====== Preview Card ====== */
+.settings-preview{background:var(--color-bg);border-radius:var(--radius);padding:10px;margin-top:10px;font-family:var(--font-mono);font-size:11px;line-height:1.6}
+.settings-preview .pv-lbl{color:var(--color-text-muted)}
+
+.empty-state{text-align:center;padding:20px;color:var(--color-text-muted)}
+.toggle{width:44px;height:24px;border-radius:12px;background:var(--color-border);position:relative;cursor:pointer;transition:background 0.2s}
+.toggle.on{background:var(--color-positive)}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left 0.2s}
+.toggle.on::after{left:22px}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- Top Bar -->
+<div id="top-bar">
+  <div class="row1">
+    <span class="status" id="tb-status">ETHUSDC</span>
+    <span class="price" id="tb-price">0.00</span>
+    <span><span class="status-dot online" id="tb-dot"></span></span>
+  </div>
+  <div class="row2">
+    <span>H:<span id="tb-high" style="color:var(--color-up)">--</span> L:<span id="tb-low" style="color:var(--color-down)">--</span></span>
+    <span class="balance" id="tb-balance">0 U</span>
+    <span id="tb-margin">保证金:0</span>
+    <span id="tb-lev">1x</span>
+  </div>
+</div>
+
+<!-- Main Scrollable -->
+<div id="main-view">
+
+<!-- K-line -->
+<div id="kline-section">
+  <div id="kline-header">
+    <div class="btn-group" id="kline-periods">
+      <button data-p="1m" class="active">1m</button>
+      <button data-p="5m">5m</button>
+      <button data-p="15m">15m</button>
+      <button data-p="1h">1h</button>
+    </div>
+    <button class="btn btn-secondary" id="btn-toggle-chart" style="padding:4px 8px;font-size:11px">折叠</button>
+  </div>
+  <div id="kline-chart"></div>
+</div>
+
+<!-- Position Card -->
+<div class="card" id="pos-card" style="display:none">
+  <div class="card-header" id="pos-header">
+    <span><span class="tag" id="pos-tag">--</span><span id="pos-batch-hint" style="font-size:10px;color:var(--color-text-muted);margin-left:6px"></span></span>
+    <span class="pnl" id="pos-pnl">0.00</span>
+    <span style="color:var(--color-text-muted);font-size:10px" id="pos-arrow">▲</span>
+  </div>
+  <div class="card-body" id="pos-body">
+    <div class="card-grid">
+      <div><div class="lbl">开仓价</div><div class="val" id="pos-entry">--</div></div>
+      <div><div class="lbl">数量</div><div class="val" id="pos-size">--</div></div>
+      <div><div class="lbl">时间</div><div class="val" id="pos-time">--</div></div>
+      <div><div class="lbl">止盈价</div><div class="val" id="pos-tp">--</div></div>
+      <div><div class="lbl">止损触发</div><div class="val" id="pos-sl">--</div></div>
+      <div><div class="lbl">保底</div><div class="val" id="pos-sm">--</div></div>
+    </div>
+    <div class="batch-list" id="pos-batch-entries"></div>
+    <div class="batch-list" id="pos-batch-tps"></div>
+    <div style="font-size:10px;color:var(--color-text-muted);margin-top:4px" id="pos-risk-info"></div>
+  </div>
+</div>
+<div class="empty-state" id="pos-empty">无持仓</div>
+
+<!-- Orderbook + Indicators -->
+<div id="ob-ind-row">
+  <div id="orderbook"></div>
+  <div id="indicators"></div>
+</div>
+
+<!-- Last Position -->
+<div id="last-pos"></div>
+
+<!-- Log Area -->
+<div id="log-area"></div>
+
+</div><!-- /main-view -->
+
+<!-- Bottom Action Bar -->
+<div id="bottom-bar">
+  <div id="action-bar">
+    <div class="btn-row">
+      <button class="btn btn-lg btn-buy" id="btn-long">做多</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-lg btn-sell" id="btn-short">做空</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-danger" id="btn-close-all">市价平</button>
+      <button class="btn btn-warning" id="btn-cancel">撤单</button>
+      <button class="btn btn-secondary" id="btn-early-close">提前平</button>
+    </div>
+  </div>
+  <div id="tab-bar">
+    <button class="active" data-tab="main">行情交易</button>
+    <button data-tab="history">历史统计</button>
+    <button data-tab="settings">设置</button>
+  </div>
+</div>
+
+</div><!-- /app -->
+
+<!-- History Overlay -->
+<div class="overlay" id="history-overlay">
+  <div class="overlay-header">
+    <h2>历史统计</h2>
+    <button class="btn btn-secondary" id="btn-history-close" style="padding:6px 16px">返回</button>
+  </div>
+  <div class="overlay-body" id="history-body">
+    <div class="stat-grid" id="stat-grid"></div>
+    <div id="history-list"></div>
+    <div id="history-loading" style="text-align:center;padding:10px;color:var(--color-text-muted);display:none">加载中...</div>
+    <div id="history-end" style="text-align:center;padding:10px;color:var(--color-text-muted);display:none">已加载全部数据</div>
+  </div>
+</div>
+
+<!-- Settings Overlay -->
+<div class="overlay" id="settings-overlay">
+  <div class="overlay-header">
+    <h2>设置</h2>
+    <button class="btn btn-secondary" id="btn-settings-close" style="padding:6px 16px">返回</button>
+  </div>
+  <div class="overlay-body" id="settings-body">
+    <div class="settings-subtabs" id="settings-tabs">
+      <button class="active" data-stab="trading">交易参数</button>
+      <button data-stab="smart">智能止损</button>
+      <button data-stab="batch">分批模式</button>
+      <button data-stab="system">系统设置</button>
+      <button data-stab="backup">备份管理</button>
+    </div>
+    <div id="settings-content"></div>
+    <div class="settings-preview" id="settings-preview"></div>
+  </div>
+  <div class="overlay-footer">
+    <button class="btn btn-secondary" id="btn-settings-cancel">返回</button>
+    <button class="btn" style="background:var(--color-brand);color:#0b0e11" id="btn-settings-save">保存</button>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay" id="modal-confirm">
+  <div class="modal-box">
+    <h3 id="modal-title">市价全平</h3>
+    <div id="modal-body"></div>
+    <div class="countdown" id="modal-countdown">2</div>
+    <div style="color:var(--color-text-muted);font-size:12px">秒后确认</div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="modal-cancel">取消</button>
+      <button class="btn btn-danger" id="modal-ok" disabled>确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- Privacy Reset Modal -->
+<div class="modal-overlay" id="modal-privacy">
+  <div class="modal-box">
+    <h3>重置脱敏基数</h3>
+    <p style="color:var(--color-text-secondary);margin:8px 0">是否重置脱敏基数？</p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="modal-privacy-cancel">取消</button>
+      <button class="btn" style="background:var(--color-brand);color:#0b0e11" id="modal-privacy-ok">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// TradingView Lightweight Charts — CDN 优先，本地后备
+(function(){
+  var s=document.createElement('script');
+  s.src='/tv-charts.umd.js';
+  s.onerror=function(){
+    var fallback=document.createElement('script');
+    fallback.src='https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js';
+    document.head.appendChild(fallback);
+  };
+  document.head.appendChild(s);
+})();
+</script>
+<script>
+// ====== State ======
+let state = {
+  price:0, atr14:0, atr14_pct:0, atr14_percentile:0, atr14_ref:'normal',
+  amplitude_1m:0, price_range_high:0, price_range_low:0, price_range_minutes:30,
+  position:null, pending_orders:[], tp_orders:[], risk:{sl_price:0,sm_price:0,loss_protection_active:false},
+  stats_24h:{}, last_position:null, taker_ratio:{buy_pct:50,sell_pct:50},
+  connection:{ws_healthy:true}
+};
+let ws=null, wsReconnectTimer=null, chart=null, candleSeries=null, volumeSeries=null;
+let klinePeriod='1m', klineData=[], chartMarkers=[];
+let historyOffset=0, historyDone=false, historyLoading=false;
+let settingsCache={};
+let activeTab='main', settingsSubTab='trading';
+let posExpanded=true;
+let modalTimer=null, modalCountdown=0;
+
+// ====== WebSocket ======
+function wsConnect(){
+  if(ws && ws.readyState===WebSocket.OPEN) return;
+  const protocol=location.protocol==='https:'?'wss':'ws';
+  const url=`${protocol}://${location.host}/ws?token=${getToken()}`;
+  ws=new WebSocket(url);
+  ws.onopen=()=>{setConnected(true);if(wsReconnectTimer){clearTimeout(wsReconnectTimer);wsReconnectTimer=null;}};
+  ws.onmessage=e=>{
+    try{const msg=JSON.parse(e.data);handleMsg(msg);}catch(ex){}
+  };
+  ws.onclose=()=>{setConnected(false);scheduleReconnect();};
+  ws.onerror=()=>{ws.close();};
+}
+function scheduleReconnect(){if(!wsReconnectTimer)wsReconnectTimer=setTimeout(wsConnect,3000);}
+function getToken(){const m=location.search.match(/token=([^&]+)/);return m?m[1]:'';}
+function setConnected(ok){
+  state.connection.ws_healthy=ok;
+  const dot=document.getElementById('tb-dot');
+  dot.className='status-dot '+(ok?'online':'offline');
+  document.getElementById('tb-lev').textContent=ok?'已连接':'断开';
+  const btns=['btn-long','btn-short','btn-close-all','btn-cancel','btn-early-close'];
+  btns.forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=!ok;});
+}
+
+// ====== Sound (Web Audio API) ======
+let _audioCtx=null, _soundThrottle={};
+function _getAudioCtx(){
+  if(!_audioCtx) _audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  if(_audioCtx.state==='suspended') _audioCtx.resume();
+  return _audioCtx;
+}
+function playBeep(throttleKey,count,freq,dur,vol){
+  // 5秒节流，同类型不重复
+  var now=Date.now();
+  if(throttleKey&&now-_soundThrottle[throttleKey]<5000) return;
+  if(throttleKey) _soundThrottle[throttleKey]=now;
+  try{
+    var ctx=_getAudioCtx();
+    for(var i=0;i<count;i++){
+      var o=ctx.createOscillator(),g=ctx.createGain();
+      o.type='square';o.frequency.value=freq;g.gain.value=vol;
+      o.connect(g);g.connect(ctx.destination);
+      o.start(ctx.currentTime+i*0.12);o.stop(ctx.currentTime+i*0.12+dur);
+    }
+  }catch(e){}
+}
+
+function handleMsg(msg){
+  switch(msg.type){
+    case 'state':Object.assign(state,msg);updateUI();break;
+    case 'kline_tick':updateKlineTick(msg);break;
+    case 'depth':renderOrderbook(msg);break;
+    case 'event':
+      addLog(msg.event,msg.detail);
+      // v1.10.0：事件音效
+      if(/开仓/.test(msg.event)) playBeep('open',1,800,0.08,0.15);
+      else if(/止盈|止损|平仓|成交/.test(msg.event)) playBeep('close',2,600,0.06,0.12);
+      break;
+  }
+}
+
+// ====== Chart ======
+function initChart(){
+  if(!window.LightweightCharts) return;
+  const el=document.getElementById('kline-chart');
+  chart=LightweightCharts.createChart(el,{
+    layout:{background:{color:'#0b0e11'},textColor:'#848e9c'},
+    grid:{vertLines:{color:'#1e2329'},horzLines:{color:'#1e2329'}},
+    crosshair:{mode:0},rightPriceScale:{borderColor:'#2b3139'},
+    timeScale:{borderColor:'#2b3139',timeVisible:true,secondsVisible:false},
+    width:el.clientWidth,height:200
+  });
+  candleSeries=chart.addCandlestickSeries({
+    upColor:'#f6465d',downColor:'#0ecb81',borderUpColor:'#f6465d',borderDownColor:'#0ecb81',
+    wickUpColor:'#f6465d',wickDownColor:'#0ecb81'
+  });
+  volumeSeries=chart.addHistogramSeries({
+    priceFormat:{type:'volume'},priceScaleId:'',
+    color:'#2b3139'
+  });
+  chart.priceScale('').applyOptions({scaleMargins:{top:0.9,bottom:0}});
+  window.addEventListener('resize',()=>{if(chart){const e=document.getElementById('kline-chart');chart.applyOptions({width:e.clientWidth});}});
+}
+function loadKlines(limit=100){
+  fetch(`/api/klines?limit=${limit}&interval=1m`,{headers:{'X-Token':getToken()}})
+    .then(r=>r.json()).then(data=>{
+      if(!data||!data.length) return;
+      klineData=data;
+      renderChart();
+    }).catch(()=>{});
+}
+function renderChart(){
+  if(!candleSeries) return;
+  const period=klinePeriod;
+  let candles=aggregateKlines(klineData,period);
+  const cData=candles.map(k=>({time:k.t/1000,open:k.o,high:k.h,low:k.l,close:k.c}));
+  const vData=candles.map(k=>({time:k.t/1000,value:k.v,color:k.c>=k.o?'rgba(246,70,93,0.3)':'rgba(14,203,129,0.3)'}));
+  candleSeries.setData(cData);
+  volumeSeries.setData(vData);
+  updateMarkers();
+}
+function aggregateKlines(data,period){
+  if(period==='1m'||!data.length) return data.map(k=>({t:k.t,o:k.o,h:k.h,l:k.l,c:k.c,v:k.v}));
+  const ms={5:300000,15:900000,60:3600000}[period[0]==='1'?60:parseInt(period)];
+  const groups={};
+  data.forEach(k=>{const bucket=Math.floor(k.t/ms)*ms;if(!groups[bucket])groups[bucket]=[];groups[bucket].push(k);});
+  return Object.entries(groups).map(([t,bars])=>{
+    return {t:parseInt(t),o:bars[0].o,h:Math.max(...bars.map(b=>b.h)),l:Math.min(...bars.map(b=>b.l)),c:bars[bars.length-1].c,v:bars.reduce((s,b)=>s+b.v,0)};
+  }).sort((a,b)=>a.t-b.t);
+}
+function updateKlineTick(tick){
+  if(!tick) return;
+  const last=klineData[klineData.length-1];
+  if(last && last.t===tick.t){
+    last.h=tick.h;last.l=tick.l;last.c=tick.c;last.v=tick.v;
+  }else if(tick.is_closed){
+    klineData.push({t:tick.t,o:tick.o,h:tick.h,l:tick.l,c:tick.c,v:tick.v});
+    if(klineData.length>1500) klineData.shift();
+  }
+  renderChart();
+}
+function updateMarkers(){
+  if(!candleSeries) return;
+  // remove old markers
+  chartMarkers.forEach(m=>{try{candleSeries.removePriceLine(m);}catch(e){}});
+  chartMarkers=[];
+  if(!state.position) return;
+  const avg=state.position.entry_weighted_avg;
+  if(avg>0){
+    const line=candleSeries.createPriceLine({price:avg,color:'#ffffff',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'均价'});
+    chartMarkers.push(line);
+  }
+  if(state.risk.sl_price>0){
+    const line=candleSeries.createPriceLine({price:state.risk.sl_price,color:'#f6465d',lineWidth:1,lineStyle:1,axisLabelVisible:true,title:'止损'});
+    chartMarkers.push(line);
+  }
+  if(state.risk.sm_price>0){
+    const line=candleSeries.createPriceLine({price:state.risk.sm_price,color:'#8b0000',lineWidth:1,lineStyle:1,axisLabelVisible:true,title:'保底'});
+    chartMarkers.push(line);
+  }
+  state.tp_orders.slice(0,20).forEach(tp=>{
+    if(tp.tp_price>0){
+      const line=candleSeries.createPriceLine({price:tp.tp_price,color:'#0ecb81',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:'止盈#'+tp.index});
+      chartMarkers.push(line);
+    }
+  });
+  state.pending_orders.filter(o=>o.status==='pending').slice(0,20).forEach(o=>{
+    if(o.price>0){
+      const line=candleSeries.createPriceLine({price:o.price,color:'#5e6673',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:'挂单#'+o.index});
+      chartMarkers.push(line);
+    }
+  });
+}
+
+// ====== UI Updates ======
+function updateUI(){
+  updateTopBar();
+  updatePosCard();
+  updateIndicators();
+  updateLastPos();
+}
+function updateTopBar(){
+  const tb=document.getElementById('tb-status');
+  const pos=state.position;
+  if(pos && pos.side!=='NONE'){
+    const side=pos.side==='LONG'?'做多':'做空';
+    const pnl=pos.floating_pnl||0;
+    tb.innerHTML=`${side} <span style="color:${pnl>=0?'var(--color-positive)':'var(--color-negative)'}">${pnl>=0?'+':''}${pnl.toFixed(2)}</span>`;
+  }else if(state.pending_orders.length>0){
+    tb.textContent='挂单中';
+  }else{
+    tb.textContent='ETHUSDC';
+  }
+  document.getElementById('tb-price').textContent=state.price.toFixed(2);
+  document.getElementById('tb-price').style.color=state.price>=(state._prevPrice||state.price)?'var(--color-up)':'var(--color-down)';
+  state._prevPrice=state.price;
+  document.getElementById('tb-high').textContent=state.price_range_high.toFixed(2);
+  document.getElementById('tb-low').textContent=state.price_range_low.toFixed(2);
+  document.getElementById('tb-balance').textContent=(state._balance||'0')+' U';
+  document.getElementById('tb-margin').textContent='保证金:'+(state._margin||'0');
+}
+function updatePosCard(){
+  const pos=state.position;
+  const card=document.getElementById('pos-card');
+  const empty=document.getElementById('pos-empty');
+  if(!pos||pos.side==='NONE'){
+    card.style.display='none';empty.style.display='block';
+    document.getElementById('btn-close-all').style.display='none';
+    document.getElementById('btn-cancel').style.display='none';
+    document.getElementById('btn-early-close').style.display='none';
+    return;
+  }
+  card.style.display='block';empty.style.display='none';
+  document.getElementById('btn-close-all').style.display='';
+  document.getElementById('btn-early-close').style.display='';
+
+  const side=pos.side;
+  document.getElementById('pos-tag').textContent=side;
+  document.getElementById('pos-tag').className='tag '+(side==='LONG'?'tag-long':'tag-short');
+  const pnl=pos.floating_pnl||0;
+  document.getElementById('pos-pnl').textContent=(pnl>=0?'+':'')+pnl.toFixed(2);
+  document.getElementById('pos-pnl').style.color=pnl>=0?'var(--color-positive)':'var(--color-negative)';
+  document.getElementById('pos-entry').textContent=(pos.entry_weighted_avg||0).toFixed(2);
+  document.getElementById('pos-size').textContent=(pos.size||0).toFixed(4)+' ETH';
+  document.getElementById('pos-time').textContent=pos._time||'--';
+  document.getElementById('pos-sl').textContent=(state.risk.sl_price||0).toFixed(2);
+  document.getElementById('pos-sm').textContent=(state.risk.sm_price||0).toFixed(2);
+  document.getElementById('pos-risk-info').textContent=('浮亏保护:'+(state.risk.loss_protection_active?'检测中':'待机'));
+
+  // batch entries
+  const be=document.getElementById('pos-batch-entries');
+  const bt=document.getElementById('pos-batch-tps');
+  be.innerHTML='';bt.innerHTML='';
+  if(state.pending_orders.length>0){
+    be.innerHTML='<div class="lbl">未成交挂单 ('+state.pending_orders.length+')</div>';
+    state.pending_orders.slice(0,5).forEach(o=>{
+      be.innerHTML+=`<div class="row"><span>批${o.index} @${o.price.toFixed(2)}</span><span>${o.size.toFixed(4)} ETH</span></div>`;
+    });
+    if(state.pending_orders.length>5) be.innerHTML+='<div class="more">... 还有 '+(state.pending_orders.length-5)+' 笔</div>';
+  }
+  if(state.tp_orders.length>0){
+    bt.innerHTML='<div class="lbl">止盈单 ('+state.tp_orders.length+')</div>';
+    state.tp_orders.slice(0,5).forEach(o=>{
+      bt.innerHTML+=`<div class="row"><span>批${o.index} @${o.entry.toFixed(2)}</span><span>止盈 ${o.tp_price.toFixed(2)}</span></div>`;
+    });
+    if(state.tp_orders.length>5) bt.innerHTML+='<div class="more">... 还有 '+(state.tp_orders.length-5)+' 笔</div>';
+  }
+
+  // toggle
+  const body=document.getElementById('pos-body');
+  if(posExpanded) body.classList.add('open'); else body.classList.remove('open');
+  document.getElementById('pos-arrow').textContent=posExpanded?'▲':'▼';
+}
+function updateIndicators(){
+  const atrRefLabels={low:'偏低',normal:'正常',elevated:'推荐',high:'偏高'};
+  const atrRefColors={low:'var(--color-negative)',normal:'var(--color-warning)',elevated:'var(--color-positive)',high:'var(--color-negative)'};
+  const tr=state.taker_ratio||{buy_pct:50,sell_pct:50};
+  const trColor=tr.buy_pct>55?'var(--color-positive)':tr.sell_pct>55?'var(--color-negative)':'var(--color-text-secondary)';
+  document.getElementById('indicators').innerHTML=`
+    <div class="ind-item"><div class="ind-lbl">波动率</div><div class="ind-val">${state.amplitude_1m.toFixed(3)}%</div></div>
+    <div class="ind-item"><div class="ind-lbl">ATR(14)</div><div class="ind-val">${state.atr14.toFixed(2)} (${state.atr14_pct.toFixed(3)}%) <span style="color:${atrRefColors[state.atr14_ref]||'var(--color-text-secondary)'}">P${state.atr14_percentile||0}</span></div></div>
+    <div class="ind-item"><div class="ind-lbl">振幅</div><div class="ind-val">${state.amplitude_1m.toFixed(3)}%</div></div>
+    <div class="ind-item"><div class="ind-lbl">流动性</div><div class="ind-val ind-pressure" style="color:${trColor}">买方:卖方 ${tr.buy_pct.toFixed(2)}%:${tr.sell_pct.toFixed(2)}%</div></div>
+  `;
+}
+function updateLastPos(){
+  const lp=state.last_position;
+  const el=document.getElementById('last-pos');
+  if(!lp||lp.side==='NONE'){el.innerHTML='';return;}
+  const pnl=lp.net_pnl||0;
+  el.innerHTML=`
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span class="tag ${lp.side==='LONG'?'tag-long':'tag-short'}">${lp.side} · ${lp.exit_type||'MANUAL'}</span>
+        <span class="lp-pnl" style="color:${pnl>=0?'var(--color-positive)':'var(--color-negative)'}">${pnl>=0?'+':''}${pnl.toFixed(2)}</span>
+      </div>
+      <div style="font-size:10px;color:var(--color-text-muted);margin-top:4px">
+        入场 ${(lp.entry||0).toFixed(2)} → 出场 ${(lp.exit||0).toFixed(2)} · ${(lp.size||0).toFixed(4)} ETH · ${lp.close_time||''} · 费${(lp.fee||0).toFixed(2)} · 资${(lp.funding||0).toFixed(4)}
+      </div>
+    </div>
+  `;
+}
+function renderOrderbook(msg){
+  if(!msg) return;
+  let html='';
+  const maxDepth=Math.max(...msg.asks.map(a=>parseFloat(a[1])),...msg.bids.map(b=>parseFloat(b[1])),1);
+  msg.asks.slice(0,8).reverse().forEach(a=>{
+    const pct=(parseFloat(a[1])/maxDepth*100).toFixed(0);
+    html+=`<div class="ob-row ask"><span>${parseFloat(a[0]).toFixed(2)}</span><span>${parseFloat(a[1]).toFixed(2)}</span><div class="depth-bar" style="width:${pct}%"></div></div>`;
+  });
+  html+=`<div class="ob-spread">价差 ${msg.spread.toFixed(4)} (${msg.spread_pct.toFixed(4)}%) ${msg.pressure==='buy'?'←买盘占优':msg.pressure==='sell'?'卖盘占优→':'均衡'}</div>`;
+  msg.bids.slice(0,8).forEach(b=>{
+    const pct=(parseFloat(b[1])/maxDepth*100).toFixed(0);
+    html+=`<div class="ob-row bid"><span>${parseFloat(b[0]).toFixed(2)}</span><span>${parseFloat(b[1]).toFixed(2)}</span><div class="depth-bar" style="width:${pct}%"></div></div>`;
+  });
+  document.getElementById('orderbook').innerHTML=html;
+}
+function addLog(event,detail){
+  const el=document.getElementById('log-area');
+  const time=new Date().toLocaleTimeString('zh-CN',{hour12:false});
+  const colors={order_filled:'var(--color-brand)',tp_hit:'var(--color-positive)',sl_triggered:'var(--color-negative)',connection_lost:'var(--color-warning)'};
+  el.innerHTML=`<div style="color:${colors[event]||'var(--color-text-secondary)'}">${time} ${detail}</div>`+el.innerHTML;
+  if(el.children.length>50) el.removeChild(el.lastChild);
+}
+
+// ====== Actions ======
+function doAction(action,body){
+  fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()},body:body?JSON.stringify(body):undefined})
+    .then(r=>r.json()).then(d=>{if(d.ok)showToast('success',getActionLabel(action,d));else showToast('error',d.error||'失败');})
+    .catch(()=>showToast('error','请求失败'));
+}
+function getActionLabel(action,d){
+  const m={open:(d.side==='LONG'?'做多':'做空')+' 指令已发送',close:'平仓指令已发送',close_percent:'部分平仓 '+d.percent+'% 指令已发送',cancel:'撤单指令已发送'};
+  return m[action]||'指令已发送';
+}
+function showConfirm(title,body,action,actionBody){
+  const modal=document.getElementById('modal-confirm');
+  document.getElementById('modal-title').textContent=title;
+  document.getElementById('modal-body').innerHTML=body;
+  document.getElementById('modal-countdown').textContent='2';
+  document.getElementById('modal-ok').disabled=true;
+  modal.classList.add('open');
+  modalCountdown=2;
+  if(modalTimer) clearInterval(modalTimer);
+  modalTimer=setInterval(()=>{
+    modalCountdown--;
+    document.getElementById('modal-countdown').textContent=modalCountdown;
+    if(modalCountdown<=0){clearInterval(modalTimer);modalTimer=null;document.getElementById('modal-ok').disabled=false;}
+  },1000);
+  document.getElementById('modal-ok').onclick=()=>{closeModal();doAction(action,actionBody);};
+  document.getElementById('modal-cancel').onclick=closeModal;
+}
+function closeModal(){document.getElementById('modal-confirm').classList.remove('open');if(modalTimer){clearInterval(modalTimer);modalTimer=null;}}
+function showToast(type,text){
+  const el=document.getElementById('toast');
+  el.textContent=text;el.className=type+' show';
+  setTimeout(()=>{el.className='';},2000);
+}
+
+// ====== Event Bindings ======
+document.getElementById('btn-long').onclick=()=>doAction('open',{side:'LONG'});
+document.getElementById('btn-short').onclick=()=>doAction('open',{side:'SHORT'});
+document.getElementById('btn-close-all').onclick=()=>{
+  const pos=state.position;
+  if(!pos) return;
+  showConfirm('市价全平',`<p>${pos.side} ${(pos.size||0).toFixed(4)} ETH</p><p style="color:var(--color-text-secondary)">市价 ~${state.price.toFixed(2)}</p>`,'close');
+};
+document.getElementById('btn-cancel').onclick=()=>doAction('cancel');
+document.getElementById('btn-early-close').onclick=()=>doAction('close_percent',{percent:100});
+document.getElementById('pos-header').onclick=()=>{posExpanded=!posExpanded;updatePosCard();};
+document.getElementById('btn-toggle-chart').onclick=()=>{
+  const el=document.getElementById('kline-chart');
+  el.classList.toggle('collapsed');
+  document.getElementById('btn-toggle-chart').textContent=el.classList.contains('collapsed')?'展开':'折叠';
+};
+
+// K-line periods
+document.querySelectorAll('#kline-periods button').forEach(btn=>{
+  btn.onclick=()=>{
+    document.querySelectorAll('#kline-periods button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    klinePeriod=btn.dataset.p;
+    renderChart();
+  };
+});
+
+// Tab bar
+document.querySelectorAll('#tab-bar button').forEach(btn=>{
+  btn.onclick=()=>{
+    document.querySelectorAll('#tab-bar button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    activeTab=btn.dataset.tab;
+    if(activeTab==='history') openHistory();
+    else if(activeTab==='settings') openSettings();
+    else{document.getElementById('history-overlay').classList.remove('open');document.getElementById('settings-overlay').classList.remove('open');}
+  };
+});
+
+// History
+document.getElementById('btn-history-close').onclick=()=>{
+  document.getElementById('history-overlay').classList.remove('open');
+  document.querySelectorAll('#tab-bar button').forEach(b=>b.classList.remove('active'));
+  document.querySelector('#tab-bar button[data-tab="main"]').classList.add('active');
+  activeTab='main';
+};
+function openHistory(){
+  document.getElementById('history-overlay').classList.add('open');
+  historyOffset=0;historyDone=false;
+  document.getElementById('history-list').innerHTML='';
+  document.getElementById('history-end').style.display='none';
+  loadHistory();
+}
+function loadHistory(){
+  if(historyLoading||historyDone) return;
+  historyLoading=true;
+  document.getElementById('history-loading').style.display='block';
+  fetch(`/api/history?offset=${historyOffset}&limit=20`,{headers:{'X-Token':getToken()}})
+    .then(r=>r.json()).then(d=>{
+      document.getElementById('history-loading').style.display='none';
+      if(!d.items||!d.items.length){historyDone=true;document.getElementById('history-end').style.display='block';historyLoading=false;return;}
+      // stats
+      if(historyOffset===0){
+        const s=state.stats_24h||{};
+        document.getElementById('stat-grid').innerHTML=`
+          <div class="stat-card"><div class="sv">${s.open_count||0}</div><div class="sl">总仓位</div></div>
+          <div class="stat-card"><div class="sv" style="color:var(--color-positive)">${(s.win_rate||0).toFixed(1)}%</div><div class="sl">胜率</div></div>
+          <div class="stat-card"><div class="sv" style="color:${(s.total_pnl||0)>=0?'var(--color-positive)':'var(--color-negative)'}">${(s.total_pnl||0)>=0?'+':''}${(s.total_pnl||0).toFixed(2)}</div><div class="sl">累计盈亏</div></div>
+          <div class="stat-card"><div class="sv">${(s.close_count||0)}</div><div class="sl">平仓次数</div></div>
+        `;
+      }
+      d.items.forEach(h=>{
+        const pnl=h.net_pnl||0;
+        const div=document.createElement('div');
+        div.className='history-item';
+        div.innerHTML=`
+          <div class="h-row"><span class="tag ${h.side==='LONG'?'tag-long':'tag-short'}">${h.side} · ${h.exit_type||'MANUAL'}</span><span style="color:${pnl>=0?'var(--color-positive)':'var(--color-negative)'};font-weight:700">${pnl>=0?'+':''}${pnl.toFixed(2)}</span></div>
+          <div class="h-row"><span>入场 ${(h.entry_price||0).toFixed(2)} → 出场 ${(h.exit_price||0).toFixed(2)}</span><span>${(h.size||0).toFixed(4)} ETH</span></div>
+          <div class="h-row" style="color:var(--color-text-muted)"><span>${h.close_time||''} · 费${(h.total_fee||0).toFixed(2)} · 资${(h.funding||0).toFixed(4)}</span><span>净利 ${pnl.toFixed(2)}</span></div>
+        `;
+        document.getElementById('history-list').appendChild(div);
+      });
+      historyOffset+=d.items.length;
+      if(d.items.length<20){historyDone=true;document.getElementById('history-end').style.display='block';}
+      historyLoading=false;
+    }).catch(()=>{document.getElementById('history-loading').style.display='none';historyLoading=false;});
+}
+document.getElementById('history-body').onscroll=function(){
+  const el=this;
+  if(el.scrollTop+el.clientHeight>=el.scrollHeight-40) loadHistory();
+};
+
+// Settings
+document.getElementById('btn-settings-close').onclick=()=>{
+  document.getElementById('settings-overlay').classList.remove('open');
+  document.querySelectorAll('#tab-bar button').forEach(b=>b.classList.remove('active'));
+  document.querySelector('#tab-bar button[data-tab="main"]').classList.add('active');
+  activeTab='main';
+};
+document.getElementById('btn-settings-cancel').onclick=()=>{
+  document.getElementById('settings-overlay').classList.remove('open');
+  document.querySelectorAll('#tab-bar button').forEach(b=>b.classList.remove('active'));
+  document.querySelector('#tab-bar button[data-tab="main"]').classList.add('active');
+  activeTab='main';
+};
+function openSettings(){
+  document.getElementById('settings-overlay').classList.add('open');
+  fetch('/api/settings',{headers:{'X-Token':getToken()}}).then(r=>r.json()).then(cfg=>{
+    settingsCache=cfg||{};
+    renderSettingsTab();
+  }).catch(()=>{});
+}
+document.getElementById('btn-settings-save').onclick=()=>{
+  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()},body:JSON.stringify(settingsCache)})
+    .then(r=>r.json()).then(d=>{
+      if(d.ok) showToast('success','设置已保存');
+      else showToast('error','保存失败');
+    }).catch(()=>showToast('error','保存失败'));
+};
+document.querySelectorAll('#settings-tabs button').forEach(btn=>{
+  btn.onclick=()=>{
+    document.querySelectorAll('#settings-tabs button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    settingsSubTab=btn.dataset.stab;
+    renderSettingsTab();
+  };
+});
+function sGet(key,dflt){const keys=key.split('.');let v=settingsCache;for(const k of keys){if(v&&typeof v==='object'&&k in v)v=v[k];else return dflt;}return v??dflt;}
+function sSet(key,val){const keys=key.split('.');let o=settingsCache;for(let i=0;i<keys.length-1;i++){if(!(keys[i]in o))o[keys[i]]={};o=o[keys[i]];}o[keys[keys.length-1]]=val;renderSettingsTab();}
+function sToggle(key){sSet(key,!sGet(key,false));}
+function sSelect(key,val){sSet(key,val);}
+function renderSettingsTab(){
+  const el=document.getElementById('settings-content');
+  const pre=document.getElementById('settings-preview');
+  let h='';
+  if(settingsSubTab==='trading'){
+    const tpMode=sGet('take_profit.mode','fixed');
+    const slMode=sGet('stop_loss.trigger_mode','fixed');
+    const slLimitMode=sGet('stop_loss.limit_mode','queue');
+    h+=rowToggle('启用分批模式','batch_mode.enabled');
+    if(!sGet('batch_mode.enabled',false)){
+      h+=rowSelect('止盈模式','take_profit.mode',[{v:'fixed',l:'固定点数'},{v:'percentage',l:'百分比'},{v:'atr14',l:'ATR14'}]);
+      if(tpMode==='fixed') h+=rowInput('止盈点数','take_profit.points',0.01,100,0.01);
+      if(tpMode==='percentage') h+=rowInput('止盈百分比','take_profit.percent',0.01,10,0.01);
+      if(tpMode==='atr14') h+=rowInput('止盈 ATR14 系数','take_profit.atr14_coefficient',0.1,10,0.1);
+      h+=rowSelect('止损触发模式','stop_loss.trigger_mode',[{v:'fixed',l:'固定点数'},{v:'percentage',l:'百分比'},{v:'atr14',l:'ATR14'}]);
+      if(slMode==='fixed') h+=rowInput('止损点数','stop_loss.trigger_points',0.01,100,0.01);
+      if(slMode==='percentage') h+=rowInput('止损百分比','stop_loss.trigger_percent',0.01,10,0.01);
+      if(slMode==='atr14') h+=rowInput('止损 ATR14 系数','stop_loss.atr14_coefficient',0.1,10,0.1);
+      h+=rowSelect('止损价模式','stop_loss.limit_mode',[{v:'queue',l:'同向价1'},{v:'custom',l:'自定义滑点'}]);
+      if(slLimitMode==='custom') h+=rowInput('自定义滑点','stop_loss.limit_offset',0.01,100,0.01);
+      h+=rowInput('最大损失比例 %','stop_market.max_loss_percent',0.1,80,0.1);
+    }
+    h+=rowInput('API杠杆','leverage.api',1,125,1);
+    h+=rowInput('实际杠杆','leverage.actual',1,125,1);
+    if(!sGet('batch_mode.enabled',false)) h+=rowInput('订单超时(秒)','order_timeout_seconds',0.5,30,0.5);
+  }else if(settingsSubTab==='smart'){
+    const batchOn=sGet('batch_mode.enabled',false);
+    if(batchOn){h+='<div class="setting-hint" style="padding:8px 0">分批模式已启用，移动止损不适用</div>';}
+    else{
+      h+=rowToggle('启用移动止损','trailing_stop.enabled');
+      if(sGet('trailing_stop.enabled',false)) h+=rowInput('移动止损格数','trailing_stop.grid_count',3,20,1);
+    }
+    h+=rowToggle('启用浮亏保护','loss_protection.enabled');
+    if(sGet('loss_protection.enabled',false)) h+=rowInput('触发时间(分钟)','loss_protection.trigger_minutes',0.5,60,0.5);
+    if(batchOn) h+='<div class="setting-hint">分批模式下订单超时自动禁用</div>';
+  }else if(settingsSubTab==='batch'){
+    h+=rowToggle('启用分批模式','batch_mode.enabled');
+    if(sGet('batch_mode.enabled',false)){
+      h+=rowInput('拆单笔数','batch_mode.count',2,50,1);
+      h+=rowSelect('数量分配','batch_mode.distribution',[{v:'equal',l:'均分'},{v:'increase',l:'递增'},{v:'decrease',l:'递减'},{v:'random',l:'随机'}]);
+      const ladMode=sGet('batch_mode.ladder_mode','fixed');
+      h+=rowSelect('价格阶梯','batch_mode.ladder_mode',[{v:'fixed',l:'固定点数'},{v:'percentage',l:'百分比'},{v:'atr14',l:'ATR14'}]);
+      const unit=ladMode==='fixed'?'点':ladMode==='percentage'?'%':'xATR';
+      h+=rowInput('阶梯最近端 ('+unit+')','batch_mode.ladder_min',0.01,100,0.01);
+      h+=rowInput('阶梯最远端 ('+unit+')','batch_mode.ladder_max',0.01,200,0.01);
+      if(sGet('batch_mode.distribution','equal')==='random') h+='<div class="setting-hint">每笔在均分值的 ±5% 范围内随机浮动</div>';
+      h+='<div class="setting-hint">启用后移动止损和订单超时自动禁用</div>';
+    }
+  }else if(settingsSubTab==='system'){
+    h+=rowToggle('启用代理','proxy.enabled');
+    if(sGet('proxy.enabled',false)){
+      h+=rowInput('代理地址','proxy.host','','','');
+      h+=rowInput('代理端口','proxy.port',1,65535,1);
+    }
+    h+=rowToggle('启用 Web 服务','web_ui.enabled');
+    if(sGet('web_ui.enabled',false)) h+=rowInput('监听端口','web_ui.port',1024,65535,1);
+    h+=rowToggle('音效开关','sound.enabled');
+    h+=rowToggle('金额脱敏','privacy.enabled');
+    h+=rowInput('近X分钟价格范围','price_range.minutes',1,120,1);
+    const spMode=sGet('stats_period.mode','24h');
+    h+=rowSelect('统计周期','stats_period.mode',[{v:'24h',l:'近24小时'},{v:'natural',l:'自然日'}]);
+    if(spMode==='natural') h+=rowInput('时区','stats_period.timezone','','','');
+  }else if(settingsSubTab==='backup'){
+    h+='<div style="padding:12px 0"><button class="btn btn-buy" id="btn-backup-new" style="width:100%">新建备份</button></div>';
+    h+='<div id="backup-list" style="margin-top:8px"></div>';
+    setTimeout(()=>{
+      document.getElementById('btn-backup-new').onclick=()=>{
+        fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()},body:JSON.stringify({_backup:true})})
+          .then(()=>showToast('success','备份已创建')).catch(()=>showToast('error','备份失败'));
+      };
+    },100);
+  }
+  el.innerHTML=h;
+
+  // P&L preview (trading tab)
+  if(settingsSubTab==='trading'&&!sGet('batch_mode.enabled',false)){
+    const price=state.price||1742.31;
+    const lev=sGet('leverage.actual',25);
+    const bal=1000; // mock
+    const notional=bal*lev;
+    const size=notional/price;
+    const tpMode=sGet('take_profit.mode','fixed');
+    let tpPrice=price+(tpMode==='fixed'?sGet('take_profit.points',1):tpMode==='percentage'?price*sGet('take_profit.percent',0.36)/100:sGet('take_profit.atr14_coefficient',1)*state.atr14);
+    const tpPnl=(tpPrice-price)*size;
+    const slMode=sGet('stop_loss.trigger_mode','fixed');
+    let slPrice=price-(slMode==='fixed'?sGet('stop_loss.trigger_points',3):slMode==='percentage'?price*sGet('stop_loss.trigger_percent',0.5)/100:sGet('stop_loss.atr14_coefficient',1)*state.atr14);
+    const slPnl=(price-slPrice)*size;
+    const smPct=sGet('stop_market.max_loss_percent',30);
+    const smLoss=bal*smPct/100;
+    const rr=slPnl>0?(tpPnl/slPnl):0;
+    const rrLabel=rr>=2?'优秀':rr>=1.5?'良好':rr>=1?'一般':'偏低';
+    const rrColor=rr>=2?'var(--color-positive)':rr>=1.5?'var(--color-positive)':rr>=1?'var(--color-warning)':'var(--color-negative)';
+    pre.innerHTML=`
+      <div>参考价 ${price.toFixed(2)} · LONG · 保证金 ${bal.toFixed(2)} U</div>
+      <div>仓位：${size.toFixed(3)} ETH（名义价值：${notional.toFixed(2)} U）</div>
+      <div>止盈价：${tpPrice.toFixed(2)} · 止损触发：${slPrice.toFixed(2)} · 保底：${(price-(bal*smPct/100/size)).toFixed(2)}</div>
+      <div>止盈 PnL：<span style="color:var(--color-positive)">+${tpPnl.toFixed(2)} U</span>（+${(tpPnl/bal*100).toFixed(1)}%）</div>
+      <div>止损亏损：<span style="color:var(--color-negative)">-${slPnl.toFixed(2)} U</span>（-${(slPnl/bal*100).toFixed(1)}%）· 保底最大损失：${smLoss.toFixed(2)} U（${smPct.toFixed(1)}%）</div>
+      <div>盈亏比：<span style="color:${rrColor}">${rr.toFixed(2)}:1 [${rrLabel}]</span></div>
+    `;
+  }else{
+    pre.innerHTML='';
+  }
+
+  // bind inline edits
+  el.querySelectorAll('.s-val[data-key]').forEach(span=>{
+    span.onclick=function(){
+      const key=this.dataset.key;const cur=sGet(key,'');
+      if(typeof cur==='boolean'){sToggle(key);return;}
+      const input=document.createElement('input');
+      input.value=cur;input.type='number';input.step='any';
+      input.style.cssText='width:100px;text-align:right;background:var(--color-surface);color:var(--color-text);border:1px solid var(--color-border);border-radius:4px;padding:4px 8px;font-size:13px;font-family:var(--font-mono)';
+      const commit=()=>{const v=parseFloat(input.value);if(!isNaN(v))sSet(key,v);else sSet(key,input.value);};
+      input.onblur=commit;input.onkeydown=e=>{if(e.key==='Enter'){commit();input.blur();}};
+      this.innerHTML='';this.appendChild(input);input.focus();
+    };
+  });
+  el.querySelectorAll('select[data-key]').forEach(sel=>{
+    sel.onchange=function(){sSelect(this.dataset.key,this.value);};
+  });
+}
+
+function rowToggle(label,key){
+  const val=sGet(key,false);
+  return `<div class="setting-row"><span class="s-lbl">${label}</span><span class="toggle ${val?'on':''}" data-key="${key}" data-type="toggle" onclick="sToggle('${key}')"></span></div>`;
+}
+function rowInput(label,key,min,max,step){
+  const val=sGet(key,'');
+  return `<div class="setting-row"><span class="s-lbl">${label}</span><span class="s-val" data-key="${key}">${val}</span></div>`;
+}
+function rowSelect(label,key,options){
+  const val=sGet(key,options[0]?.v||'');
+  let opts=options.map(o=>`<option value="${o.v}" ${val===o.v?'selected':''}>${o.l}</option>`).join('');
+  return `<div class="setting-row"><span class="s-lbl">${label}</span><select data-key="${key}">${opts}</select></div>`;
+}
+
+// Privacy modal
+document.getElementById('modal-privacy-cancel').onclick=()=>document.getElementById('modal-privacy').classList.remove('open');
+document.getElementById('modal-privacy-ok').onclick=()=>{
+  document.getElementById('modal-privacy').classList.remove('open');
+  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()},body:JSON.stringify({_reset_privacy:true})})
+    .then(()=>showToast('success','脱敏基数已重置'));
+};
+document.getElementById('tb-balance').onclick=function(){
+  if(this.classList.contains('masked')){
+    document.getElementById('modal-privacy').classList.add('open');
+  }
+};
+
+// Pull-to-refresh
+let pullStart=0;
+document.getElementById('history-body').addEventListener('touchstart',e=>{pullStart=e.touches[0].clientY;});
+document.getElementById('history-body').addEventListener('touchmove',e=>{
+  if(this.scrollTop>0) return;
+  const dy=e.touches[0].clientY-pullStart;
+  if(dy>60){historyOffset=0;historyDone=false;document.getElementById('history-list').innerHTML='';loadHistory();}
+});
+
+// ====== Init ======
+function init(){
+  initChart();
+  loadKlines();
+  wsConnect();
+  // 首次用户手势时初始化 AudioContext（iOS Safari 要求）
+  document.addEventListener('touchstart',function(){_getAudioCtx();},{once:true});
+  document.addEventListener('click',function(){_getAudioCtx();},{once:true});
+}
+document.addEventListener('DOMContentLoaded',init);
+</script>
+</body>
+</html>

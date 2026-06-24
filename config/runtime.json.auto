@@ -29,7 +29,7 @@
         "enabled": true,
         "trigger_minutes": 1.5
     },
-    "last_modified": "2026-06-10T22:30:11.125609",
+    "last_modified": "2026-06-10T22:31:32.241227",
     "sound": {
         "enabled": true
     },
@@ -37,10 +37,27 @@
         "minutes": 30
     },
     "stats_period": {
-        "mode": "24h",
+        "mode": "calendar_day",
         "timezone": "+8"
     },
     "privacy": {
-        "enabled": false
+        "enabled": true
+    },
+    "proxy": {
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 7890
+    },
+    "batch_mode": {
+        "enabled": false,
+        "count": 5,
+        "distribution": "equal",
+        "ladder_mode": "fixed",
+        "ladder_min": 1.00,
+        "ladder_max": 10.00
+    },
+    "web_ui": {
+        "enabled": false,
+        "port": 8099
     }
 }
