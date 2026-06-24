@@ -282,20 +282,25 @@ class LiveTradingBot:
                     self.indicators.update_tick(price)
                 
                 # v1.5.0 新增：更新移动止损和浮亏保护
+                # v1.9.0：分批模式下移动止损禁用
                 if self.trader.position and self.trader.trailing_stop_manager:
                     await self.trader.trailing_stop_manager.update_trailing_stop(price)
-                
+
                 # v1.5.0 修复：移除高频日志，避免 TUI 抖动
                 # 只在 check_and_protect 内部记录关键日志
-                if self.trader.position and self.trader.loss_protection_manager.enabled:
+                if self.trader.position and self.trader.loss_protection_manager and self.trader.loss_protection_manager.enabled:
                     # 计算未实现盈亏
                     if self.trader.position['side'] == 'LONG':
                         pnl = (price - self.trader.position['entry_price']) * self.trader.position['size']
                     else:
                         pnl = (self.trader.position['entry_price'] - price) * self.trader.position['size']
-                    
+
                     # 调用 check_and_protect（内部会记录必要日志）
                     await self.trader.loss_protection_manager.check_and_protect(price, pnl)
+
+                # v1.9.0：分批模式浮亏保护
+                if self.trader.batch_state and self.trader.batch_state.get('enabled') and not self.trader.batch_state.get('round_closed'):
+                    self.trader._check_batch_loss_protection()
             
             elif event_type == 'depth':
                 bids = data.get('bids', [])
@@ -341,7 +346,11 @@ class LiveTradingBot:
         await self.trader.open_position(side)
     
     async def cancel_order(self):
-        """撤单"""
+        """撤单（v1.9.0：含分批模式）"""
+        # v1.9.0：分批模式
+        if self.trader.batch_state and self.trader.batch_state.get('enabled') and not self.trader.batch_state.get('round_closed'):
+            self.trader.cancel_open_order()
+            return
         # 如果有提前平仓单，撤销并恢复止盈止损
         if self.trader.early_close_order:
             self.trader.cancel_early_close()
@@ -362,9 +371,14 @@ class LiveTradingBot:
         if self.trader.pending_order:
             self.trader._add_action("⚠️ 禁止进入", "请先撤销挂单（按 ←）")
             return False
-        
+
         if self.trader.position:
             self.trader._add_action("⚠️ 禁止进入", "请先平仓（按 →）")
+            return False
+
+        # v1.9.0：分批模式下禁止进入设置
+        if self.trader.batch_state and self.trader.batch_state.get('enabled') and not self.trader.batch_state.get('round_closed'):
+            self.trader._add_action("⚠️ 禁止进入", "分批建仓进行中，请先完成或撤销")
             return False
         
         # 可以进入

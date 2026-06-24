@@ -63,6 +63,15 @@ class ConfigManager:
         # v1.8.0 新增：金额脱敏配置
         "privacy": {
             "enabled": False
+        },
+        # v1.9.0 新增：分批建仓模式
+        "batch_mode": {
+            "enabled": False,
+            "count": 5,
+            "distribution": "equal",
+            "ladder_mode": "fixed",
+            "ladder_min": 1.00,
+            "ladder_max": 10.00
         }
     }
     
@@ -372,3 +381,20 @@ class ConfigManager:
     def is_sound_enabled(self) -> bool:
         """获取音效开关状态"""
         return self.config.get('sound', {}).get('enabled', True)
+
+    # v1.9.0 新增：分批建仓模式
+
+    def get_batch_config(self) -> dict:
+        """获取分批建仓配置"""
+        return self.config.get('batch_mode', {
+            'enabled': False,
+            'count': 5,
+            'distribution': 'equal',
+            'ladder_mode': 'fixed',
+            'ladder_min': 1.00,
+            'ladder_max': 10.00
+        })
+
+    def is_batch_mode_enabled(self) -> bool:
+        """分批模式是否启用"""
+        return self.config.get('batch_mode', {}).get('enabled', False)
