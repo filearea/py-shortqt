@@ -114,6 +114,7 @@ class LiveTradingBot:
         # 错误日志列表（用于 TUI 显示）
         self.error_log = []
         self.web_server = None  # v1.10.0 Web 服务
+        self._needs_init = False  # v1.10.0: 标记是否需要重新初始化（首次启动失败时置为 True）
         
         # 兼容旧日志（保留给 LiveTrader 使用）
         self.logger = TradeLogger(project_root / "logs")
@@ -538,6 +539,13 @@ class LiveTradingBot:
         # 5. v1.10.0：动态启停 Web 服务
         asyncio.ensure_future(self._apply_web_ui_setting())
 
+        # 6. v1.10.0：代理变更 — 重新应用代理配置，需要时触重重连
+        self._reapply_proxy_env(self.config_manager)
+        if self._needs_init:
+            asyncio.ensure_future(self._reinitialize())
+        else:
+            self.trader._add_action("ℹ️ 代理已更新", "WebSocket 重连后生效（需重启或等待自动重连）")
+
         self.log_manager.system.debug(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
 
     async def _apply_web_ui_setting(self):
@@ -567,6 +575,45 @@ class LiveTradingBot:
                 self.log_manager.system.warning(f"Web 服务停止异常: {e}")
             self.web_server = None
             self.trader.web_server = None
+
+    @staticmethod
+    def _reapply_proxy_env(config_manager):
+        """根据当前配置重新设置代理环境变量"""
+        proxy_cfg = config_manager.get('proxy', {})
+        if proxy_cfg.get('enabled', False):
+            host = proxy_cfg.get('host', '127.0.0.1')
+            port = proxy_cfg.get('port', 7890)
+            proxy_url = f'http://{host}:{port}'
+            os.environ['HTTP_PROXY'] = proxy_url
+            os.environ['HTTPS_PROXY'] = proxy_url
+        else:
+            os.environ.pop('HTTP_PROXY', None)
+            os.environ.pop('HTTPS_PROXY', None)
+
+    async def _reinitialize(self):
+        """重新初始化连接（代理变更后调用）"""
+        self.log_manager.system.info("正在重新初始化连接...")
+        self.trader._add_action("🔄 重新连接中", "正在初始化...")
+
+        # 重新应用代理配置
+        self._reapply_proxy_env(self.config_manager)
+
+        try:
+            if await self.trader.initialize():
+                self._needs_init = False
+                # 启动 WebSocket
+                self.log_manager.system.info("正在连接行情 WebSocket...")
+                asyncio.create_task(self.listener.connect())
+                # 拉取历史数据
+                asyncio.create_task(self.trader.fetch_position_history())
+                self.trader._add_action("✅ 重连成功", "连接已恢复，功能正常")
+                self.log_manager.system.info("重连成功")
+            else:
+                self.trader._add_action("❌ 重连失败", "请检查代理配置或网络连接")
+                self.log_manager.system.warning("重连失败，初始化返回 False")
+        except Exception as e:
+            self.trader._add_action("❌ 重连失败", f"{e}")
+            self.log_manager.system.error(f"重连失败: {e}")
 
     async def _cleanup_resources(self, ws_task=None):
         """清理资源（确保 WebSocket 正确关闭）"""
@@ -610,9 +657,11 @@ class LiveTradingBot:
         
         # 1. 初始化实盘连接（带重试机制）
         max_retries = 3
+        init_ok = False
         for retry in range(max_retries):
             try:
                 if await self.trader.initialize():
+                    init_ok = True
                     # 记录启动时账户余额（用于复合收益率计算）
                     self.logger.log_balance('startup', self.trader.available_balance, {
                         'account': self.account_name,
@@ -636,8 +685,9 @@ class LiveTradingBot:
                         print(f"初始化失败，{retry + 1}/{max_retries}，5 秒后重试...")
                         await asyncio.sleep(5)
                     else:
-                        print("\n[ERROR] 实盘初始化失败，退出")
-                        return
+                        print("\n[WARN] 实盘初始化失败，进入离线模式（可进入设置配置代理后重试）")
+                        self.trader._add_action("❌ 连接失败", "请进入 系统设置 → 启用代理 → 保存重试")
+                        self._needs_init = True
             except Exception as e:
                 error_msg = str(e)
                 if "too many requests" in error_msg.lower() or "banned" in error_msg.lower():
@@ -647,39 +697,45 @@ class LiveTradingBot:
                     print("1. 等待 1-2 分钟让 IP 解封")
                     print("2. 检查是否有多个程序同时运行")
                     print("3. 使用 WebSocket 订阅代替轮询")
-                    return
+                    self.trader._add_action("❌ API 限流", "IP 可能被限制，等待 1-2 分钟后重试")
+                    self._needs_init = True
+                    break
                 if retry < max_retries - 1:
                     print(f"初始化失败：{e}，{retry + 1}/{max_retries}，5 秒后重试...")
                     await asyncio.sleep(5)
                 else:
-                    print(f"\n[ERROR] 实盘初始化失败：{e}，退出")
-                    return
-        
-        # 2. 连接行情 WebSocket
-        self.log_manager.system.info("正在连接行情 WebSocket...")
-        ws_task = asyncio.create_task(self.listener.connect())
+                    print(f"\n[WARN] 实盘初始化失败：{e}，进入离线模式")
+                    self.trader._add_action("❌ 连接失败", "请进入 系统设置 → 启用代理 → 保存重试")
+                    self._needs_init = True
 
-        # 等待行情连接（最多 15 秒）
-        for i in range(30):  # 15 秒 = 30 * 0.5 秒
-            if self.listener.connected:
-                self.log_manager.system.info("行情已连接")
-                break
-            await asyncio.sleep(0.5)
-        else:
-            self.log_manager.system.warning("行情连接超时，程序继续运行，WebSocket 将在后台重试")
+        # 2. 连接行情 WebSocket（仅在初始化成功时）
+        ws_task = None
+        if init_ok:
+            self.log_manager.system.info("正在连接行情 WebSocket...")
+            ws_task = asyncio.create_task(self.listener.connect())
+
+            # 等待行情连接（最多 15 秒）
+            for i in range(30):  # 15 秒 = 30 * 0.5 秒
+                if self.listener.connected:
+                    self.log_manager.system.info("行情已连接")
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                self.log_manager.system.warning("行情连接超时，程序继续运行，WebSocket 将在后台重试")
 
         # 3. v1.4.0 新增：补全缺失的历史数据（WebSocket 连接后）
-        self.log_manager.system.info("正在补全缺失的历史数据（过去 14 天）...")
-        try:
-            from src.data_collector import collect_historical_data
-            # 使用 asyncio 运行同步函数，避免阻塞
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: collect_historical_data([self.symbol], days=14)
-            )
-            self.log_manager.system.info("历史数据补全完成")
-        except Exception as e:
-            self.log_manager.system.warning(f"历史数据补全失败：{e}，程序将继续运行")
+        if init_ok:
+            self.log_manager.system.info("正在补全缺失的历史数据（过去 14 天）...")
+            try:
+                from src.data_collector import collect_historical_data
+                # 使用 asyncio 运行同步函数，避免阻塞
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: collect_historical_data([self.symbol], days=14)
+                )
+                self.log_manager.system.info("历史数据补全完成")
+            except Exception as e:
+                self.log_manager.system.warning(f"历史数据补全失败：{e}，程序将继续运行")
 
         # v1.10.0：启动 Web 服务（移动端 Web UI）
         if self.config_manager.is_web_ui_enabled():
