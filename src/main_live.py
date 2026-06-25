@@ -61,9 +61,7 @@ def _load_proxy_config():
                 return
     except Exception:
         pass
-    # 默认代理（向后兼容）
-    os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7890'
-    os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:7890'
+    # 代理未启用时清除环境变量（避免残留默认值影响连接）
 
 _load_proxy_config()
 if str(project_root) not in sys.path:
@@ -537,7 +535,38 @@ class LiveTradingBot:
             self.log_manager.system.debug(f"价格范围窗口已更新：{pr_minutes} 分钟"
                                           ) if self.log_manager else None
 
+        # 5. v1.10.0：动态启停 Web 服务
+        asyncio.ensure_future(self._apply_web_ui_setting())
+
         self.log_manager.system.debug(f"杠杆已更新：API={api_lev}x, 实际={actual_lev}x")
+
+    async def _apply_web_ui_setting(self):
+        """动态启停 Web 服务"""
+        web_enabled = self.config_manager.is_web_ui_enabled()
+        if web_enabled and not self.web_server:
+            try:
+                web_cfg = self.config_manager.get_web_ui_config()
+                self.web_server = await start_web_server(
+                    trader=self.trader,
+                    host=web_cfg.get('host', '0.0.0.0'),
+                    port=web_cfg.get('port', 8099),
+                    log_manager=self.log_manager
+                )
+                self.trader.web_server = self.web_server
+                url = f"http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}"
+                self.log_manager.system.info(f"Web UI 已启动: {url}")
+                self.trader._add_action("Web UI 已启动", url)
+            except Exception as e:
+                self.log_manager.system.error(f"Web 服务启动失败: {e}")
+                self.trader._add_action("Web 服务启动失败", str(e))
+        elif not web_enabled and self.web_server:
+            try:
+                await self.web_server.stop()
+                self.trader._add_action("Web UI 已停止", "")
+            except Exception as e:
+                self.log_manager.system.warning(f"Web 服务停止异常: {e}")
+            self.web_server = None
+            self.trader.web_server = None
 
     async def _cleanup_resources(self, ws_task=None):
         """清理资源（确保 WebSocket 正确关闭）"""
@@ -662,7 +691,9 @@ class LiveTradingBot:
                     port=web_cfg.get('port', 8099),
                     log_manager=self.log_manager
                 )
+                self.trader.web_server = self.web_server
                 self.log_manager.system.info(f"Web UI 已启动: http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}")
+                self.trader._add_action("Web UI 已启动", f"http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}")
             except Exception as e:
                 self.log_manager.system.error(f"Web 服务启动失败: {e}")
 

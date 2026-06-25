@@ -564,6 +564,14 @@ class SettingsUI:
 
         lines.append("")
         lines.append("─" * 50)
+        # v1.10.0：如果 Web 服务已运行，显示访问地址和 token
+        if self.trader and getattr(self.trader, 'web_server', None):
+            ws = self.trader.web_server
+            ip = ws._get_local_ip()
+            port = ws.port
+            token = ws.token
+            lines.append(f"[bold green]Web 服务运行中[/bold green]")
+            lines.append(f"  地址: http://{ip}:{port}?token={token}")
         lines.append("[dim]音效：开仓成交、平仓等操作时播放提示音[/dim]")
         lines.append("[dim]统计周期：近24小时为滚动窗口，自然日为指定时区的当日0点-24点[/dim]")
         lines.append("[dim]金额脱敏：开启后 TUI 中金额显示为相对于启动时余额的百分比[/dim]")
