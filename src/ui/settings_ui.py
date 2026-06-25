@@ -340,21 +340,31 @@ class SettingsUI:
         
         return lines
     
+    def _get_visible_smart_stop_fields(self) -> List[Tuple[int, dict]]:
+        """获取智能止损标签页可见字段列表"""
+        config = self.config_manager.get_config()
+        visible = []
+        for i, field in enumerate(self.tabs[1]['fields']):
+            if 'visible_cond' in field:
+                if not field['visible_cond'](config):
+                    continue
+            visible.append((i, field))
+        return visible
+
     def _render_smart_stop_tab_lines(self) -> list:
         """渲染智能止损标签页"""
         config = self.config_manager.get_config()
         lines = []
-        
-        # 获取智能止损的字段
-        smart_stop_fields = self.tabs[1]['fields']
-        
-        for i, field in enumerate(smart_stop_fields):
-            is_selected = (i == self.current_field)
+
+        visible_fields = self._get_visible_smart_stop_fields()
+
+        for visible_idx, (original_idx, field) in enumerate(visible_fields):
+            is_selected = (visible_idx == self.current_field)
             value = self._get_nested_value(config, field['key'])
-            
+
             if field['type'] == 'bool':
                 label = "✓ 是" if value else "○ 否"
-                
+
                 if is_selected:
                     if self.editing:
                         option_strs = [f"[green]●是[/green]" if value else "○是", "●否" if not value else "○否"]
@@ -363,15 +373,10 @@ class SettingsUI:
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][←→切换][/dim]")
                 else:
                     lines.append(f"  {field['label']}: {label}")
-            
+
             elif field['type'] in ['int', 'float']:
-                # 检查可见性条件
-                if 'visible_cond' in field:
-                    if not field['visible_cond'](config):
-                        continue
-                
                 unit = field.get('unit', '')
-                
+
                 if is_selected:
                     if self.editing:
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{self.input_buffer}_[/green]  [dim][数字输入 Enter 确认][/dim]")
@@ -496,13 +501,10 @@ class SettingsUI:
         config = self.config_manager.get_config()
         lines = []
 
-        for i, field in enumerate(self.tabs[4]['fields']):
-            # 检查可见性条件
-            if 'visible_cond' in field:
-                if not field['visible_cond'](config):
-                    continue
+        visible_fields = self._get_visible_system_fields()
+        for visible_idx, (original_idx, field) in enumerate(visible_fields):
 
-            is_selected = (i == self.current_field)
+            is_selected = (visible_idx == self.current_field)
             value = self._get_nested_value(config, field['key'])
 
             if field['type'] == 'bool':
@@ -793,15 +795,19 @@ class SettingsUI:
     def _handle_smart_stop_tab_key(self, key: str) -> str:
         """处理智能止损标签页的按键"""
         config = self.config_manager.get_config()
-        smart_stop_fields = self.tabs[1]['fields']
-        
-        max_field = len(smart_stop_fields) - 1
+        visible_fields = self._get_visible_smart_stop_fields()
+
+        if not visible_fields:
+            return 'continue'
+
+        max_field = len(visible_fields) - 1
         if self.current_field > max_field:
             self.current_field = max_field
         if self.current_field < 0:
             self.current_field = 0
-        
-        field = smart_stop_fields[self.current_field]
+
+        visible_idx = self.current_field
+        field_idx, field = visible_fields[visible_idx]
         
         if self.editing:
             if field['type'] == 'bool':
