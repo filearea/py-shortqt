@@ -263,7 +263,9 @@ class WebServer:
             if t.stop_market_order:
                 risk['sm_price'] = float(t.stop_market_order.get('triggerPrice', 0))
         if t.loss_protection_manager:
-            risk['loss_protection_active'] = t.loss_protection_manager.is_active()
+            lp_status = t.loss_protection_manager.get_status()
+            risk['loss_protection_active'] = lp_status.get('status', '未启用') in ('已保护',)
+            risk['loss_protection_status'] = lp_status.get('status', '未启用')
 
         # 24h 统计
         stats_24h = {
@@ -399,8 +401,13 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         """HTTP 状态快照（轮询备用）"""
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
-        state = self._build_state()
-        return web.json_response(state, dumps=lambda o: json.dumps(o, cls=DecimalEncoder))
+        try:
+            state = self._build_state()
+            return web.json_response(state, dumps=lambda o: json.dumps(o, cls=DecimalEncoder))
+        except Exception as e:
+            if self.log:
+                self.log.error(f'[Web] /api/state 异常: {e}', exc_info=True)
+            return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_klines(self, request: web.Request) -> web.Response:
         """K 线数据 API"""
@@ -480,45 +487,50 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
         try:
-            offset = int(request.query.get('offset', '0'))
-            limit = min(int(request.query.get('limit', '20')), 50)
-        except ValueError:
-            offset = 0
-            limit = 20
-
-        history = self.trader.position_history or []
-        # 过滤 30 天内的数据
-        cutoff = datetime.now() - timedelta(days=30)
-        filtered = []
-        for h in reversed(history):
-            close_time_str = h.get('close_time', '')
             try:
-                close_dt = datetime.strptime(close_time_str, '%m-%d %H:%M')
-                close_dt = close_dt.replace(year=datetime.now().year)
+                offset = int(request.query.get('offset', '0'))
+                limit = min(int(request.query.get('limit', '20')), 50)
             except ValueError:
-                filtered.append(h)
-                continue
-            if close_dt >= cutoff:
-                filtered.append(h)
+                offset = 0
+                limit = 20
 
-        total = len(filtered)
-        batch = filtered[offset:offset + limit]
-        result = []
-        for h in batch:
-            result.append({
-                'side': h.get('side', 'NONE'),
-                'entry_price': float(h.get('entry_price', 0)),
-                'exit_price': float(h.get('exit_price', 0)),
-                'size': float(h.get('size', 0)),
-                'pnl': float(h.get('pnl', 0)),
-                'total_fee': float(h.get('total_fee', 0)),
-                'funding': float(h.get('funding', 0)),
-                'net_pnl': float(h.get('net_pnl', 0)),
-                'exit_type': h.get('exit_type', 'MANUAL'),
-                'close_time': h.get('close_time', ''),
-                'duration': h.get('duration', '')
-            })
-        return web.json_response({'items': result, 'total': total, 'offset': offset, 'limit': limit})
+            history = list(self.trader.position_history) if self.trader.position_history else []
+            # 过滤 30 天内的数据
+            cutoff = datetime.now() - timedelta(days=30)
+            filtered = []
+            for h in reversed(history):
+                close_time_str = h.get('close_time', '')
+                try:
+                    close_dt = datetime.strptime(close_time_str, '%m-%d %H:%M')
+                    close_dt = close_dt.replace(year=datetime.now().year)
+                except ValueError:
+                    filtered.append(h)
+                    continue
+                if close_dt >= cutoff:
+                    filtered.append(h)
+
+            total = len(filtered)
+            batch = filtered[offset:offset + limit]
+            result = []
+            for h in batch:
+                result.append({
+                    'side': h.get('side', 'NONE'),
+                    'entry_price': float(h.get('entry_price', 0)),
+                    'exit_price': float(h.get('exit_price', 0)),
+                    'size': float(h.get('size', 0)),
+                    'pnl': float(h.get('pnl', 0)),
+                    'total_fee': float(h.get('total_fee', 0)),
+                    'funding': float(h.get('funding', 0)),
+                    'net_pnl': float(h.get('net_pnl', 0)),
+                    'exit_type': h.get('exit_type', 'MANUAL'),
+                    'close_time': h.get('close_time', ''),
+                    'duration': h.get('duration', '')
+                })
+            return web.json_response({'items': result, 'total': total, 'offset': offset, 'limit': limit})
+        except Exception as e:
+            if self.log:
+                self.log.error(f'[Web] /api/history 异常: {e}', exc_info=True)
+            return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_open(self, request: web.Request) -> web.Response:
         """开仓（做多/做空）"""
