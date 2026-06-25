@@ -268,11 +268,18 @@ class WebServer:
             risk['loss_protection_status'] = lp_status.get('status', '未启用')
 
         # 24h 统计
+        s24 = t.trade_stats_24h or {}
+        total_fee_val = float(s24.get('total_fee', 0) or 0)
         stats_24h = {
-            'open_count': t.trade_stats_24h.get('open_count', 0),
-            'close_count': t.trade_stats_24h.get('close_count', 0),
-            'win_rate': t.trade_stats_24h.get('win_rate', 0),
-            'total_pnl': float(t.trade_stats_24h.get('total_pnl', 0) or 0)
+            'round_count': s24.get('round_count', 0),
+            'win_count': s24.get('win_count', 0),
+            'win_rate': s24.get('win_rate', 0),
+            'total_volume': float(s24.get('total_volume', 0) or 0),
+            'total_pnl': float(s24.get('total_pnl', 0) or 0),
+            'total_fee': total_fee_val,
+            'avg_pnl_ratio': s24.get('avg_pnl_ratio', 0),
+            'avg_hold_time': s24.get('avg_hold_time', '--'),
+            'expected_value': s24.get('expected_value', 0)
         }
 
         # 上一笔持仓
@@ -591,6 +598,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
         cfg = self.trader.config_manager.get_config() if self.trader.config_manager else {}
+        cfg['_web_token'] = self.token
         return web.json_response(cfg)
 
     async def _handle_settings_save(self, request: web.Request) -> web.Response:
@@ -607,6 +615,83 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             self.trader.config_manager.save()
             if self.log:
                 self.log.info('[Web] 设置已通过 WebUI 保存')
+        return web.json_response({'ok': True})
+
+    async def _handle_backup_list(self, request: web.Request) -> web.Response:
+        """列出所有备份"""
+        if not self._check_auth(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+        cfg = self.trader.config_manager
+        if not cfg:
+            return web.json_response({'backups': []})
+        names = cfg.list_backups()
+        backups = []
+        for name in names:
+            bp = cfg.config_path.parent / name
+            try:
+                mtime = bp.stat().st_mtime
+                from datetime import datetime
+                dt = datetime.fromtimestamp(mtime).strftime('%m-%d %H:%M')
+            except Exception:
+                dt = ''
+            backups.append({'name': name, 'mtime': dt})
+        return web.json_response({'backups': backups})
+
+    async def _handle_backup_create(self, request: web.Request) -> web.Response:
+        """创建新备份"""
+        if not self._check_auth(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+        cfg = self.trader.config_manager
+        if not cfg:
+            return web.json_response({'error': 'no config manager'}, status=500)
+        try:
+            path = cfg.backup_config()
+            return web.json_response({'ok': True, 'name': path.name if hasattr(path, 'name') else str(path)})
+        except Exception as e:
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _handle_backup_restore(self, request: web.Request) -> web.Response:
+        """恢复备份"""
+        if not self._check_auth(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({'error': 'invalid json'}, status=400)
+        name = body.get('name', '')
+        if not name:
+            return web.json_response({'error': 'missing name'}, status=400)
+        cfg = self.trader.config_manager
+        if not cfg:
+            return web.json_response({'error': 'no config manager'}, status=500)
+        ok = cfg.restore_config(name)
+        return web.json_response({'ok': ok})
+
+    async def _handle_backup_delete(self, request: web.Request) -> web.Response:
+        """删除备份"""
+        if not self._check_auth(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({'error': 'invalid json'}, status=400)
+        name = body.get('name', '')
+        if not name:
+            return web.json_response({'error': 'missing name'}, status=400)
+        cfg = self.trader.config_manager
+        if not cfg:
+            return web.json_response({'error': 'no config manager'}, status=500)
+        ok = cfg.delete_backup(name)
+        return web.json_response({'ok': ok})
+
+    async def _handle_settings_reset(self, request: web.Request) -> web.Response:
+        """重置为默认配置"""
+        if not self._check_auth(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+        cfg = self.trader.config_manager
+        if not cfg:
+            return web.json_response({'error': 'no config manager'}, status=500)
+        cfg.reset_to_defaults()
         return web.json_response({'ok': True})
 
     # ─── WebSocket 处理器 ─────────────────────────────────────
@@ -764,6 +849,11 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         self._app.router.add_post('/api/cancel', self._handle_cancel)
         self._app.router.add_get('/api/settings', self._handle_settings_get)
         self._app.router.add_post('/api/settings', self._handle_settings_save)
+        self._app.router.add_get('/api/settings/backups', self._handle_backup_list)
+        self._app.router.add_post('/api/settings/backup', self._handle_backup_create)
+        self._app.router.add_post('/api/settings/restore', self._handle_backup_restore)
+        self._app.router.add_post('/api/settings/backup/delete', self._handle_backup_delete)
+        self._app.router.add_post('/api/settings/reset', self._handle_settings_reset)
 
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
