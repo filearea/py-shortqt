@@ -37,9 +37,31 @@ class BinanceClient:
         # v1.4.0 新增：API 请求速率限制器
         self.rate_limiter = RateLimiter(weight_limit=1200, window_seconds=60)
     
+    def _request_signed(self, method: str, path: str, params: dict = None):
+        """发送签名请求，自动处理时间戳 -1021 错误（重同步时间并重试一次）"""
+        for attempt in range(2):
+            signed = build_signed_params(params or {}, self.api_secret)
+            query_string = '&'.join(f'{k}={v}' for k, v in sorted(signed.items()))
+            url = f"{self.base_url}{path}?{query_string}"
+            if method == 'GET':
+                resp = self.session.get(url, timeout=10)
+            elif method == 'POST':
+                resp = self.session.post(url, data=query_string, timeout=10)
+            elif method == 'DELETE':
+                resp = self.session.delete(url, timeout=10)
+            else:
+                raise ValueError(f'不支持的方法: {method}')
+            if resp.status_code == 200:
+                return resp.json()
+            err = resp.json() if resp.text else {'code': resp.status_code, 'msg': 'Unknown error'}
+            code = err.get('code', -1)
+            if code == -1021 and attempt == 0:
+                self.sync_time()
+                continue
+            raise BinanceAPIError(code, err.get('msg', 'Unknown error'))
+
     def _get(self, path: str, params: dict = None, signed: bool = False, weight: int = 1) -> dict:
         """GET 请求（带速率限制）"""
-        # 同步等待获取请求权限
         import time
         while True:
             if self.rate_limiter.get_available_weight() >= weight:
@@ -52,18 +74,11 @@ class BinanceClient:
                     time.sleep(wait_time)
                 else:
                     time.sleep(0.1)
-        
-        url = f"{self.base_url}{path}"
-        
+
         if signed:
-            params = build_signed_params(params or {}, self.api_secret)
-            # 签名后，把参数字符串直接拼接到 URL（避免 requests 再次编码）
-            query_string = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
-            url = f"{url}?{query_string}"
-            response = self.session.get(url, timeout=10)
-        else:
-            response = self.session.get(url, params=params, timeout=10)
-        
+            return self._request_signed('GET', path, params)
+        url = f"{self.base_url}{path}"
+        response = self.session.get(url, params=params, timeout=10)
         return self._handle_response(response)
     
     def get_klines(self, symbol: str, interval: str, limit: int = 100, startTime: int = None, endTime: int = None) -> list:
@@ -94,31 +109,18 @@ class BinanceClient:
     
     def _post(self, path: str, params: dict = None, signed: bool = False) -> dict:
         """POST 请求"""
-        url = f"{self.base_url}{path}"
-        
         if signed:
-            params = build_signed_params(params or {}, self.api_secret)
-            # 签名后，把参数字符串直接作为 data 发送（避免 requests 再次编码）
-            data = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
-            response = self.session.post(url, data=data, timeout=10)
-        else:
-            response = self.session.post(url, data=params, timeout=10)
-        
+            return self._request_signed('POST', path, params)
+        url = f"{self.base_url}{path}"
+        response = self.session.post(url, data=params, timeout=10)
         return self._handle_response(response)
     
     def _delete(self, path: str, params: dict = None, signed: bool = False) -> dict:
         """DELETE 请求"""
-        url = f"{self.base_url}{path}"
-        
         if signed:
-            params = build_signed_params(params or {}, self.api_secret)
-            # 签名后，把参数字符串直接拼接到 URL
-            query_string = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
-            url = f"{url}?{query_string}"
-            response = self.session.delete(url, timeout=10)
-        else:
-            response = self.session.delete(url, params=params, timeout=10)
-        
+            return self._request_signed('DELETE', path, params)
+        url = f"{self.base_url}{path}"
+        response = self.session.delete(url, params=params, timeout=10)
         return self._handle_response(response)
     
     def _handle_response(self, response: requests.Response) -> dict:
