@@ -75,8 +75,9 @@ def _fmt_duration(sec: int) -> str:
 class WebServer:
     """移动端 Web 服务"""
 
-    def __init__(self, trader, config: dict, log_manager=None, token: str = ''):
+    def __init__(self, trader, config: dict, log_manager=None, token: str = '', app=None):
         self.trader = trader
+        self.app = app  # v1.10.0: LiveTradingBot 引用，复用 TUI 操作方法
         self.config = config
         self.log = log_manager
         self.host = config.get('web_ui', {}).get('host', '0.0.0.0')
@@ -807,7 +808,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
 
         if self.log:
             self.log.info(f'[Web] 移动端操作 — {side} 开仓')
-        asyncio.create_task(self.trader.open_position(side))
+        asyncio.create_task(self.app.place_order(side))
         return web.json_response({'ok': True, 'action': 'open', 'side': side})
 
     async def _handle_close(self, request: web.Request) -> web.Response:
@@ -832,7 +833,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': 'percent must be 1-100'}, status=400)
         if self.log:
             self.log.info(f'[Web] 移动端操作 — 提前平仓')
-        asyncio.create_task(self.trader.close_position_early())
+        asyncio.create_task(self.app.close_position_early())
         return web.json_response({'ok': True, 'action': 'close_percent', 'percent': percent})
 
     async def _handle_cancel(self, request: web.Request) -> web.Response:
@@ -841,7 +842,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': 'unauthorized'}, status=403)
         if self.log:
             self.log.info('[Web] 移动端操作 — 撤单')
-        self.trader.cancel_open_order()
+        asyncio.create_task(self.app.cancel_order())
         return web.json_response({'ok': True, 'action': 'cancel'})
 
     async def _handle_settings_get(self, request: web.Request) -> web.Response:
@@ -1171,7 +1172,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return '127.0.0.1'
 
 
-async def start_web_server(trader, host='0.0.0.0', port=8099, log_manager=None, token='') -> WebServer:
+async def start_web_server(trader, host='0.0.0.0', port=8099, log_manager=None, token='', app=None) -> WebServer:
     """启动 Web 服务（由 main_live.py 调用）"""
     config = {
         'web_ui': {
@@ -1180,6 +1181,6 @@ async def start_web_server(trader, host='0.0.0.0', port=8099, log_manager=None, 
             'enabled': True
         }
     }
-    server = WebServer(trader, config, log_manager, token=token)
+    server = WebServer(trader, config, log_manager, token=token, app=app)
     await server.start()
     return server

@@ -672,7 +672,8 @@ class LiveTradingBot:
                     host=web_cfg.get('host', '0.0.0.0'),
                     port=web_cfg.get('port', 8099),
                     log_manager=self.log_manager,
-                    token=cfg_token
+                    token=cfg_token,
+                    app=self
                 )
                 self.trader.web_server = self.web_server
                 # 新生成的随机 token 写回 config
@@ -698,7 +699,8 @@ class LiveTradingBot:
                     host=web_cfg.get('host', '0.0.0.0'),
                     port=web_cfg.get('port', 8099),
                     log_manager=self.log_manager,
-                    token=cfg_token
+                    token=cfg_token,
+                    app=self
                 )
                 self.trader.web_server = self.web_server
                 url = f"http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}"
@@ -887,7 +889,8 @@ class LiveTradingBot:
                     host=web_cfg.get('host', '0.0.0.0'),
                     port=web_cfg.get('port', 8099),
                     log_manager=self.log_manager,
-                    token=cfg_token
+                    token=cfg_token,
+                    app=self
                 )
                 self.trader.web_server = self.web_server
                 # 新生成的随机 token 写回 config

@@ -1436,10 +1436,45 @@ v1.9.0 原计划 TUI 零改动，但技术评审确认以下 TUI 改动是必要
 | `src/config/manager.py` | DEFAULT_CONFIG 新增 token 字段 |
 | `src/trader.py` | last_trade_price 字段 |
 
+### 14.7 14天K线回填修复（data_collector.py）
+
+**问题**：启动时 14 天历史 K 线回填完全失败，本地只有当天数据。
+
+**根因**：
+- `is_complete` 变量只在 `file_path.exists()` 分支内定义（line 226），当文件不存在时 NameError，导致 `fetch_klines()` 从不执行
+- K 线字段索引错误：`turnover` 用了 k[6]（close_time 时间戳）而非 k[7]（quote volume），`buy_volume` 用了 k[10] 而非 k[9]，`buy_turnover` 用了 k[11] 而非 k[10]
+
+**修复**：`is_complete = False` 提前初始化；修正全部 3 个字段索引。
+
+### 14.8 Web UI 下单接口修复 — 复用 TUI 操作方法（server.py + main_live.py）
+
+**问题**：4 个下单/撤单 API 全部返回"网络错误"（500）。根因是 handler 调用了旧 `TradeState` 模拟类的方法（`long()`/`short()`/`close_all_positions()`/`cancel_all_orders()`），这些方法在 `LiveTrader` 上不存在。
+
+**修复**：改为调用正确的 `LiveTrader` 方法，并确保与 TUI 键盘快捷键走完全相同的逻辑路径：
+
+| Web 操作 | 调用方法 | 对应 TUI |
+|---------|---------|---------|
+| 做多 | `app.place_order('LONG')` | ↑ 键 |
+| 做空 | `app.place_order('SHORT')` | ↓ 键 |
+| 全部平仓（市价） | `trader.close_position_market()` | Z 键 |
+| 提前平仓 | `app.close_position_early()` | → 键 |
+| 撤单 | `app.cancel_order()` | ← 键 |
+
+**关键设计**：`WebServer` 新增 `app` 引用（`LiveTradingBot` 实例），Web handler 通过 `self.app.xxx()` 调用 App 层的操作方法，而非直接调 `trader` 方法。这样任何未来在 App 层增加的逻辑（如 `cancel_order()` 中的分批模式检查）都会被 Web 侧自动继承。
+
+### 14.9 涉及文件（补充）
+
+| 文件 | 改动 |
+|------|------|
+| `src/data_collector.py` | is_complete 初始化 + kline 字段索引修正 |
+| `src/web/server.py` | WebServer 新增 app 参数；4 个 handler 改为调用 app 方法 |
+| `src/main_live.py` | 3 处 start_web_server 调用传入 app=self |
+| `src/web/__init__.py` | start_web_server 签名更新 |
+
 ---
 
 **撰写人**: 老杨（技术总监）
 **审核人**: 杰哥（CEO）
 **撰写时间**: 2026-06-23
 **目标版本**: v1.10.0
-**最后修订**: 2026-06-28 — 发布后修复：K线数据质量防护 / WS双流 / H/L数据源修正
+**最后修订**: 2026-06-28 — 发布后修复：K线数据质量防护 / WS双流 / H/L数据源修正 / 14天回填 / Web下单复用TUI逻辑
