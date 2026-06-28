@@ -424,7 +424,25 @@ class LiveTradingBot:
                 f'ATR14 24h 历史回填完成：{len(vol._atr14_percentile_history)} 个样本'
             )
             vol.recompute_atr14_percentile()
-    
+
+        # v1.10.0: 回填 _klines deque（Web UI K线图数据源）
+        if batch:
+            vol._klines.clear()
+            for i, k in enumerate(batch):
+                kline_dict = {
+                    'timestamp': k['timestamp'],
+                    'open': Decimal(str(k['open'])),
+                    'high': Decimal(str(k['high'])),
+                    'low': Decimal(str(k['low'])),
+                    'close': Decimal(str(k['close'])),
+                    'volume': Decimal(str(k.get('volume', 0))),
+                }
+                if i < len(batch) - 1:
+                    vol._klines.append(kline_dict)
+                else:
+                    vol.current_kline = kline_dict
+            self.log_manager.system.info(f'K线 deque 回填完成：{len(vol._klines)} 根（含第{len(batch)}根为 current）')
+
     async def on_market_data(self, event_type: str, data: dict):
         """市场数据回调 - v1.5.0 新增移动止损和浮亏保护"""
         # 移除调试日志，避免 TUI 抖动
@@ -1164,7 +1182,8 @@ class LiveTradingBot:
             # 输出指标记录器统计
             if hasattr(self, 'metrics_recorder') and self.metrics_recorder:
                 stats = self.metrics_recorder.get_stats()
-                self.log_manager.system.debug(f"指标数据统计 - 已保存：{stats['records_saved']} 条快照，保存间隔：{stats['save_interval']}秒，数据目录：{stats['data_dir']}")
+                mr = self.metrics_recorder
+                self.log_manager.system.debug(f"指标数据统计 - 已保存：{stats['records_saved']} 条快照，保存间隔：{mr.save_interval}秒")
         
         # 正常退出时也清理（Q 键退出时 running=False，但仍需清理）
         if not self.running:

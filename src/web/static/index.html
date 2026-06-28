@@ -884,10 +884,10 @@ function handleMsg(msg){
       // 平仓事件 → 标记脏 + 延迟拉取 state 更新上一笔持仓（后端需等Binance同步，5~14s）
       if(/持仓同步成交|止盈成交|止损成交|保底止损成交|提前平仓成交|移动止损成交|手动平仓成交|浮亏保护成交/.test(evt)){
         historyStale=true;
-        // 首次延迟 6s（等后端 _refresh_history_delayed 5s 延迟）
-        setTimeout(function(){ fetchState(); }, 6000);
-        // 保底延迟 12s（等后端全部重试完成）
-        setTimeout(function(){ fetchState(); }, 12000);
+        // 对齐后端 _refresh_history_delayed: 6s延迟 + 5次重试x4s = 26s窗口
+        setTimeout(function(){ fetchState(); }, 8000);
+        setTimeout(function(){ fetchState(); }, 16000);
+        setTimeout(function(){ fetchState(); }, 24000);
       }
       break;
     case 'history_updated':
@@ -1339,6 +1339,12 @@ function drawChartMarkers() {
     var tps = state.tp_orders.slice(0, 20);
     tps.forEach(function(tp, i) {
       lines.push({ price: tp.tp_price, color: '#0ecb81', title: '止盈#' + tp.index, style: 2 });
+    });
+  }
+  // 开仓挂单
+  if (state.pending_orders && state.pending_orders.length) {
+    state.pending_orders.forEach(function(po) {
+      if (po.price > 0) lines.push({ price: po.price, color: '#f0b90b', title: '挂单#' + po.index, style: 2 });
     });
   }
   lines.forEach(function(l) {

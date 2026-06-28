@@ -2482,20 +2482,23 @@ class LiveTrader:
             except Exception as e:
                 self.log_manager.system.debug(f"[BNB费率] 增量拉取失败：{e}") if self.log_manager else None
 
-    async def _refresh_history_delayed(self, delay: float = 5.0):
-        """延迟刷新历史持仓（等 Binance 同步 trade 记录），失败时最多重试 3 次"""
+    async def _refresh_history_delayed(self, delay: float = 6.0):
+        """延迟刷新历史持仓（等 Binance 同步 trade 记录），失败时最多重试 5 次，总窗口约 30s"""
         await asyncio.sleep(delay)
         success = await self.fetch_position_history()
         retries = 0
-        while not success and retries < 3:
+        while not success and retries < 5:
             retries += 1
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(4.0)
             success = await self.fetch_position_history()
-        # 仅成功时才通知前端刷新
         if success:
+            if self.log_manager:
+                self.log_manager.system.debug(f'[历史刷新] 成功，重试 {retries} 次')
             ws = getattr(self, 'web_server', None)
             if ws:
                 ws.push_event('history_updated', 'position_history_refreshed')
+        elif self.log_manager:
+            self.log_manager.system.debug('[历史刷新] 失败，已达最大重试次数')
 
     async def fetch_position_history(self, days: int = 7):
         """从币安拉取成交记录，配对生成历史持仓（API 调用在线程池执行）"""
