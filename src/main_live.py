@@ -197,73 +197,90 @@ class LiveTradingBot:
         self.log_manager.system.info(f"交易对：{self.symbol}, API 杠杆：{api_lev}x, 实际杠杆：{actual_lev}x")
     
     def _init_historical_klines(self, limit: int = 499):
-        """v1.5.4 改造：拉取当天全部 K 线，对比后写入"""
+        """v1.10.0 改造：本地文件优先 → API fallback → 写入本地 + ATR14 回填"""
         try:
             from src.data_collector import KLINES_DIR
-            
-            # 计算今天 00:00 的毫秒时间戳
-            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            start_ms = int(today.timestamp() * 1000)
-            
-            # 计算当前分钟的起始时间戳（只写入已关闭的 K 线）
+
             now = datetime.now()
+            today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_ms = int(today.timestamp() * 1000)
             current_minute_start = now.replace(second=0, microsecond=0)
             current_minute_ms = int(current_minute_start.timestamp() * 1000)
-            
-            self.log_manager.system.info(f'从 API 获取今日全部 K 线（{today.strftime("%Y-%m-%d")} 00:00 起）...')
-            self.log_manager.system.info(f'当前时间：{now.strftime("%H:%M:%S")}，只写入 {current_minute_start.strftime("%H:%M")} 之前的已关闭 K 线')
-            
-            # 币安最多返回 1500 根，当天最多 1440 根，一次拉完
-            klines = self.trader.api.get_klines(self.symbol, '1m', limit=1500)
-            if not klines:
-                self.log_manager.system.warning("历史 K 线获取为空，跳过初始化")
-                return
-            
-            # 只保留今天的数据
-            today_klines = [k for k in klines if k[0] >= start_ms]
-            
-            # 获取文件已有的最后一条时间戳（防重复）
             date_str = today.strftime("%Y-%m-%d")
             kline_file = KLINES_DIR / self.symbol / f"{date_str}.jsonl"
-            last_ts = 0
+
+            # ── 第一步：从本地文件加载今日 K 线 ──
+            local_raw = []  # 本地文件中的原始 kline 列表
             if kline_file.exists():
                 with open(kline_file, 'r', encoding='utf-8') as f:
                     for line in f:
-                        if line.strip():
-                            data = json.loads(line)
-                            last_ts = data.get('timestamp', 0)
-            
-            count = 0
-            kline_file.parent.mkdir(parents=True, exist_ok=True)
-            # 跳过最后一条（未关闭，等定时器拉取关闭后的数据）
-            closed_klines = today_klines[:-1] if today_klines else []
-            with open(kline_file, 'a', encoding='utf-8') as f:
-                for k in closed_klines:
-                    if len(k) < 11:
-                        continue
-                    ts = k[0]
-                    if ts <= last_ts:
-                        continue
-                    
-                    kline_data = {
-                        'timestamp': k[0],
-                        'open': float(k[1]),
-                        'high': float(k[2]),
-                        'low': float(k[3]),
-                        'close': float(k[4]),
-                        'volume': float(k[5]),
-                        'turnover': float(k[7]),
-                        'trades': int(k[8]),
-                        'buy_volume': float(k[9]),
-                        'buy_turnover': float(k[10])
-                    }
-                    f.write(json.dumps(kline_data, ensure_ascii=False) + '\n')
-                    count += 1
-            
-            # 加载到指标管理器（用于 TUI 显示，同样跳过最后一条未关闭的）
-            for k in closed_klines:
-                if len(k) < 6:
-                    continue
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                            ts = d['timestamp']
+                            if ts >= start_ms and ts < current_minute_ms:
+                                local_raw.append(d)
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+
+            local_count = len(local_raw)
+            # 预期应有 kline 数（00:00 到上一个完整分钟）
+            expected = max(0, (current_minute_ms - start_ms) // 60000)
+            # 本地文件"不全"：不存在 / 为空 / 数量落后预期超过 3 根
+            need_api = (
+                not kline_file.exists() or
+                local_count == 0 or
+                local_count < max(1, expected - 3)
+            )
+
+            if need_api:
+                self.log_manager.system.info(
+                    f'本地K线不足（{local_count}根，预期～{expected}根），fallback 币安 API...'
+                )
+                raw_klines = self.trader.api.get_klines(self.symbol, '1m', limit=1500)
+                if not raw_klines:
+                    self.log_manager.system.warning("API 返回为空，仅使用本地数据")
+                    raw_klines = []
+                today_api = [k for k in raw_klines if k[0] >= start_ms]
+                # 写回本地（完整覆盖今日文件，跳过最后一条未关闭）
+                kline_file.parent.mkdir(parents=True, exist_ok=True)
+                write_count = 0
+                with open(kline_file, 'w', encoding='utf-8') as f:
+                    for k in today_api[:-1]:
+                        if len(k) < 11:
+                            continue
+                        kd = {
+                            'timestamp': k[0],
+                            'open': float(k[1]),
+                            'high': float(k[2]),
+                            'low': float(k[3]),
+                            'close': float(k[4]),
+                            'volume': float(k[5]),
+                            'turnover': float(k[7]),
+                            'trades': int(k[8]),
+                            'buy_volume': float(k[9]),
+                            'buy_turnover': float(k[10])
+                        }
+                        f.write(json.dumps(kd, ensure_ascii=False) + '\n')
+                        write_count += 1
+                self.log_manager.system.info(f'API 返回 {len(today_api)} 根K线，写入 {write_count} 根到本地')
+            else:
+                self.log_manager.system.info(f'本地K线充足（{local_count}根，预期～{expected}根），跳过 API')
+                # 将本地数据转为 API 格式 [ts, o, h, l, c, v, 0, turnover, trades, buy_vol, buy_turnover]
+                raw_klines = []
+                for d in local_raw:
+                    raw_klines.append([
+                        d['timestamp'], d['open'], d['high'], d['low'], d['close'],
+                        d['volume'], 0, d.get('turnover', 0), d.get('trades', 0),
+                        d.get('buy_volume', 0), d.get('buy_turnover', 0)
+                    ])
+                today_api = [k for k in raw_klines if k[0] >= start_ms]
+
+            # ── 第二步：喂给指标管理器 ──
+            closed = [k for k in today_api if k[0] < current_minute_ms and len(k) >= 6]
+            for k in closed:
                 kline = {
                     'timestamp': k[0],
                     'open': Decimal(k[1]),
@@ -275,53 +292,122 @@ class LiveTradingBot:
                 }
                 self.indicators.update_kline(kline)
 
-            # v1.10.0：跨日补齐 — 当天不足15根闭合K线时，从前一天文件加载
-            need_kline_count = 15 + 1  # ATR14 需要 14+1 根
-            if len(self.indicators.volatility.klines) < need_kline_count:
+            # ── 第三步：跨日补齐 ──
+            need_count = 15
+            if len(self.indicators.volatility.klines) < need_count:
                 yesterday = today - timedelta(days=1)
-                yesterday_str = yesterday.strftime('%Y-%m-%d')
-                yesterday_file = KLINES_DIR / self.symbol / f'{yesterday_str}.jsonl'
+                yesterday_file = KLINES_DIR / self.symbol / f'{yesterday.strftime("%Y-%m-%d")}.jsonl'
                 if yesterday_file.exists():
-                    self.log_manager.system.info(f'当天K线不足({len(self.indicators.volatility.klines)}根)，从昨日文件补齐...')
-                    yesterday_klines = []
+                    self.log_manager.system.info(
+                        f'当天K线不足({len(self.indicators.volatility.klines)}根)，从昨日文件补齐...'
+                    )
+                    yk = []
                     with open(yesterday_file, 'r', encoding='utf-8') as f:
                         for line in f:
                             line = line.strip()
-                            if line:
-                                try:
-                                    d = json.loads(line)
-                                    yesterday_klines.append({
-                                        'timestamp': d['timestamp'],
-                                        'open': Decimal(str(d['open'])),
-                                        'high': Decimal(str(d['high'])),
-                                        'low': Decimal(str(d['low'])),
-                                        'close': Decimal(str(d['close'])),
-                                        'volume': Decimal(str(d.get('volume', 0))),
-                                        'is_closed': True
-                                    })
-                                except (json.JSONDecodeError, KeyError):
-                                    continue
-                    # 按时间排序取尾部
-                    yesterday_klines.sort(key=lambda k: k['timestamp'])
-                    needed = need_kline_count - len(self.indicators.volatility.klines)
-                    tail = yesterday_klines[-needed:]
-                    self.log_manager.system.info(f'从昨日补入 {len(tail)} 根K线（{yesterday_str}）')
-                    for k in tail:
+                            if not line:
+                                continue
+                            try:
+                                d = json.loads(line)
+                                yk.append({
+                                    'timestamp': d['timestamp'],
+                                    'open': Decimal(str(d['open'])),
+                                    'high': Decimal(str(d['high'])),
+                                    'low': Decimal(str(d['low'])),
+                                    'close': Decimal(str(d['close'])),
+                                    'volume': Decimal(str(d.get('volume', 0))),
+                                    'is_closed': True
+                                })
+                            except (json.JSONDecodeError, KeyError):
+                                continue
+                    yk.sort(key=lambda k: k['timestamp'])
+                    needed = need_count - len(self.indicators.volatility.klines)
+                    for k in yk[-needed:]:
                         self.indicators.update_kline(k)
+                    self.log_manager.system.info(f'从昨日补入 {min(needed, len(yk))} 根K线')
 
-            # 从历史 K 线填充近X分钟价格范围
-            self._seed_price_range(closed_klines)
+            # ── 第四步：ATR14 24h 历史回填 ──
+            self._backfill_atr14_history(KLINES_DIR)
 
-            # 更新 recorder 的防重时间戳
-            if closed_klines:
-                self.recorder._last_kline_ts = closed_klines[-1][0]
+            # ── 第五步：价格范围 ──
+            self._seed_price_range(closed)
 
-            self.log_manager.system.info(f'历史 K 线初始化完成：写入 {count} 根，指标加载 {len(closed_klines)} 根（跳过最后一条未关闭）')
-        
+            # 更新 recorder 防重时间戳
+            if closed:
+                self.recorder._last_kline_ts = closed[-1][0]
+
+            self.log_manager.system.info(
+                f'历史 K 线初始化完成：指标加载 {len(closed)} 根（跳过最后一条未关闭）'
+            )
+
         except Exception as e:
             error_msg = f"历史 K 线初始化失败：{e}"
             self.log_manager.system.warning(error_msg)
             self.error_log.append({'time': datetime.now(), 'msg': str(e)})
+
+    def _backfill_atr14_history(self, klines_dir: Path):
+        """从本地文件回填过去 24h 的 ATR14% 到 volatility 历史队列"""
+        vol = self.indicators.volatility
+
+        # 已有足够样本（≥60 = 1h），跳过回填
+        if len(vol._atr14_percentile_history) >= 60:
+            return
+
+        # 加载过去 2 天的本地 kline 文件
+        all_klines = []
+        now = datetime.now()
+        for days_ago in range(2):
+            d = now - timedelta(days=days_ago)
+            fpath = klines_dir / self.symbol / f'{d.strftime("%Y-%m-%d")}.jsonl'
+            if not fpath.exists():
+                continue
+            with open(fpath, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        all_klines.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+
+        if len(all_klines) < 15:
+            return
+
+        all_klines.sort(key=lambda k: k['timestamp'])
+
+        # 只取最近 24h，往前多取 14 根做 ATR 预热
+        cutoff_24h = int((now - timedelta(hours=24)).timestamp() * 1000)
+        start_idx = 0
+        for i, k in enumerate(all_klines):
+            if k['timestamp'] >= cutoff_24h:
+                start_idx = max(0, i - 14)
+                break
+
+        batch = all_klines[start_idx:]
+        tr_values = []
+        prev_close = None
+
+        for k in batch:
+            high = float(k['high'])
+            low = float(k['low'])
+            close = float(k['close'])
+
+            if prev_close is not None:
+                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                tr_values.append(tr)
+            prev_close = close
+
+            if len(tr_values) >= 14 and close > 0:
+                atr14 = sum(tr_values[-14:]) / 14
+                atr14_pct = (atr14 / close) * 100
+                vol._atr14_percentile_history.append(atr14_pct)
+
+        if len(vol._atr14_percentile_history) > 0:
+            self.log_manager.system.info(
+                f'ATR14 24h 历史回填完成：{len(vol._atr14_percentile_history)} 个样本'
+            )
+            vol.recompute_atr14_percentile()
     
     async def on_market_data(self, event_type: str, data: dict):
         """市场数据回调 - v1.5.0 新增移动止损和浮亏保护"""
@@ -405,7 +491,11 @@ class LiveTradingBot:
                 self.indicators.update_agg_trade(data)
                 ratio = self.indicators.get_taker_ratio()
                 if self.web_server:
-                    self.web_server.update_taker_ratio(ratio['buy_pct'], ratio['sell_pct'])
+                    self.web_server.update_taker_ratio(
+                        ratio['buy_pct'], ratio['sell_pct'],
+                        trade_count=ratio.get('trade_count', 0),
+                        last_update=ratio.get('last_update', 0)
+                    )
         except Exception as e:
             error_msg = f"市场数据处理异常：{e}"
             self.log_manager.system.debug(error_msg)

@@ -282,9 +282,17 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
             current_start = last_timestamp + 60000
             # 检查是否已经到末尾
             if current_start >= end_time:
-                print(f"[OK] {date_str}: 数据已完整")
-                current_date += timedelta(days=1)
-                continue
+                if existing_count >= EXPECTED_KLINES_PER_DAY:
+                    print(f"[OK] {date_str}: 数据已完整")
+                    current_date += timedelta(days=1)
+                    continue
+                else:
+                    # 末尾已到但数量不足 → 内部散点缺口，全量重拉
+                    print(f"[INFO] {date_str}: 内部缺口 ({existing_count}/{EXPECTED_KLINES_PER_DAY})，全量重拉")
+                    all_new = True
+                    current_start = start_time
+                    existing_set = {k['timestamp'] for k in existing_data}
+                    day_klines = list(existing_data)
 
         # 循环获取缺失的 K 线
         while current_start < end_time:

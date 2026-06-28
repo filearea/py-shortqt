@@ -77,80 +77,94 @@ class RealtimeRecorder:
                 time.sleep(min(remaining, 1.0))
 
     def _fetch_and_save_kline(self):
-        """从 API 拉取最近 2 条 K 线，保存已关闭的那条"""
+        """从 API 拉取最近 K 线，保存所有新闭合的 K 线（含追赶）"""
         if not self.api_client:
             return
-        
-        # 拉取最近 2 条（最后一条可能未关闭）
-        klines = self.api_client.get_klines(self.symbol, '1m', limit=2)
+
+        # 拉取最近 5 条，确保即使前一次失败也能补回最多 4 分钟的缺口
+        klines = None
+        for attempt in range(3):
+            try:
+                klines = self.api_client.get_klines(self.symbol, '1m', limit=5)
+                break
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1)
+        if klines is None:
+            return
+
         if not klines or len(klines) < 2:
             return
-        
-        # 取倒数第 2 条（已关闭的）
-        k = klines[-2]
-        ts = k[0]  # 开盘时间戳
-        
-        # 防重复
-        if ts <= self._last_kline_ts:
-            return
-        
-        # 检查日期是否变化，切换文件
-        date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
-        if date_str != self.today:
-            self.today = date_str
-            self.klines_file = KLINES_DIR / self.symbol / f"{self.today}.jsonl"
-        
-        # 检查文件最后一条的时间戳（双重防重）
-        if self.klines_file.exists():
-            try:
-                with open(self.klines_file, 'r', encoding='utf-8') as f:
-                    last_line = None
-                    for line in f:
-                        if line.strip():
-                            last_line = line
-                    if last_line:
-                        last_data = json.loads(last_line)
-                        if last_data.get('timestamp', 0) >= ts:
-                            return  # 已存在，跳过
-            except Exception:
-                pass  # 读取失败，继续写入
-        
-        kline_data = {
-            'timestamp': k[0],
-            'open': float(k[1]),
-            'high': float(k[2]),
-            'low': float(k[3]),
-            'close': float(k[4]),
-            'volume': float(k[5]),
-            'turnover': float(k[7]),
-            'trades': int(k[8]),
-            'buy_volume': float(k[9]),
-            'buy_turnover': float(k[10])
-        }
-        
-        self.klines_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.klines_file, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(kline_data, ensure_ascii=False) + '\n')
-        
-        self._last_kline_ts = ts
-        self._klines_saved += 1
 
-        # 回调通知新 K 线（供指标管理器更新）
-        if self.on_new_kline:
-            from decimal import Decimal
-            kline_dict = {
-                'timestamp': ts,
-                'open': Decimal(k[1]),
-                'high': Decimal(k[2]),
-                'low': Decimal(k[3]),
-                'close': Decimal(k[4]),
-                'volume': Decimal(k[5]),
-                'is_closed': True,
+        # 遍历所有已关闭的 K 线（跳过最后一条未关闭的），保存新于 _last_kline_ts 的
+        saved_count = 0
+        for k in klines[:-1]:
+            ts = k[0]
+
+            if ts <= self._last_kline_ts:
+                continue
+
+            # 日期切换
+            date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
+            if date_str != self.today:
+                self.today = date_str
+                self.klines_file = KLINES_DIR / self.symbol / f"{self.today}.jsonl"
+
+            # 文件级防重
+            if self.klines_file.exists():
+                try:
+                    with open(self.klines_file, 'r', encoding='utf-8') as f:
+                        last_line = None
+                        for line in f:
+                            if line.strip():
+                                last_line = line
+                        if last_line:
+                            last_data = json.loads(last_line)
+                            if last_data.get('timestamp', 0) >= ts:
+                                continue
+                except Exception:
+                    pass
+
+            kline_data = {
+                'timestamp': k[0],
+                'open': float(k[1]),
+                'high': float(k[2]),
+                'low': float(k[3]),
+                'close': float(k[4]),
+                'volume': float(k[5]),
+                'turnover': float(k[7]),
+                'trades': int(k[8]),
+                'buy_volume': float(k[9]),
+                'buy_turnover': float(k[10])
             }
-            try:
-                self.on_new_kline(kline_dict)
-            except Exception as e:
-                pass
+
+            self.klines_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.klines_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(kline_data, ensure_ascii=False) + '\n')
+
+            self._last_kline_ts = ts
+            self._klines_saved += 1
+            saved_count += 1
+
+            # 回调通知
+            if self.on_new_kline:
+                from decimal import Decimal
+                kline_dict = {
+                    'timestamp': ts,
+                    'open': Decimal(k[1]),
+                    'high': Decimal(k[2]),
+                    'low': Decimal(k[3]),
+                    'close': Decimal(k[4]),
+                    'volume': Decimal(k[5]),
+                    'is_closed': True,
+                }
+                try:
+                    self.on_new_kline(kline_dict)
+                except Exception:
+                    pass
+
+        if saved_count > 1:
+            pass  # 追赶成功，静默记录（避免高频日志）
 
     def save_kline(self, kline: Dict[str, Any]):
         """WebSocket K 线回调 — v1.5.3 不再写文件，仅供指标计算"""

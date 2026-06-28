@@ -954,10 +954,6 @@ class LiveTradingUI:
         else:
             vol_row.append("--", style="dim")
 
-        # 添加状态标记
-        if any('🟡' in l or '🔴' in l for l in vol_lines):
-            vol_row.append(" 🟡", style="yellow")
-        
         # 第二行：流动性（买卖深度固定宽度 + 价差 + 深度对比）
         liq_row = Text()
         liq_row.append("流动性：", style="bold cyan")

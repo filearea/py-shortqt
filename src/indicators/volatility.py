@@ -10,6 +10,7 @@
 - ATR(14)（标准化波动率）
 """
 
+import time
 from decimal import Decimal
 from typing import List, Dict, Optional
 from collections import deque
@@ -54,6 +55,8 @@ class VolatilityAnalyzer:
         self._atr14_percentile: int = 0
         self._atr14_ref: str = 'normal'
         self._atr14_percentile_history: deque = deque(maxlen=1440)  # 24h ATR14% 历史值
+        self._atr14_last_recorded_ts: int = 0   # 上次记录 ATR14% 的分钟时间戳（去重）
+        self._atr14_last_recompute: float = 0   # 上次重算百分位的时间戳
     
     def add_kline(self, kline: dict):
         """
@@ -367,35 +370,71 @@ class VolatilityAnalyzer:
         return self.get_atr_volatility_percent(14)
 
     def track_atr14_percentile(self):
-        """记录当前 ATR14% 到 24h 历史队列（由 K 线收盘时调用）"""
+        """
+        每分钟记录当前 ATR14% 到 24h 历史队列（按分钟去重）
+        每小时重算分布（P50/P75/P95），每分钟更新 P 档
+        """
         pct = self.get_atr14_pct()
-        if pct is not None:
-            self._atr14_percentile_history.append(pct)
+        if pct is None:
+            return
 
-    def recompute_atr14_percentile(self):
-        """
-        重算当前 ATR14% 在 24h 历史中的百分位和评价
-        调用时机：每小时一次（由 IndicatorsManager 触发）
-        """
+        # 按分钟去重：同一分钟只记录一次
+        current_minute = int(time.time()) // 60 * 60
+        if current_minute == self._atr14_last_recorded_ts:
+            return
+        self._atr14_last_recorded_ts = current_minute
+
+        self._atr14_percentile_history.append(pct)
+
+        # 启动时或每小时：全量重算分布 + 分级 + P 档
+        now = time.time()
+        if self._atr14_last_recompute == 0 or (now - self._atr14_last_recompute) >= 3600:
+            self.recompute_atr14_percentile()
+        else:
+            # 每分钟：仅更新当前值在已有分布中的 P 档（轻量，不重排序）
+            self._update_atr14_rank()
+
+    def _update_atr14_rank(self):
+        """轻量更新 P 档：O(n) 计数，不重新排序，不改变 P50/P75/P95 分级"""
         history = list(self._atr14_percentile_history)
         current_pct = self.get_atr14_pct()
         if not history or current_pct is None:
+            return
+        n = len(history)
+        rank = sum(1 for v in history if v <= current_pct)
+        self._atr14_percentile = round(rank / n * 100)
+
+    def recompute_atr14_percentile(self):
+        """
+        重算当前 ATR14% 在 24h 历史中的百分位和 P50/P75/P95 分级
+
+        分级规则:
+          - P0-P50   → low       (低于中位数)
+          - P50-P75  → normal    (正常区间)
+          - P75-P95  → elevated  (偏高)
+          - P95-P100 → high      (极端高)
+        """
+        history = list(self._atr14_percentile_history)
+        current_pct = self.get_atr14_pct()
+        now = time.time()
+
+        if not history or current_pct is None:
             self._atr14_percentile = 0
             self._atr14_ref = 'normal'
+            self._atr14_last_recompute = now
             return
 
         sorted_vals = sorted(history)
         n = len(sorted_vals)
 
-        # 计算当前值的百分位
+        # nearest-rank 百分位
         rank = sum(1 for v in sorted_vals if v <= current_pct)
         self._atr14_percentile = round(rank / n * 100)
 
-        # 评价
-        if n >= 3:
-            p50 = sorted_vals[n // 2]
-            p75 = sorted_vals[int(n * 0.75)]
-            p95 = sorted_vals[min(int(n * 0.95), n - 1)]
+        if n >= 60:
+            p50 = sorted_vals[max(0, (n * 50) // 100 - 1)]
+            p75 = sorted_vals[max(0, (n * 75) // 100 - 1)]
+            p95 = sorted_vals[max(0, (n * 95) // 100 - 1)]
 
             if current_pct < p50:
                 self._atr14_ref = 'low'
@@ -407,3 +446,5 @@ class VolatilityAnalyzer:
                 self._atr14_ref = 'high'
         else:
             self._atr14_ref = 'normal'
+
+        self._atr14_last_recompute = now
