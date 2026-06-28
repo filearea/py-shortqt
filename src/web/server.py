@@ -650,7 +650,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_klines(self, request: web.Request) -> web.Response:
-        """K 线数据 API（支持 interval 聚合）— 兜底链: 内存deque → 文件 → 币安API"""
+        """K 线数据 API（支持 interval 聚合）— 兜底链: 内存deque → 文件 → 币安API → 回写"""
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
         try:
@@ -661,81 +661,12 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         interval = request.query.get('interval', '1m')
         factor = {'1m': 1, '5m': 5, '15m': 15, '1h': 60}.get(interval, 1)
 
-        raw_klines = []
         # Layer 1: 内存 deque
-        if self.trader.indicators:
-            vol = self.trader.indicators.volatility
-            kline_deque = vol._klines if hasattr(vol, '_klines') else None
-            if kline_deque:
-                raw_klines = list(kline_deque)
-            cur = vol.current_kline if hasattr(vol, 'current_kline') else None
-            if not raw_klines and cur and cur.get('timestamp'):
-                raw_klines = [cur]
-            elif raw_klines and cur and cur.get('timestamp'):
-                last_ts = raw_klines[-1].get('timestamp', 0) if raw_klines else 0
-                if cur.get('timestamp', 0) != last_ts:
-                    raw_klines.append(cur)
-
-        # Layer 2: 文件兜底（当天 JSONL）
+        raw_klines = await self._read_memory_klines()
         need = limit * factor
-        if len(raw_klines) < need:
-            try:
-                from pathlib import Path
-                from datetime import datetime as _dt
-                data_dir = Path(__file__).parent.parent.parent / 'data' / 'klines' / self.trader.symbol
-                today = _dt.now().strftime('%Y-%m-%d')
-                file_path = data_dir / f'{today}.jsonl'
-                if file_path.exists():
-                    file_data = []
-                    existing_ts = {k.get('timestamp') for k in raw_klines}
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            try:
-                                k = json.loads(line.strip())
-                                ts = k.get('timestamp') if isinstance(k, dict) else k.get('t')
-                                if ts and ts not in existing_ts:
-                                    existing_ts.add(ts)
-                                    file_data.append({
-                                        'timestamp': ts,
-                                        'open': float(k.get('open', 0)),
-                                        'high': float(k.get('high', 0)),
-                                        'low': float(k.get('low', 0)),
-                                        'close': float(k.get('close', 0)),
-                                        'volume': float(k.get('volume', 0))
-                                    })
-                            except Exception:
-                                pass
-                    if file_data:
-                        raw_klines.extend(file_data)
-                        raw_klines.sort(key=lambda x: x.get('timestamp', 0))
-            except Exception as e:
-                if self.log:
-                    self.log.system.warning(f'[Web] K线文件兜底失败: {e}')
 
-        # Layer 3: 币安 API 兜底
-        if len(raw_klines) < min(need, 60):
-            try:
-                api_klines = await asyncio.to_thread(
-                    self.trader.api.get_klines, self.trader.symbol, '1m', limit=need
-                )
-                if api_klines:
-                    api_ts = {k.get('timestamp') for k in raw_klines}
-                    for k in api_klines:
-                        ts = k[0] if isinstance(k, list) else k.get('timestamp')
-                        if isinstance(k, list):
-                            entry = {'timestamp': ts, 'open': float(k[1]), 'high': float(k[2]),
-                                     'low': float(k[3]), 'close': float(k[4]), 'volume': float(k[5])}
-                        else:
-                            entry = {'timestamp': ts, 'open': float(k.get('open',0)),
-                                     'high': float(k.get('high',0)), 'low': float(k.get('low',0)),
-                                     'close': float(k.get('close',0)), 'volume': float(k.get('volume',0))}
-                        if ts and ts not in api_ts:
-                            api_ts.add(ts)
-                            raw_klines.append(entry)
-                    raw_klines.sort(key=lambda x: x.get('timestamp', 0))
-            except Exception as e:
-                if self.log:
-                    self.log.system.warning(f'[Web] K线API兜底失败: {e}')
+        # Layer 2-3: 检测时间缺口 → 文件补 → API 补 → 回写
+        raw_klines = await self._fill_kline_gaps(raw_klines, need)
 
         # 聚合为指定周期
         result = []
@@ -751,8 +682,6 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                     'v': float(k.get('volume', 0))
                 })
         else:
-            # 按 factor 分组聚合，每组 factor 根 1m kline
-            need = limit * factor
             src = raw_klines[-need:] if len(raw_klines) > need else raw_klines
             i = 0
             while i + factor <= len(src):
@@ -768,6 +697,169 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             result = result[-limit:]
 
         return web.json_response(result)
+
+    async def _read_memory_klines(self) -> list:
+        """从 volatility deque 读取 K 线（含 current_kline）"""
+        raw = []
+        if self.trader.indicators:
+            vol = self.trader.indicators.volatility
+            kline_deque = vol._klines if hasattr(vol, '_klines') else None
+            if kline_deque:
+                raw = list(kline_deque)
+            cur = vol.current_kline if hasattr(vol, 'current_kline') else None
+            if cur and cur.get('timestamp'):
+                if not raw:
+                    raw = [cur]
+                else:
+                    last_ts = raw[-1].get('timestamp', 0) if raw else 0
+                    if cur.get('timestamp', 0) != last_ts:
+                        raw.append(cur)
+        return raw
+
+    async def _fill_kline_gaps(self, raw_klines: list, need: int) -> list:
+        """检测时间缺口 → 文件补 → API 补 → 回写 deque + 文件"""
+        if len(raw_klines) < 2:
+            return raw_klines
+
+        raw_klines.sort(key=lambda x: x.get('timestamp', 0))
+        existing_ts = {k.get('timestamp') for k in raw_klines}
+
+        # 检测缺口: 相邻两根间隔 > 60s
+        gaps = set()
+        for i in range(len(raw_klines) - 1):
+            diff = raw_klines[i+1].get('timestamp', 0) - raw_klines[i].get('timestamp', 0)
+            if diff > 60000:
+                base = raw_klines[i].get('timestamp', 0)
+                missing = (diff // 60000) - 1
+                for j in range(1, missing + 1):
+                    gap_ts = base + j * 60000
+                    if gap_ts not in existing_ts:
+                        gaps.add(gap_ts)
+
+        if not gaps:
+            return raw_klines
+
+        filled = []  # 新填补的 entry 列表
+        still_missing = set()
+
+        # Layer 2: 文件兜底
+        try:
+            from pathlib import Path
+            from datetime import datetime as _dt
+            data_dir = Path(__file__).parent.parent.parent / 'data' / 'klines' / self.trader.symbol
+            today = _dt.now().strftime('%Y-%m-%d')
+            file_path = data_dir / f'{today}.jsonl'
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            k = json.loads(line.strip())
+                            ts = k.get('timestamp')
+                            if ts in gaps:
+                                entry = {
+                                    'timestamp': ts,
+                                    'open': float(k.get('open', 0)),
+                                    'high': float(k.get('high', 0)),
+                                    'low': float(k.get('low', 0)),
+                                    'close': float(k.get('close', 0)),
+                                    'volume': float(k.get('volume', 0))
+                                }
+                                filled.append(entry)
+                                existing_ts.add(ts)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        filled_ts = {e['timestamp'] for e in filled}
+        still_missing = gaps - filled_ts
+
+        # Layer 3: 币安 API 兜底
+        if still_missing:
+            try:
+                from_ts = min(still_missing) - 120000
+                to_ts = max(still_missing) + 120000
+                api_klines = await asyncio.to_thread(
+                    self.trader.api.get_klines, self.trader.symbol, '1m',
+                    startTime=from_ts, endTime=to_ts, limit=1000
+                )
+                if api_klines:
+                    for k in api_klines:
+                        ts = k[0] if isinstance(k, list) else k.get('timestamp', 0)
+                        if ts in still_missing and ts not in existing_ts:
+                            if isinstance(k, list):
+                                entry = {'timestamp': ts, 'open': float(k[1]), 'high': float(k[2]),
+                                         'low': float(k[3]), 'close': float(k[4]), 'volume': float(k[5])}
+                            else:
+                                entry = {'timestamp': ts, 'open': float(k.get('open', 0)),
+                                         'high': float(k.get('high', 0)), 'low': float(k.get('low', 0)),
+                                         'close': float(k.get('close', 0)), 'volume': float(k.get('volume', 0))}
+                            filled.append(entry)
+                            existing_ts.add(ts)
+            except Exception as e:
+                if self.log:
+                    self.log.system.warning(f'[Web] K线API兜底失败: {e}')
+
+        # 回写: 填入 deque + 追加到文件
+        if filled:
+            raw_klines.extend(filled)
+            raw_klines.sort(key=lambda x: x.get('timestamp', 0))
+            await self._writeback_klines(filled)
+
+        return raw_klines
+
+    async def _writeback_klines(self, entries: list):
+        """将填补的 K 线回写到内存 deque 和当天 JSONL 文件"""
+        if not entries:
+            return
+        # 写入内存 deque
+        try:
+            if self.trader.indicators:
+                vol = self.trader.indicators.volatility
+                kline_deque = vol._klines if hasattr(vol, '_klines') else None
+                if kline_deque is not None:
+                    existing = {k.get('timestamp') for k in kline_deque}
+                    for e in sorted(entries, key=lambda x: x.get('timestamp', 0)):
+                        if e.get('timestamp') not in existing:
+                            kline_deque.append(e)
+                            existing.add(e.get('timestamp'))
+        except Exception:
+            pass
+
+        # 写入文件
+        try:
+            from pathlib import Path
+            from datetime import datetime as _dt
+            data_dir = Path(__file__).parent.parent.parent / 'data' / 'klines' / self.trader.symbol
+            data_dir.mkdir(parents=True, exist_ok=True)
+            today = _dt.now().strftime('%Y-%m-%d')
+            file_path = data_dir / f'{today}.jsonl'
+            file_ts = set()
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            k = json.loads(line.strip())
+                            ts = k.get('timestamp')
+                            if ts:
+                                file_ts.add(ts)
+                        except Exception:
+                            pass
+            with open(file_path, 'a', encoding='utf-8') as f:
+                for e in sorted(entries, key=lambda x: x.get('timestamp', 0)):
+                    ts = e.get('timestamp')
+                    if ts and ts not in file_ts:
+                        f.write(json.dumps({
+                            'timestamp': ts,
+                            'open': e.get('open'),
+                            'high': e.get('high'),
+                            'low': e.get('low'),
+                            'close': e.get('close'),
+                            'volume': e.get('volume')
+                        }) + '\n')
+                        file_ts.add(ts)
+        except Exception:
+            pass
 
     async def _handle_klines_history(self, request: web.Request) -> web.Response:
         """历史 K 线查询（按日期范围）"""
