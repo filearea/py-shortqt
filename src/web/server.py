@@ -501,7 +501,13 @@ class WebServer:
             'depth_pressure_buy': depth_pressure_buy,
             'depth_pressure_sell': depth_pressure_sell,
             'depth_pressure_samples': depth_pressure_samples,
-            'connection': connection
+            'connection': connection,
+            # v1.10.0: 下单按钮状态所需
+            'early_close_order': t.early_close_order is not None,
+            'batch_state': {
+                'enabled': t.batch_state.get('enabled', False) if t.batch_state else False,
+                'round_closed': t.batch_state.get('round_closed', True) if t.batch_state else True
+            } if t.batch_state else None,
         }
 
     def _build_kline_tick(self) -> dict:

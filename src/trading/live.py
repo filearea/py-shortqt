@@ -2481,6 +2481,10 @@ class LiveTrader:
         """延迟刷新历史持仓（等 Binance 同步 trade 记录）"""
         await asyncio.sleep(delay)
         await self.fetch_position_history()
+        # 通知 Web UI 刷新历史列表
+        ws = getattr(self, 'web_server', None)
+        if ws:
+            ws.push_event('history_updated', 'position_history_refreshed')
 
     async def fetch_position_history(self, days: int = 7):
         """从币安拉取成交记录，配对生成历史持仓（API 调用在线程池执行）"""

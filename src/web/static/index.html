@@ -732,7 +732,7 @@ let state = {
 };
 let ws=null, wsReconnectTimer=null, wsReconnectDelay=1000, chart=null, candleSeries=null, volumeSeries=null;
 let klinePeriod='1m', klineData=[];
-let historyOffset=0, historyExhausted=false, historyLoading=false;
+let historyOffset=0, historyExhausted=false, historyLoading=false, historyStale=false;
 let settingsCache={}, settingsSubTab='trading';
 let posExpanded=true;
 let modalTimer=null, modalCountdown=0;
@@ -838,6 +838,14 @@ function handleMsg(msg){
       addLog(msg.event,msg.detail);
       if(/开仓/.test(msg.event)) playBeep('open',1,800,0.08,0.15);
       else if(/止盈|止损|平仓|成交/.test(msg.event)) playBeep('close',2,600,0.06,0.12);
+      break;
+    case 'history_updated':
+      // 平仓后后端刷新了历史数据，标记需要重新加载
+      if(document.getElementById('history-overlay').classList.contains('show')){
+        loadHistory(true);
+      }else{
+        historyStale=true;
+      }
       break;
   }
 }
@@ -1465,13 +1473,15 @@ function updatePosCard(){
     document.getElementById('pos-risk-line2').innerHTML=r2.map(function(s){return '<span>'+s+'</span>';}).join('');
   }
 
-  // Button visibility
+  // Button state: always visible, disable when not applicable
   var hasPend=state.pending_orders&&state.pending_orders.length>0;
-  document.getElementById('btn-close-all').style.display=hasPos?'':'none';
-  document.getElementById('btn-early-close').style.display=hasPos?'':'none';
-  document.getElementById('btn-cancel').style.display=hasPend?'':'none';
-  document.getElementById('btn-long').style.display='';
-  document.getElementById('btn-short').style.display='';
+  var hasEarlyClose=state.early_close_order!=null;
+  var canCancel=hasPend||hasEarlyClose||(state.batch_state&&state.batch_state.enabled&&!state.batch_state.round_closed);
+  document.getElementById('btn-close-all').disabled=!hasPos;
+  document.getElementById('btn-early-close').disabled=!hasPos;
+  document.getElementById('btn-cancel').disabled=!canCancel;
+  document.getElementById('btn-long').disabled=false;
+  document.getElementById('btn-short').disabled=false;
 }
 
 function renderIdleStrategy(){
@@ -1851,7 +1861,8 @@ document.querySelectorAll('.bottom-tab').forEach(function(btn){
     }else if(tab==='history'){
       document.getElementById('settings-overlay').classList.remove('show');
       document.getElementById('history-overlay').classList.add('show');
-      loadHistory();
+      loadHistory(historyStale);
+      historyStale=false;
     }else if(tab==='settings'){
       document.getElementById('history-overlay').classList.remove('show');
       document.getElementById('settings-overlay').classList.add('show');
