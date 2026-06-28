@@ -83,7 +83,8 @@ class ConfigManager:
         "web_ui": {
             "enabled": False,
             "host": "0.0.0.0",
-            "port": 8099
+            "port": 8099,
+            "token": ""
         }
     }
     
@@ -432,7 +433,8 @@ class ConfigManager:
         return self.config.get('web_ui', {
             'enabled': False,
             'host': '0.0.0.0',
-            'port': 8099
+            'port': 8099,
+            'token': ''
         })
 
     def is_web_ui_enabled(self) -> bool:

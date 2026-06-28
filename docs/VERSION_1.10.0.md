@@ -1372,8 +1372,74 @@ v1.9.0 原计划 TUI 零改动，但技术评审确认以下 TUI 改动是必要
 
 ---
 
+---
+## 十四、v1.10.0 发布后修复（2026-06-28）
+
+### 14.1 K 线数据质量防护（recorder.py + main_live.py）
+
+**问题**：币安 API 对刚闭合的 K 线可能返回未最终确定的数据（`buy_turnover=0`），导致本地文件存储了不完整的 K 线。每天 1440 根中有约 999 根存在此问题。
+
+**修复**：
+- `recorder._is_kline_finalized()`: 判断 K 线闭合是否超过 10 秒（数据已最终确定）
+- `_fetch_and_save_kline()`: 拉取窗口从 5 扩大到 10 根；对齐从第 2 秒推迟到第 10 秒；跳过 `volume>0` 但 `buy_turnover<=0` 的未最终确定数据
+- `_correct_recent_dirty_klines()`: 运行时自愈——检查文件最后 15 条，发现脏数据后从 API 回补并重写文件
+- `_init_historical_klines()`: 从 API 回写本地文件时同样跳过脏数据
+- `_on_kline_closed` 回调：K 线收盘时间步触发 `track_atr14_percentile()`
+
+### 14.2 WebSocket 双流架构（websocket.py）
+
+**问题**：组合流中的 `@aggTrade` 和 `@kline_1m` 在代理环境下被阻断，导致主动成交比率无数据、K 线无法实时合成。
+
+**修复**：
+- 拆分为双流并行连接：组合流（`bookTicker + depth20@100ms`）+ 独立 `@trade` 流（逐笔成交）
+- `@trade` 逐笔成交在本地实时合成 1m OHLCV K 线，替代被阻断的 `@kline_1m`
+- 异常价保护：偏离参考价 >10% 的成交不参与合成
+- `aggTrade` 和 `trade` 事件类型统一处理，`TakerRatio` 新增 `trade_count`/`buy_count`/`sell_count`/`last_update` 字段
+
+### 14.3 H/L 价格范围数据源修正（server.py）
+
+**问题**：Web UI 头栏的"近X分钟最高/最低价"使用 `server.py` 内临时创建的 `_price_ticks` deque，启动后从零开始积累，无历史数据，显示偏差严重。
+
+**修复**：移除临时 deque，改为直接读取已有的 `indicators.price_range`（`PriceRangeTracker`），该 tracker 在启动时通过 `seed_from_klines()` 回填历史 K 线高/低价，运行时由 `indicators.update_tick()` 实时更新。
+
+### 14.4 新增 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/privacy/reset` | 重置隐私脱敏基数 |
+
+### 14.5 Web UI 细节修复
+
+- **PnL=0 品牌色**：持仓卡片、上一笔持仓、历史列表等 5 处 PnL=0 时使用 `--color-brand`（金色）
+- **脱敏重置弹窗**：修复按钮大小（`btn-md`）+ 修复重置逻辑（独立 API 端点替代 `_reset_privacy` 前缀参数）
+- **H/L 两行布局**：H/L 各占一行，带百分比距离（精度 0.01%）
+- **VolatilityAnalyzer**: K 线缓存上限从 200 扩大到 1440（24h），`add_kline` 与 `set_current_kline` 职责分离（权威 REST vs WS 合成）
+- **TakerRatio**: 新增 `trade_count` / `last_update` 统计字段，增强 `_prune()` 计数同步
+- **Web Token**: 支持自定义（`web_ui.token` 配置项），TUI 设置面板新增 token 输入框
+- **历史持仓**: `duration` 字段补充（秒），TUI 标题改为"7日历史持仓"，排序改为按 `open_time` 降序取最新 20 条
+- **`fetch_position_history`**: 增强异常日志，BNB 手续费换算异常时输出完整 traceback
+
+### 14.6 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| `src/recorder.py` | K 线拉取验证 + 自愈修正 |
+| `src/main_live.py` | 初始化脏数据拦截 + K 线回调增强 |
+| `src/websocket.py` | 双流并行 + @trade 合成 K 线 |
+| `src/web/server.py` | PriceRangeTracker 对接 + `/api/privacy/reset` |
+| `src/web/static/index.html` | PnL=0 品牌色 + H/L 布局 + 脱敏弹窗修复 |
+| `src/indicators/volatility.py` | max_klines→1440 + add/set 分离 |
+| `src/indicators/taker_ratio.py` | trade_count + last_update |
+| `src/trading/live.py` | duration 字段 + 异常日志增强 |
+| `src/ui/live_ui.py` | 历史持仓排序 + 显示数量 |
+| `src/ui/settings_ui.py` | Web Token 配置字段 |
+| `src/config/manager.py` | DEFAULT_CONFIG 新增 token 字段 |
+| `src/trader.py` | last_trade_price 字段 |
+
+---
+
 **撰写人**: 老杨（技术总监）
 **审核人**: 杰哥（CEO）
 **撰写时间**: 2026-06-23
 **目标版本**: v1.10.0
-**最后修订**: 2026-06-24 — 完整对齐原型变更，新增技术评审章节
+**最后修订**: 2026-06-28 — 发布后修复：K线数据质量防护 / WS双流 / H/L数据源修正

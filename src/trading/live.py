@@ -2541,7 +2541,11 @@ class LiveTrader:
             self._update_trade_stats_24h(all_fills)
 
         except Exception as e:
-            self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
+            if self.log_manager:
+                self.log_manager.system.error(f"[持仓历史] 拉取失败：{e}", exc_info=True)
+            else:
+                import traceback
+                traceback.print_exc()
 
     def _get_bnb_price_for_time(self, trade_time_ms: int) -> Decimal:
         """根据成交时间戳获取 BNB 价格（缓存K线优先，失败回退实时价）"""
@@ -2636,6 +2640,7 @@ class LiveTrader:
                         pos_funding = self._calc_funding(funding, current['open_time_ms'], current['close_time_ms'])
                         pnl = current['realized_pnl_sum'] - current['total_fee'] + pos_funding
 
+                        duration_sec = (current['close_time_ms'] - current['open_time_ms']) / 1000
                         positions.append({
                             'side': side,
                             'status': '完全平仓',
@@ -2649,6 +2654,7 @@ class LiveTrader:
                             'open_time': current['open_time'],
                             'close_time': current['close_time'],
                             'last_action_time_ms': current['close_time_ms'],
+                            'duration': duration_sec,
                         })
                         current = None
                     # 部分平仓：不在循环中生成记录，等遍历结束后统一生成
@@ -2674,6 +2680,8 @@ class LiveTrader:
                 close_avg = None
                 close_time = None
 
+            end_ms = current['close_time_ms'] if current['close_time_ms'] else now_ms
+            duration_sec = (end_ms - current['open_time_ms']) / 1000
             positions.append({
                 'side': side,
                 'status': status,
@@ -2687,6 +2695,7 @@ class LiveTrader:
                 'open_time': current['open_time'],
                 'close_time': close_time,
                 'last_action_time_ms': current['close_time_ms'] if current['close_time_ms'] else current['open_time_ms'],
+                'duration': duration_sec,
             })
 
         return positions

@@ -38,12 +38,12 @@ THRESHOLDS = {
 class VolatilityAnalyzer:
     """波动率分析器"""
     
-    def __init__(self, max_klines: int = 200):
+    def __init__(self, max_klines: int = 1440):
         """
         初始化波动率分析器
 
         Args:
-            max_klines: 最多保留的 K 线数量（默认 200 根，覆盖 3 小时+）
+            max_klines: 最多保留的 K 线数量（默认 1440 根，覆盖 24 小时）
         """
         self._klines = deque(maxlen=max_klines)  # 存储已收盘 K 线数据（公开给 web server）
         self.klines = self._klines  # 兼容旧引用
@@ -60,8 +60,8 @@ class VolatilityAnalyzer:
     
     def add_kline(self, kline: dict):
         """
-        添加 K 线数据
-        
+        添加 K 线数据（权威来源 — REST API 拉取）
+
         Args:
             kline: K 线字典 {
                 'timestamp': int,
@@ -75,7 +75,14 @@ class VolatilityAnalyzer:
         # 如果是新 K 线（时间戳不同），将上一个 K 线加入历史
         if self.current_kline and kline['timestamp'] != self.current_kline['timestamp']:
             self.klines.append(self.current_kline)
-        
+
+        self.current_kline = kline
+
+    def set_current_kline(self, kline: dict):
+        """
+        仅更新当前 K 线跟踪（非权威来源 — WS @trade 合成），不写入历史队列。
+        ATR/指标计算只依赖 REST API 拉取的权威 K 线。
+        """
         self.current_kline = kline
     
     @staticmethod

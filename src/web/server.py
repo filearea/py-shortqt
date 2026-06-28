@@ -10,6 +10,7 @@ import os
 import secrets
 import socket
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -48,18 +49,41 @@ def _fmt_pct(v):
     return round(float(v), 4)
 
 
+def _fmt_dt_str(dt):
+    """datetime → 字符串，同天 HH:MM，昨天 昨天 HH:MM，其余 MM-DD HH:MM"""
+    if dt is None:
+        return ''
+    now = datetime.now()
+    if dt.date() == now.date():
+        return dt.strftime('%H:%M')
+    if dt.date() == (now.date() - timedelta(days=1)):
+        return f'昨天 {dt.strftime("%H:%M")}'
+    return dt.strftime('%m-%d %H:%M')
+
+
+def _fmt_duration(sec: int) -> str:
+    """秒 → 可读时长：3天 12:05:30 / 00:10:41 / 00:00:15"""
+    if sec <= 0:
+        return ''
+    days, r = divmod(sec, 86400)
+    h, r2 = divmod(r, 3600)
+    m, s = divmod(r2, 60)
+    ts = f'{h:02d}:{m:02d}:{s:02d}'
+    return f'{days}天 {ts}' if days > 0 else ts
+
+
 class WebServer:
     """移动端 Web 服务"""
 
-    def __init__(self, trader, config: dict, log_manager=None):
+    def __init__(self, trader, config: dict, log_manager=None, token: str = ''):
         self.trader = trader
         self.config = config
         self.log = log_manager
         self.host = config.get('web_ui', {}).get('host', '0.0.0.0')
         self.port = config.get('web_ui', {}).get('port', 8099)
 
-        # 认证 token
-        self.token = secrets.token_hex(16)
+        # 认证 token：优先使用传入 token，否则随机生成
+        self.token = token or secrets.token_hex(16)
 
         # WebSocket 客户端管理
         self._ws_clients: Set[web.WebSocketResponse] = set()
@@ -74,7 +98,13 @@ class WebServer:
         self._klines_cache: list = []
 
         # Taker ratio 数据（由外部更新）
-        self._taker_ratio: dict = {'buy_pct': 50.0, 'sell_pct': 50.0}
+        self._taker_ratio: dict = {'buy_pct': 50.0, 'sell_pct': 50.0, 'trade_count': 0, 'last_update': 0}
+
+        # 深度压力采样（100ms 间隔，5 分钟窗口）
+        self._dp_buy_ts: list = []  # [(timestamp, count), ...]
+        self._dp_sell_ts: list = []
+        self._dp_last_sample: float = 0
+        self._depth_pressure_samples: int = 0
 
         # 历史行情 WS 健康状态
         self._market_ws_healthy: bool = True
@@ -113,6 +143,8 @@ class WebServer:
             pressure = 'sell'
         else:
             pressure = 'balanced'
+        # 最新成交价（优先于买卖中点）
+        trade_price = float(self.trader.last_trade_price) if self.trader.last_trade_price else None
         self._depth_snapshot = {
             'type': 'depth',
             'ts': int(time.time() * 1000),
@@ -121,16 +153,63 @@ class WebServer:
             'spread': round(spread, 4),
             'spread_pct': round(spread_pct, 6),
             'pressure': pressure,
-            'pressure_pct': round(pressure_pct, 1)
+            'pressure_pct': round(pressure_pct, 1),
+            'trade_price': trade_price
         }
 
-    def update_taker_ratio(self, buy_pct: float, sell_pct: float):
+    def update_taker_ratio(self, buy_pct: float, sell_pct: float, trade_count: int = 0, last_update: float = 0):
         """更新主动成交比率"""
-        self._taker_ratio = {'buy_pct': round(buy_pct, 2), 'sell_pct': round(sell_pct, 2)}
+        self._taker_ratio = {
+            'buy_pct': round(buy_pct, 2),
+            'sell_pct': round(sell_pct, 2),
+            'trade_count': trade_count,
+            'last_update': last_update
+        }
 
     def update_klines_cache(self, klines: list):
         """更新 K 线缓存"""
         self._klines_cache = klines
+
+    def _get_price_range(self, current_price: float) -> tuple:
+        """从 PriceRangeTracker 读取最高/最低价"""
+        t = self.trader
+        if t.indicators and hasattr(t.indicators, 'price_range'):
+            pr = t.indicators.price_range
+            high = pr.get_high()
+            low = pr.get_low()
+            if high is not None and low is not None:
+                return round(high, 2), round(low, 2)
+        return current_price, current_price
+
+    def _sample_depth_pressure(self, imbalance: float):
+        """深度压力采样（与 TUI DepthPressureTracker 逻辑一致）"""
+        now = time.time()
+        if now - self._dp_last_sample < 0.1:
+            return
+        self._dp_last_sample = now
+        if imbalance > 0.15:
+            self._dp_buy_ts.append(now)
+        elif imbalance < -0.15:
+            self._dp_sell_ts.append(now)
+        self._prune_dp(now)
+
+    def _prune_dp(self, now: float):
+        cutoff = now - 300  # 5 分钟窗口
+        while self._dp_buy_ts and self._dp_buy_ts[0] < cutoff:
+            self._dp_buy_ts.pop(0)
+        while self._dp_sell_ts and self._dp_sell_ts[0] < cutoff:
+            self._dp_sell_ts.pop(0)
+
+    def _get_depth_pressure_ratio(self) -> tuple:
+        """返回 (buy_pct, sell_pct)"""
+        now = time.time()
+        self._prune_dp(now)
+        b, s = len(self._dp_buy_ts), len(self._dp_sell_ts)
+        self._depth_pressure_samples = b + s
+        total = b + s
+        if total == 0:
+            return 50.0, 50.0
+        return b / total * 100, s / total * 100
 
     # ─── 状态快照构建 ─────────────────────────────────────────
 
@@ -140,8 +219,8 @@ class WebServer:
         cfg = t.config_manager
         indicators = t.indicators
 
-        # 价格
-        price = float(t.last_price) if t.last_price else 0
+        # 价格 — 优先使用成交价，降级为买一价
+        price = float(t.last_trade_price or t.last_price) if (t.last_trade_price or t.last_price) else 0
 
         # ATR14
         atr14 = 0
@@ -150,26 +229,82 @@ class WebServer:
         atr14_ref = 'normal'
         if indicators:
             vol = indicators.volatility
-            atr14 = round(vol.get_atr14(), 2) if vol.get_atr14() else 0
-            atr14_pct = round(vol.get_atr14_pct(), 4) if vol.get_atr14_pct() else 0
-            atr14_percentile = getattr(vol, '_atr14_percentile', 0) or 0
-            atr14_ref = getattr(vol, '_atr14_ref', 'normal') or 'normal'
+            atr14 = round(vol.get_atr14(), 6) if vol.get_atr14() is not None else 0
+            atr14_pct = round(vol.get_atr14_pct(), 4) if vol.get_atr14_pct() is not None else 0
+            # 读取已计算的百分位和评价
+            pct_history = getattr(vol, '_atr14_percentile_history', None)
+            hist_len = len(pct_history) if pct_history else 0
+            atr14_percentile = getattr(vol, '_atr14_percentile', 0)
+            atr14_ref = getattr(vol, '_atr14_ref', 'normal')
+            # 百分位未计算（初始状态 0/normal）时的自愈逻辑
+            if atr14_percentile == 0 and atr14_ref == 'normal':
+                if hist_len > 0:
+                    # 情况A：历史有数据但 recompute 从未被调用 → 触发重算
+                    vol.recompute_atr14_percentile()
+                elif hist_len == 0 and atr14_pct > 0:
+                    # 情况B：历史为空但 ATR14% 可用（track 在 kline 回调中未成功）
+                    # 直接用当前值初始化历史队列
+                    vol.track_atr14_percentile()
+                atr14_percentile = getattr(vol, '_atr14_percentile', 0)
+                atr14_ref = getattr(vol, '_atr14_ref', 'normal')
 
-        # 振幅
+        # 振幅 / 波动率 / 加速度
         amp_1m = 0
+        amp_5m = 0
+        amp_1h = 0
+        amp_1m_status = '--'
+        amp_1h_status = '--'
+        amp_change_rate = 0
+        amp_change_status = '--'
         if indicators:
             vol_m = indicators.volatility.get_metrics()
             amp_1m = round(vol_m.get('1min_amplitude', 0), 4)
+            amp_5m = round(vol_m.get('5min_amplitude', 0), 4)
+            amp_1h = round(vol_m.get('1h_amplitude', 0), 4)
+            amp_1m_status = vol_m.get('1min_status', '--')
+            amp_1h_status = vol_m.get('1h_status', '--')
+            amp_change_rate = round(vol_m.get('change_rate', 0), 4)
+            amp_change_status = vol_m.get('change_rate_status', '--')
 
-        # 价格范围
+        # 综合评分 + 流动性深度
+        score = None
+        liq_bid_depth = 0
+        liq_ask_depth = 0
+        liq_total_depth = 0
+        depth_pressure_buy = 50.0
+        depth_pressure_sell = 50.0
+        depth_pressure_samples = 0
+        if indicators:
+            snap = indicators.get_snapshot()
+            sc = snap.get('score', {})
+            score = {
+                'total': sc.get('total_score', 0),
+                'direction': sc.get('direction', 'NONE'),
+                'direction_label': '看多' if sc.get('direction') == 'LONG' else ('看空' if sc.get('direction') == 'SHORT' else '观望'),
+                'confidence': round(sc.get('confidence', 0) * 100),
+                'recommendation': sc.get('recommendation', '--'),
+                'emoji': sc.get('signal_emoji', '🟡'),
+                'color': sc.get('signal_color', 'yellow'),
+                'trend': round(sc.get('category_scores', {}).get('trend', 0), 1),
+                'volatility': round(sc.get('category_scores', {}).get('volatility', 0), 1),
+                'depth': round(sc.get('category_scores', {}).get('depth', 0), 1),
+            }
+            liq = snap.get('liquidity', {})
+            liq_bid_depth = round(float(liq.get('bid_depth_surface', 0)), 2)
+            liq_ask_depth = round(float(liq.get('ask_depth_surface', 0)), 2)
+            liq_total_depth = liq_bid_depth + liq_ask_depth
+            # 滚动采样深度压力比
+            if liq_total_depth > 0:
+                imbalance = (liq_bid_depth - liq_ask_depth) / liq_total_depth
+                self._sample_depth_pressure(imbalance)
+            bp, sp = self._get_depth_pressure_ratio()
+            depth_pressure_buy = round(bp, 2)
+            depth_pressure_sell = round(sp, 2)
+            depth_pressure_samples = self._depth_pressure_samples
+
+        # 价格范围（从 PriceRangeTracker 读取，由 ticker 回调实时更新 + 启动时回填历史）
         pr_minutes = cfg.get('price_range.minutes', 30) if cfg else 30
-        pr_high = price
-        pr_low = price
-        if hasattr(t, '_price_tracker') and t._price_tracker:
-            pr = t._price_tracker.get_range(pr_minutes)
-            if pr:
-                pr_high = float(pr['high'])
-                pr_low = float(pr['low'])
+        pr_high, pr_low = self._get_price_range(price)
 
         # 持仓
         position = None
@@ -267,7 +402,12 @@ class WebServer:
             risk['loss_protection_active'] = lp_status.get('status', '未启用') in ('已保护',)
             risk['loss_protection_status'] = lp_status.get('status', '未启用')
 
-        # 24h 统计
+        # 24h 统计 / 统计周期
+        stats_period_cfg = cfg.get('stats_period', {}) if cfg else {}
+        stats_period = {
+            'mode': stats_period_cfg.get('mode', '24h'),
+            'timezone': stats_period_cfg.get('timezone', '+8')
+        }
         s24 = t.trade_stats_24h or {}
         total_fee_val = float(s24.get('total_fee', 0) or 0)
         stats_24h = {
@@ -282,23 +422,32 @@ class WebServer:
             'expected_value': s24.get('expected_value', 0)
         }
 
-        # 上一笔持仓
+        # 上一笔持仓（仅取最近完全平仓，无已平仓则不显示）
         last_position = None
         if t.position_history:
-            last = t.position_history[-1]
-            last_position = {
-                'side': last.get('side', 'NONE'),
-                'entry': float(last.get('entry_price', 0)),
-                'exit': float(last.get('exit_price', 0)),
-                'size': float(last.get('size', 0)),
-                'pnl': float(last.get('pnl', 0)),
-                'fee': float(last.get('total_fee', 0)),
-                'funding': float(last.get('funding', 0)),
-                'net_pnl': float(last.get('net_pnl', 0)),
-                'exit_type': last.get('exit_type', 'MANUAL'),
-                'close_time': last.get('close_time', ''),
-                'duration': last.get('duration', '')
-            }
+            # position_history 按 (status_order, -last_action_time_ms) 排序
+            # 完全平仓 在最前的是最近平仓的，取第一个
+            closed = [p for p in t.position_history if p.get('status') == '完全平仓']
+            if closed:
+                last = closed[0]
+                close_avg = last.get('close_avg_price')
+                close_time = last.get('close_time')
+                last_position = {
+                    'side': last.get('side', 'NONE'),
+                    'status': last.get('status', ''),
+                    'entry': float(last.get('open_avg_price', 0)),
+                    'exit': float(close_avg) if close_avg is not None else 0,
+                    'size': float(last.get('max_size', 0)),
+                    'closed_size': float(last.get('closed_size', 0)),
+                    'pnl': float(last.get('pnl', 0)),
+                    'fee': float(last.get('total_fee', 0)),
+                    'funding': float(last.get('funding_fee', 0)),
+                    'net_pnl': float(last.get('pnl', 0) or 0),
+                    'exit_type': last.get('exit_type', 'MANUAL') if last.get('status') != '未平仓' else '',
+                    'open_time': _fmt_dt_str(last.get('open_time')),
+                    'close_time': _fmt_dt_str(close_time) if close_time else '',
+                    'duration': _fmt_duration(int(last.get('duration', 0) or 0))
+                }
 
         # 连接状态
         ws_healthy = getattr(t, '_ws_health', {})
@@ -306,15 +455,34 @@ class WebServer:
             'ws_healthy': ws_healthy.get('market', True) if ws_healthy else self._market_ws_healthy
         }
 
+        # v1.10.0: 诊断 - WebSocket 事件类型
+        diag = {}
+        listener = getattr(t, 'listener', None)
+        if listener:
+            diag['seen_event_types'] = list(getattr(listener, '_seen_event_types', set()))
+            diag['agg_trade_count'] = getattr(listener, '_agg_trade_count', 0)
+
         return {
             'type': 'state',
             'ts': int(time.time() * 1000),
+            '_diag': diag,
             'price': price,
             'atr14': atr14,
             'atr14_pct': atr14_pct,
             'atr14_percentile': atr14_percentile,
             'atr14_ref': atr14_ref,
             'amplitude_1m': amp_1m,
+            'amplitude_5m': amp_5m,
+            'amplitude_1h': amp_1h,
+            'amplitude_1m_status': amp_1m_status,
+            'amplitude_1h_status': amp_1h_status,
+            'amplitude_change_rate': amp_change_rate,
+            'amplitude_change_status': amp_change_status,
+            'available_balance': float(t.available_balance) if t.available_balance else 0,
+            'margin_used': float(getattr(t, 'position_margin', 0) or 0) + float(getattr(t, 'order_margin', 0) or 0),
+            'privacy_baseline': float(getattr(t, '_privacy_baseline', 0) or 0),
+            'api_leverage': cfg.get('leverage.api', 100) if cfg else 100,
+            'actual_leverage': cfg.get('leverage.actual', 25) if cfg else 25,
             'price_range_high': pr_high,
             'price_range_low': pr_low,
             'price_range_minutes': pr_minutes,
@@ -323,18 +491,32 @@ class WebServer:
             'tp_orders': tp_orders,
             'risk': risk,
             'stats_24h': stats_24h,
+            'stats_period': stats_period,
             'last_position': last_position,
             'taker_ratio': self._taker_ratio,
+            'score': score,
+            'liq_bid_depth': liq_bid_depth,
+            'liq_ask_depth': liq_ask_depth,
+            'depth_pressure_buy': depth_pressure_buy,
+            'depth_pressure_sell': depth_pressure_sell,
+            'depth_pressure_samples': depth_pressure_samples,
             'connection': connection
         }
 
     def _build_kline_tick(self) -> dict:
-        """构建当前 K 线 tick"""
+        """构建当前 K 线 tick（从 listener 取实时合成数据，每笔成交都会更新）"""
         t = self.trader
-        if not t.indicators:
-            return None
-        vol = t.indicators.volatility
-        kline = vol.current_kline if hasattr(vol, 'current_kline') else None
+        # 优先从 BinanceListener 读取实时合成的 K 线（每笔成交更新 OHLCV）
+        listener = getattr(t, 'listener', None)
+        if listener and listener.current_kline:
+            kline = listener.current_kline
+        else:
+            # 降级：从 volatility 读取（仅 K 线闭合时更新）
+            if t.indicators:
+                vol = t.indicators.volatility
+                kline = vol.current_kline if hasattr(vol, 'current_kline') else None
+            else:
+                kline = None
         if not kline:
             return None
         now_ms = int(time.time() * 1000)
@@ -365,7 +547,7 @@ class WebServer:
             return self._error_page()
         html_path = Path(__file__).parent / 'static' / 'index.html'
         if html_path.exists():
-            return web.FileResponse(html_path)
+            return web.FileResponse(html_path, headers={'Cache-Control': 'no-cache, no-store, must-revalidate'})
         return web.Response(text='index.html not found', status=500)
 
     def _error_page(self) -> web.Response:
@@ -417,32 +599,65 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_klines(self, request: web.Request) -> web.Response:
-        """K 线数据 API"""
+        """K 线数据 API（支持 interval 聚合）"""
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
         try:
-            limit = int(request.query.get('limit', '100'))
+            limit = int(request.query.get('limit', '120'))
         except ValueError:
-            limit = 100
+            limit = 120
         limit = min(limit, 1440)
+        interval = request.query.get('interval', '1m')
+        # 聚合倍数：1m=1, 5m=5, 15m=15, 1h=60
+        factor = {'1m': 1, '5m': 5, '15m': 15, '1h': 60}.get(interval, 1)
 
-        # 从 indicators 的 deque 获取最近的 K 线
-        klines = []
+        # 从 indicators 的 deque 获取最近的 1m K 线
+        raw_klines = []
         if self.trader.indicators:
             vol = self.trader.indicators.volatility
             kline_deque = vol._klines if hasattr(vol, '_klines') else None
             if kline_deque:
-                klines = list(kline_deque)[-limit:]
+                raw_klines = list(kline_deque)
+            # 若 deque 为空但有 current_kline，则用 current_kline 补齐（系统刚启动时）
+            cur = vol.current_kline if hasattr(vol, 'current_kline') else None
+            if not raw_klines and cur and cur.get('timestamp'):
+                raw_klines = [cur]
+            elif raw_klines and cur and cur.get('timestamp'):
+                # 确保 current_kline 也在列表中（如果还没收盘）
+                last_ts = raw_klines[-1].get('timestamp', 0) if raw_klines else 0
+                if cur.get('timestamp', 0) != last_ts:
+                    raw_klines.append(cur)
+
+        # 聚合为指定周期
         result = []
-        for k in klines:
-            result.append({
-                't': k.get('timestamp', 0),
-                'o': float(k.get('open', 0)),
-                'h': float(k.get('high', 0)),
-                'l': float(k.get('low', 0)),
-                'c': float(k.get('close', 0)),
-                'v': float(k.get('volume', 0))
-            })
+        if factor == 1:
+            src = raw_klines[-limit:]
+            for k in src:
+                result.append({
+                    't': k.get('timestamp', 0),
+                    'o': float(k.get('open', 0)),
+                    'h': float(k.get('high', 0)),
+                    'l': float(k.get('low', 0)),
+                    'c': float(k.get('close', 0)),
+                    'v': float(k.get('volume', 0))
+                })
+        else:
+            # 按 factor 分组聚合，每组 factor 根 1m kline
+            need = limit * factor
+            src = raw_klines[-need:] if len(raw_klines) > need else raw_klines
+            i = 0
+            while i + factor <= len(src):
+                group = src[i:i + factor]
+                o_val = float(group[0].get('open', 0))
+                h_val = max(float(k.get('high', 0)) for k in group)
+                l_val = min(float(k.get('low', 0)) for k in group)
+                c_val = float(group[-1].get('close', 0))
+                v_val = sum(float(k.get('volume', 0)) for k in group)
+                t_first = group[0].get('timestamp', 0)
+                result.append({'t': t_first, 'o': o_val, 'h': h_val, 'l': l_val, 'c': c_val, 'v': v_val})
+                i += factor
+            result = result[-limit:]
+
         return web.json_response(result)
 
     async def _handle_klines_history(self, request: web.Request) -> web.Response:
@@ -502,41 +717,80 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                 limit = 20
 
             history = list(self.trader.position_history) if self.trader.position_history else []
+            # 按 open_time 降序重排（最新在前，不按 status 分组；datetime 对象始终存在）
+            history.sort(key=lambda x: x.get('open_time') or datetime.min, reverse=True)
             # 过滤 30 天内的数据
             cutoff = datetime.now() - timedelta(days=30)
             filtered = []
-            for h in reversed(history):
-                close_time_str = h.get('close_time', '')
-                try:
-                    close_dt = datetime.strptime(close_time_str, '%m-%d %H:%M')
-                    close_dt = close_dt.replace(year=datetime.now().year)
-                except ValueError:
+            for h in history:
+                close_time_val = h.get('close_time')
+                if isinstance(close_time_val, datetime):
+                    close_dt = close_time_val
+                elif isinstance(close_time_val, str) and close_time_val:
+                    try:
+                        close_dt = datetime.strptime(close_time_val, '%m-%d %H:%M')
+                        close_dt = close_dt.replace(year=datetime.now().year)
+                    except ValueError:
+                        close_dt = None
+                else:
+                    close_dt = None
+                if close_dt is None:
                     filtered.append(h)
-                    continue
-                if close_dt >= cutoff:
+                elif close_dt >= cutoff:
                     filtered.append(h)
 
             total = len(filtered)
             batch = filtered[offset:offset + limit]
             result = []
             for h in batch:
+                close_avg = h.get('close_avg_price')
+                close_time = h.get('close_time')
+                fee = float(h.get('total_fee', 0))
+                funding = float(h.get('funding_fee', 0))
+                pnl = float(h.get('pnl', 0))
+                status = h.get('status', '')
+                # 退出类型（从 status 推导；TP/SL 需从外部补充，默认 MANUAL）
+                if status == '未平仓':
+                    exit_type = 'OPEN'
+                elif status == '部分平仓':
+                    exit_type = 'PARTIAL'
+                else:
+                    exit_type = 'MANUAL'
+                # duration: 秒 → 可读格式
+                dur = h.get('duration', 0) or 0
+                dur_str = _fmt_duration(int(dur))
                 result.append({
                     'side': h.get('side', 'NONE'),
-                    'entry_price': float(h.get('entry_price', 0)),
-                    'exit_price': float(h.get('exit_price', 0)),
-                    'size': float(h.get('size', 0)),
-                    'pnl': float(h.get('pnl', 0)),
-                    'total_fee': float(h.get('total_fee', 0)),
-                    'funding': float(h.get('funding', 0)),
-                    'net_pnl': float(h.get('net_pnl', 0)),
-                    'exit_type': h.get('exit_type', 'MANUAL'),
-                    'close_time': h.get('close_time', ''),
-                    'duration': h.get('duration', '')
+                    'status': status,
+                    'entry_price': float(h.get('open_avg_price', 0)),
+                    'exit_price': float(close_avg) if close_avg is not None else 0,
+                    'size': float(h.get('max_size', 0)),
+                    'closed_size': float(h.get('closed_size', 0)),
+                    'pnl': pnl,
+                    'total_fee': fee,
+                    'funding': funding,
+                    'net_pnl': pnl,  # pnl 在 _pair_positions 已扣费+资费，不重复扣除
+                    'exit_type': exit_type,
+                    'open_time': _fmt_dt_str(h.get('open_time')),
+                    'close_time': _fmt_dt_str(close_time) if close_time else '',
+                    'duration': dur_str,
                 })
             return web.json_response({'items': result, 'total': total, 'offset': offset, 'limit': limit})
         except Exception as e:
             if self.log:
                 self.log.error(f'[Web] /api/history 异常: {e}', exc_info=True)
+            return web.json_response({'error': str(e)}, status=500)
+
+    async def _handle_history_refresh(self, request: web.Request) -> web.Response:
+        """触发从币安重新拉取历史持仓"""
+        if not self._check_auth(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+        try:
+            await self.trader.fetch_position_history()
+            return web.json_response({'ok': True})
+        except Exception as e:
+            if self.log:
+                self.log.error(f'[Web] 刷新历史持仓失败: {e}', exc_info=True)
             return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_open(self, request: web.Request) -> web.Response:
@@ -611,6 +865,8 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': 'invalid json'}, status=400)
         if self.trader.config_manager:
             for key, value in body.items():
+                if key.startswith('_'):
+                    continue
                 self.trader.config_manager.set(key, value)
             self.trader.config_manager.save()
             if self.log:
@@ -665,7 +921,9 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         if not cfg:
             return web.json_response({'error': 'no config manager'}, status=500)
         ok = cfg.restore_config(name)
-        return web.json_response({'ok': ok})
+        if not ok:
+            return web.json_response({'error': 'backup not found'}, status=404)
+        return web.json_response({'ok': True})
 
     async def _handle_backup_delete(self, request: web.Request) -> web.Response:
         """删除备份"""
@@ -693,6 +951,16 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': 'no config manager'}, status=500)
         cfg.reset_to_defaults()
         return web.json_response({'ok': True})
+
+    async def _handle_privacy_reset(self, request: web.Request) -> web.Response:
+        """重置隐私脱敏基数"""
+        if not self._check_auth(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+        t = self.trader
+        if hasattr(t, 'reset_privacy_baseline'):
+            t.reset_privacy_baseline()
+            return web.json_response({'ok': True, 'baseline': float(t._privacy_baseline or 0)})
+        return web.json_response({'error': 'not supported'}, status=500)
 
     # ─── WebSocket 处理器 ─────────────────────────────────────
 
@@ -835,6 +1103,8 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         self._app.router.add_static('/static/', static_dir, show_index=False)
         # 兼容: /tv-charts.umd.js → /static/tv-charts.umd.js（index.html 中 CDN 后备路径）
         self._app.router.add_get('/tv-charts.umd.js', lambda r: web.FileResponse(static_dir / 'tv-charts.umd.js'))
+        # 图表测试页（免认证）
+        self._app.router.add_get('/chart-test', lambda r: web.FileResponse(static_dir / 'chart-test.html'))
 
         # 路由
         self._app.router.add_get('/', self._handle_index)
@@ -843,6 +1113,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         self._app.router.add_get('/api/klines', self._handle_klines)
         self._app.router.add_get('/api/klines/history', self._handle_klines_history)
         self._app.router.add_get('/api/history', self._handle_history)
+        self._app.router.add_post('/api/history/refresh', self._handle_history_refresh)
         self._app.router.add_post('/api/open', self._handle_open)
         self._app.router.add_post('/api/close', self._handle_close)
         self._app.router.add_post('/api/close_percent', self._handle_close_percent)
@@ -854,10 +1125,11 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         self._app.router.add_post('/api/settings/restore', self._handle_backup_restore)
         self._app.router.add_post('/api/settings/backup/delete', self._handle_backup_delete)
         self._app.router.add_post('/api/settings/reset', self._handle_settings_reset)
+        self._app.router.add_post('/api/privacy/reset', self._handle_privacy_reset)
 
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, self.host, self.port)
+        site = web.TCPSite(self._runner, self.host, self.port, reuse_address=True)
         await site.start()
 
         # 启动后台推送任务
@@ -902,7 +1174,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return '127.0.0.1'
 
 
-async def start_web_server(trader, host='0.0.0.0', port=8099, log_manager=None) -> WebServer:
+async def start_web_server(trader, host='0.0.0.0', port=8099, log_manager=None, token='') -> WebServer:
     """启动 Web 服务（由 main_live.py 调用）"""
     config = {
         'web_ui': {
@@ -911,6 +1183,6 @@ async def start_web_server(trader, host='0.0.0.0', port=8099, log_manager=None) 
             'enabled': True
         }
     }
-    server = WebServer(trader, config, log_manager)
+    server = WebServer(trader, config, log_manager, token=token)
     await server.start()
     return server

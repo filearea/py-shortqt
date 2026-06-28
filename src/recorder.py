@@ -49,43 +49,64 @@ class RealtimeRecorder:
         self._kline_timer_running = False
 
     def _kline_poll_loop(self):
-        """K 线轮询线程：对齐到每分钟第 2 秒拉取"""
-        # 启动后等到下一分钟的第 2 秒
+        """K 线轮询线程：对齐到每分钟第 10 秒拉取（给 API 充足时间最终确定数据）"""
+        # 启动后等到下一分钟的第 10 秒
         now = time.time()
         seconds_in_minute = now % 60
-        if seconds_in_minute < 2:
-            time.sleep(2 - seconds_in_minute)
+        if seconds_in_minute < 10:
+            time.sleep(10 - seconds_in_minute)
         else:
-            time.sleep(62 - seconds_in_minute)
-        
+            time.sleep(70 - seconds_in_minute)
+
         while self._kline_timer_running:
             try:
                 self._fetch_and_save_kline()
             except Exception:
                 pass
-            # 精确对齐到下一分钟的第 2 秒
+            # 精确对齐到下一分钟的第 10 秒
             now = time.time()
             seconds_in_minute = now % 60
-            if seconds_in_minute < 2:
-                wait = 2 - seconds_in_minute
+            if seconds_in_minute < 10:
+                wait = 10 - seconds_in_minute
             else:
-                wait = 62 - seconds_in_minute
+                wait = 70 - seconds_in_minute
             # 分段 sleep，每秒检查一次退出标志
             end_time = now + wait
             while self._kline_timer_running and time.time() < end_time:
                 remaining = end_time - time.time()
                 time.sleep(min(remaining, 1.0))
 
+    def _is_kline_finalized(self, kline_ts: int) -> bool:
+        """K 线是否已经超过 10 秒，数据应该已最终确定"""
+        kline_close_time = kline_ts + 60000
+        now_ms = int(time.time() * 1000)
+        return (now_ms - kline_close_time) > 10000
+
+    def _build_kline_dict(self, k: list) -> dict:
+        """将 API 返回的 kline 数组转为存储字典"""
+        return {
+            'timestamp': k[0],
+            'open': float(k[1]),
+            'high': float(k[2]),
+            'low': float(k[3]),
+            'close': float(k[4]),
+            'volume': float(k[5]),
+            'turnover': float(k[7]) if len(k) > 7 else 0.0,
+            'trades': int(k[8]) if len(k) > 8 else 0,
+            'buy_volume': float(k[9]) if len(k) > 9 else 0.0,
+            'buy_turnover': float(k[10]) if len(k) > 10 else 0.0
+        }
+
     def _fetch_and_save_kline(self):
-        """从 API 拉取最近 K 线，保存所有新闭合的 K 线（含追赶）"""
+        """从 API 拉取最近 K 线，保存所有新闭合的 K 线（含追赶 + 数据校验 + 自动修正）"""
         if not self.api_client:
             return
 
-        # 拉取最近 5 条，确保即使前一次失败也能补回最多 4 分钟的缺口
+        # 拉取最近 10 条（扩大追赶窗口，覆盖更长时间的网络抖动）
         klines = None
         for attempt in range(3):
             try:
-                klines = self.api_client.get_klines(self.symbol, '1m', limit=5)
+                klines = self.api_client.get_klines(self.symbol, '1m', limit=10)
                 break
             except Exception:
                 if attempt < 2:
@@ -96,12 +117,19 @@ class RealtimeRecorder:
         if not klines or len(klines) < 2:
             return
 
-        # 遍历所有已关闭的 K 线（跳过最后一条未关闭的），保存新于 _last_kline_ts 的
+        now_ms = int(time.time() * 1000)
         saved_count = 0
         for k in klines[:-1]:
             ts = k[0]
 
             if ts <= self._last_kline_ts:
+                continue
+
+            # 数据校验：已闭合超过 10 秒的 K 线，buy_turnover 不应为 0（volume>0 时）
+            buy_turnover = float(k[10]) if len(k) > 10 else 0.0
+            volume = float(k[5]) if len(k) > 5 else 0.0
+            if volume > 0 and buy_turnover <= 0 and self._is_kline_finalized(ts):
+                # 跳过未最终确定的数据，不更新 _last_kline_ts，下一轮重试
                 continue
 
             # 日期切换
@@ -125,18 +153,7 @@ class RealtimeRecorder:
                 except Exception:
                     pass
 
-            kline_data = {
-                'timestamp': k[0],
-                'open': float(k[1]),
-                'high': float(k[2]),
-                'low': float(k[3]),
-                'close': float(k[4]),
-                'volume': float(k[5]),
-                'turnover': float(k[7]),
-                'trades': int(k[8]),
-                'buy_volume': float(k[9]),
-                'buy_turnover': float(k[10])
-            }
+            kline_data = self._build_kline_dict(k)
 
             self.klines_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.klines_file, 'a', encoding='utf-8') as f:
@@ -163,8 +180,72 @@ class RealtimeRecorder:
                 except Exception:
                     pass
 
-        if saved_count > 1:
-            pass  # 追赶成功，静默记录（避免高频日志）
+        # 每次轮询后检查并修正文件中已有的脏数据
+        self._correct_recent_dirty_klines()
+
+    def _correct_recent_dirty_klines(self):
+        """检查文件中 buy_turnover=0 的条目，从 API 回补正确数据"""
+        if not self.klines_file.exists():
+            return
+
+        try:
+            # 读取文件最后 15 行（覆盖近 15 分钟）
+            with open(self.klines_file, 'r', encoding='utf-8') as f:
+                all_lines = f.readlines()
+
+            if not all_lines:
+                return
+
+            # 找出最近 15 条中 buy_turnover=0 的条目
+            bad_indices = []
+            check_start = max(0, len(all_lines) - 15)
+            for i in range(check_start, len(all_lines)):
+                try:
+                    d = json.loads(all_lines[i].strip())
+                    if d.get('buy_turnover', 0) <= 0 and d.get('volume', 0) > 0:
+                        ts = d['timestamp']
+                        if self._is_kline_finalized(ts):
+                            bad_indices.append((i, ts))
+                except (json.JSONDecodeError, KeyError):
+                    continue
+
+            if not bad_indices:
+                return
+
+            # 从 API 重取正确数据（一次 API 调用覆盖需要的范围）
+            first_bad_ts = bad_indices[0][1]
+            last_bad_ts = bad_indices[-1][1]
+            try:
+                fixed_klines = self.api_client.get_klines(
+                    self.symbol, '1m', limit=len(bad_indices) + 5,
+                    startTime=first_bad_ts - 60000, endTime=last_bad_ts + 120000
+                )
+            except Exception:
+                return
+
+            if not fixed_klines:
+                return
+
+            # 按时间戳索引 API 返回的数据
+            api_map = {}
+            for fk in fixed_klines:
+                api_map[fk[0]] = fk
+
+            # 替换脏数据
+            corrected = 0
+            for idx, ts in bad_indices:
+                if ts in api_map:
+                    fk = api_map[ts]
+                    bt = float(fk[10]) if len(fk) > 10 else 0.0
+                    if bt > 0:
+                        all_lines[idx] = json.dumps(self._build_kline_dict(fk), ensure_ascii=False) + '\n'
+                        corrected += 1
+
+            if corrected > 0:
+                with open(self.klines_file, 'w', encoding='utf-8') as f:
+                    f.writelines(all_lines)
+        except Exception:
+            pass
 
     def save_kline(self, kline: Dict[str, Any]):
         """WebSocket K 线回调 — v1.5.3 不再写文件，仅供指标计算"""

@@ -113,6 +113,7 @@ class LiveTradingBot:
         
         # 错误日志列表（用于 TUI 显示）
         self.error_log = []
+        self._agg_trade_logged = False  # v1.10.0: aggTrade 诊断
         self.web_server = None  # v1.10.0 Web 服务
         self._needs_init = False  # v1.10.0: 标记是否需要重新初始化（首次启动失败时置为 True）
         
@@ -174,7 +175,10 @@ class LiveTradingBot:
         # v1.5.3: 注入 api_client 并启动 K 线定时拉取
         self.recorder.api_client = self.trader.api
         # 新 K 线收盘回调 → 更新指标（替代不可靠的 WebSocket kline 事件）
-        self.recorder.on_new_kline = self.indicators.update_kline
+        def _on_kline_closed(kline):
+            self.indicators.update_kline(kline)
+            self.indicators.volatility.track_atr14_percentile()
+        self.recorder.on_new_kline = _on_kline_closed
         self.recorder.start_kline_timer()
         self.log_manager.system.info("K 线定时拉取已启动（每分钟从 API 获取完整数据，收盘时更新指标）")
         
@@ -244,12 +248,22 @@ class LiveTradingBot:
                     self.log_manager.system.warning("API 返回为空，仅使用本地数据")
                     raw_klines = []
                 today_api = [k for k in raw_klines if k[0] >= start_ms]
-                # 写回本地（完整覆盖今日文件，跳过最后一条未关闭）
+                # 写回本地（完整覆盖今日文件，跳过最后一条未关闭 + 脏数据）
                 kline_file.parent.mkdir(parents=True, exist_ok=True)
                 write_count = 0
+                skip_dirty = 0
+                now_ms = int(datetime.now().timestamp() * 1000)
                 with open(kline_file, 'w', encoding='utf-8') as f:
                     for k in today_api[:-1]:
                         if len(k) < 11:
+                            continue
+                        # 数据校验：已闭合超过 10 秒的 K 线，buy_turnover 不应为 0
+                        buy_turnover = float(k[10])
+                        volume = float(k[5])
+                        ts = k[0]
+                        kline_close_time = ts + 60000
+                        if volume > 0 and buy_turnover <= 0 and (now_ms - kline_close_time) > 10000:
+                            skip_dirty += 1
                             continue
                         kd = {
                             'timestamp': k[0],
@@ -265,7 +279,8 @@ class LiveTradingBot:
                         }
                         f.write(json.dumps(kd, ensure_ascii=False) + '\n')
                         write_count += 1
-                self.log_manager.system.info(f'API 返回 {len(today_api)} 根K线，写入 {write_count} 根到本地')
+                self.log_manager.system.info(f'API 返回 {len(today_api)} 根K线，写入 {write_count} 根到本地' +
+                    (f'，跳过 {skip_dirty} 根未最终确定' if skip_dirty > 0 else ''))
             else:
                 self.log_manager.system.info(f'本地K线充足（{local_count}根，预期～{expected}根），跳过 API')
                 # 将本地数据转为 API 格式 [ts, o, h, l, c, v, 0, turnover, trades, buy_vol, buy_turnover]
@@ -467,15 +482,13 @@ class LiveTradingBot:
                     self.web_server.update_depth(bids_decimal, asks_decimal)
             
             elif event_type == 'kline':
-                # WebSocket kline 事件（用于 current_kline 跟踪）
-                # 指标更新已由 recorder 的 API 拉取回调驱动
+                # WS @trade 合成 K 线 — 仅更新 current_kline 跟踪，不写入历史队列
+                # 指标更新（ATR/振幅等）由 recorder 的 REST API 拉取回调驱动
                 if not data or data.get('close') is None:
                     return
 
-                self.indicators.update_kline(data)
-                # v1.10.0：记录 ATR14% 到 24h 历史队列
-                self.indicators.volatility.track_atr14_percentile()
-                
+                self.indicators.volatility.set_current_kline(data)
+
                 # v1.4.1 新增：实时保存 K 线数据
                 self.recorder.save_kline(data)
                 
@@ -487,7 +500,13 @@ class LiveTradingBot:
                     self.web_server.update_klines_cache(list(self.indicators.volatility._klines))
 
             elif event_type == 'aggTrade':
-                # v1.10.0：主动成交比率
+                # v1.10.0：主动成交比率 + 缓存最新成交价
+                trade_price = data.get('price')
+                if trade_price is not None:
+                    self.trader.last_trade_price = float(trade_price)
+                if not self._agg_trade_logged:
+                    self._agg_trade_logged = True
+                    self.log_manager.system.info(f'[诊断] 首个 aggTrade 回调触发: m={data.get("m")} qty={data.get("qty")}')
                 self.indicators.update_agg_trade(data)
                 ratio = self.indicators.get_taker_ratio()
                 if self.web_server:
@@ -641,22 +660,52 @@ class LiveTradingBot:
     async def _apply_web_ui_setting(self):
         """动态启停 Web 服务"""
         web_enabled = self.config_manager.is_web_ui_enabled()
+        web_cfg = self.config_manager.get_web_ui_config()
+        cfg_token = web_cfg.get('token', '')
+        current_token = self.web_server.token if self.web_server else ''
+
         if web_enabled and not self.web_server:
             try:
-                web_cfg = self.config_manager.get_web_ui_config()
                 self.web_server = await start_web_server(
                     trader=self.trader,
                     host=web_cfg.get('host', '0.0.0.0'),
                     port=web_cfg.get('port', 8099),
-                    log_manager=self.log_manager
+                    log_manager=self.log_manager,
+                    token=cfg_token
                 )
                 self.trader.web_server = self.web_server
+                # 新生成的随机 token 写回 config
+                if not cfg_token:
+                    self.config_manager.set('web_ui.token', self.web_server.token)
+                    self.config_manager.save()
+                    self.log_manager.system.info(f'Web UI token 已保存到 config: {self.web_server.token}')
                 url = f"http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}"
                 self.log_manager.system.info(f"Web UI 已启动: {url}")
                 self.trader._add_action("Web UI 已启动", url)
             except Exception as e:
                 self.log_manager.system.error(f"Web 服务启动失败: {e}")
                 self.trader._add_action("Web 服务启动失败", str(e))
+        elif web_enabled and self.web_server and cfg_token and cfg_token != current_token:
+            # token 变更 → 重启 Web 服务
+            try:
+                await self.web_server.stop()
+            except Exception:
+                pass
+            try:
+                self.web_server = await start_web_server(
+                    trader=self.trader,
+                    host=web_cfg.get('host', '0.0.0.0'),
+                    port=web_cfg.get('port', 8099),
+                    log_manager=self.log_manager,
+                    token=cfg_token
+                )
+                self.trader.web_server = self.web_server
+                url = f"http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}"
+                self.log_manager.system.info(f"Web UI 已重启（token 已更新）: {url}")
+                self.trader._add_action("Web UI Token 已更新", url)
+            except Exception as e:
+                self.log_manager.system.error(f"Web 服务重启失败: {e}")
+                self.trader._add_action("Web 服务重启失败", str(e))
         elif not web_enabled and self.web_server:
             try:
                 await self.web_server.stop()
@@ -831,13 +880,19 @@ class LiveTradingBot:
         if self.config_manager.is_web_ui_enabled():
             try:
                 web_cfg = self.config_manager.get_web_ui_config()
+                cfg_token = web_cfg.get('token', '')
                 self.web_server = await start_web_server(
                     trader=self.trader,
                     host=web_cfg.get('host', '0.0.0.0'),
                     port=web_cfg.get('port', 8099),
-                    log_manager=self.log_manager
+                    log_manager=self.log_manager,
+                    token=cfg_token
                 )
                 self.trader.web_server = self.web_server
+                # 新生成的随机 token 写回 config
+                if not cfg_token:
+                    self.config_manager.set('web_ui.token', self.web_server.token)
+                    self.config_manager.save()
                 self.log_manager.system.info(f"Web UI 已启动: http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}")
                 self.trader._add_action("Web UI 已启动", f"http://{self.web_server._get_local_ip()}:{web_cfg.get('port', 8099)}?token={self.web_server.token}")
             except Exception as e:

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chart Test</title>
+<style>
+body{background:#0b0e11;color:#eaecef;font-family:monospace;padding:16px}
+#info{margin-bottom:8px;font-size:12px}
+#chart{width:100%;height:200px}
+</style>
+</head>
+<body>
+<div id="info">Loading...</div>
+<div id="chart"></div>
+<script src="/tv-charts.umd.js"></script>
+<script>
+var info=document.getElementById('info');
+function log(msg){info.textContent+=msg+'\n';}
+
+log('Library: '+(typeof LightweightCharts!=='undefined'?'OK':'MISSING'));
+if(typeof LightweightCharts==='undefined'){log('FAIL: LightweightCharts not loaded');}else{
+try{
+  var el=document.getElementById('chart');
+  log('Container: w='+el.clientWidth+' h='+el.clientHeight);
+  var chart=LightweightCharts.createChart(el,{
+    layout:{background:{color:'#0b0e11'},textColor:'#eaecef'},
+    grid:{vertLines:{color:'rgba(43,49,57,0.4)'},horzLines:{color:'rgba(43,49,57,0.4)'}},
+    width:el.clientWidth||360,height:200
+  });
+  log('Chart created: OK');
+  var cs=chart.addCandlestickSeries({upColor:'#f6465d',downColor:'#0ecb81',borderUpColor:'#f6465d',borderDownColor:'#0ecb81',wickUpColor:'#f6465d',wickDownColor:'#0ecb81'});
+  log('Series created: OK');
+  var now=Math.floor(Date.now()/1000);
+  var data=[];
+  for(var i=30;i>=0;i--){
+    var t=now-i*60, base=1570+Math.sin(i*0.5)*5+(Math.random()-0.5)*2;
+    data.push({time:t,open:base,high:base+Math.random()*3,low:base-Math.random()*3,close:base+(Math.random()-0.5)*2});
+  }
+  cs.setData(data);
+  log('Data set: '+data.length+' candles');
+  chart.timeScale().fitContent();
+  log('DONE — you should see 30 candles');
+}catch(e){log('ERROR: '+e.message);}
+}
+</script>
+</body>
+</html>

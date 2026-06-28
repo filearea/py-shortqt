@@ -128,6 +128,9 @@ class SettingsUI:
                     {'key': 'web_ui.port', 'label': 'Web 监听端口', 'type': 'int',
                      'min': 1024, 'max': 65535, 'step': 1,
                      'visible_cond': lambda c: c.get('web_ui', {}).get('enabled', False)},
+                    {'key': 'web_ui.token', 'label': 'Web Token', 'type': 'string',
+                     'placeholder': '留空自动生成',
+                     'visible_cond': lambda c: c.get('web_ui', {}).get('enabled', False)},
                 ]
             }
         ]

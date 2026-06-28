@@ -154,7 +154,7 @@ class LiveTradingUI:
         # 订单簿：header（价格范围3行）+ 买卖盘
         ob_renderable = self._render_orderbook_with_header(asks, bids, levels)
         top_layout["orderbook"].update(Panel(ob_renderable, title="订单簿"))
-        top_layout["history"].update(Panel(self._render_position_history(), title="历史持仓"))
+        top_layout["history"].update(Panel(self._render_position_history(), title="7日历史持仓"))
         top_layout["account"].update(Panel(self._render_account(), title="账户"))
         layout["top"].update(top_layout)
 
@@ -463,8 +463,11 @@ class LiveTradingUI:
             history_text.append("暂无历史持仓", style="dim")
             return history_text
 
-        positions = list(self.trader.position_history)[-10:]
-        total_count = len(self.trader.position_history) if hasattr(self.trader, 'position_history') else 0
+        # 按 open_time 降序，取最新 20 条
+        all_positions = list(self.trader.position_history) if hasattr(self.trader, 'position_history') else []
+        all_positions.sort(key=lambda x: x.get('open_time') or datetime.min, reverse=True)
+        positions = all_positions[:20]
+        total_count = len(all_positions)
 
         for i, pos in enumerate(positions):
             side = pos.get('side', '')
