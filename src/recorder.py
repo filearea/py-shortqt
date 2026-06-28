@@ -19,10 +19,11 @@ ORDERBOOK_DIR = DATA_DIR / "orderbook"
 
 
 class RealtimeRecorder:
-    def __init__(self, symbol: str = "ETHUSDC", orderbook_interval: int = 60, api_client=None):
+    def __init__(self, symbol: str = "ETHUSDC", orderbook_interval: int = 60, api_client=None, log_func=None):
         self.symbol = symbol
         self.orderbook_interval = orderbook_interval
         self.api_client = api_client  # v1.5.3: 用于 API 拉取 K 线
+        self._log = log_func or (lambda msg: None)
         self.on_new_kline = None  # 回调函数，接收 kline dict
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         KLINES_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,6 +113,7 @@ class RealtimeRecorder:
                 if attempt < 2:
                     time.sleep(1)
         if klines is None:
+            self._log("[Recorder] K线API拉取失败（3次重试均失败）")
             return
 
         if not klines or len(klines) < 2:
@@ -179,6 +181,9 @@ class RealtimeRecorder:
                     self.on_new_kline(kline_dict)
                 except Exception:
                     pass
+
+        if saved_count > 0:
+            self._log(f"[Recorder] 保存 {saved_count} 根K线 (总计 {self._klines_saved})")
 
         # 每次轮询后检查并修正文件中已有的脏数据
         self._correct_recent_dirty_klines()

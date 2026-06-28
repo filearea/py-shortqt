@@ -138,10 +138,10 @@ def fetch_klines(symbol: str, start_time: Optional[int] = None, end_time: Option
             'low': float(k[3]),
             'close': float(k[4]),
             'volume': float(k[5]),
-            'turnover': float(k[6]),
+            'turnover': float(k[7]),
             'trades': int(k[8]),
-            'buy_volume': float(k[10]),
-            'buy_turnover': float(k[11])
+            'buy_volume': float(k[9]),
+            'buy_turnover': float(k[10])
         })
 
     # 按 end_time 过滤，确保只保留当天的数据
@@ -205,6 +205,7 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
         is_today = (current_date.date() == now.date())
         existing_data = []
         existing_count = 0
+        is_complete = False  # v1.10.0 修复：文件不存在时 is_complete 未定义导致 NameError
 
         # 检查是否已存在且完整
         if file_path.exists():

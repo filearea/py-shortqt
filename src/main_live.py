@@ -128,7 +128,8 @@ class LiveTradingBot:
         self.market_logger = MarketLogger(project_root / "logs")
         
         # 初始化实时数据记录器（v1.5.3 改造：K 线改为定时 API 拉取）
-        self.recorder = RealtimeRecorder(symbol=self.symbol, orderbook_interval=60)
+        self.recorder = RealtimeRecorder(symbol=self.symbol, orderbook_interval=60,
+                                         log_func=lambda msg: self.log_manager.system.info(msg))
         self.log_manager.system.info(f"实时数据记录器已初始化（K 线定时 API 拉取，订单簿间隔：{self.recorder.orderbook_interval}秒）")
         
         # 初始化指标数据记录器（v1.4.2 新增）
