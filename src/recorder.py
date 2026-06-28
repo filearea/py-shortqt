@@ -128,11 +128,11 @@ class RealtimeRecorder:
                 continue
 
             # 数据校验：已闭合超过 10 秒的 K 线，buy_turnover 不应为 0（volume>0 时）
+            # 注：文件保存可跳过脏数据（后续 _correct_recent_dirty_klines 补回），
+            # 但回调和 _last_kline_ts 必须前进，否则 deque 永久缺失导致 K 线图有缺口
             buy_turnover = float(k[10]) if len(k) > 10 else 0.0
             volume = float(k[5]) if len(k) > 5 else 0.0
-            if volume > 0 and buy_turnover <= 0 and self._is_kline_finalized(ts):
-                # 跳过未最终确定的数据，不更新 _last_kline_ts，下一轮重试
-                continue
+            skip_file_save = volume > 0 and buy_turnover <= 0 and self._is_kline_finalized(ts)
 
             # 日期切换
             date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d")
@@ -140,32 +140,33 @@ class RealtimeRecorder:
                 self.today = date_str
                 self.klines_file = KLINES_DIR / self.symbol / f"{self.today}.jsonl"
 
-            # 文件级防重
-            if self.klines_file.exists():
-                try:
-                    with open(self.klines_file, 'r', encoding='utf-8') as f:
-                        last_line = None
-                        for line in f:
-                            if line.strip():
-                                last_line = line
-                        if last_line:
-                            last_data = json.loads(last_line)
-                            if last_data.get('timestamp', 0) >= ts:
-                                continue
-                except Exception:
-                    pass
+            if not skip_file_save:
+                # 文件级防重
+                if self.klines_file.exists():
+                    try:
+                        with open(self.klines_file, 'r', encoding='utf-8') as f:
+                            last_line = None
+                            for line in f:
+                                if line.strip():
+                                    last_line = line
+                            if last_line:
+                                last_data = json.loads(last_line)
+                                if last_data.get('timestamp', 0) >= ts:
+                                    skip_file_save = True
+                    except Exception:
+                        pass
 
-            kline_data = self._build_kline_dict(k)
-
-            self.klines_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.klines_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(kline_data, ensure_ascii=False) + '\n')
+            if not skip_file_save:
+                kline_data = self._build_kline_dict(k)
+                self.klines_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.klines_file, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(kline_data, ensure_ascii=False) + '\n')
+                self._klines_saved += 1
 
             self._last_kline_ts = ts
-            self._klines_saved += 1
             saved_count += 1
 
-            # 回调通知
+            # 回调通知（无论文件是否跳过，deque 必须保持连续）
             if self.on_new_kline:
                 from decimal import Decimal
                 kline_dict = {
