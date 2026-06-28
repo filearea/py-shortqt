@@ -1474,14 +1474,20 @@ function updatePosCard(){
   }
 
   // Button state: always visible, disable when not applicable
-  var hasPend=state.pending_orders&&state.pending_orders.length>0;
-  var hasEarlyClose=state.early_close_order!=null;
-  var canCancel=hasPend||hasEarlyClose||(state.batch_state&&state.batch_state.enabled&&!state.batch_state.round_closed);
-  document.getElementById('btn-close-all').disabled=!hasPos;
-  document.getElementById('btn-early-close').disabled=!hasPos;
-  document.getElementById('btn-cancel').disabled=!canCancel;
-  document.getElementById('btn-long').disabled=false;
-  document.getElementById('btn-short').disabled=false;
+  var hasPend=!!(state.pending_orders&&state.pending_orders.length);
+  var hasEarlyClose=!!state.early_close_order;
+  var batchActive=!!(state.batch_state&&state.batch_state.enabled&&!state.batch_state.round_closed);
+  var canCancel=hasPend||hasEarlyClose||batchActive;
+  var btnClose=document.getElementById('btn-close-all');
+  var btnEarly=document.getElementById('btn-early-close');
+  var btnCancel=document.getElementById('btn-cancel');
+  var btnLong=document.getElementById('btn-long');
+  var btnShort=document.getElementById('btn-short');
+  if(btnClose) btnClose.disabled=!hasPos;
+  if(btnEarly) btnEarly.disabled=!hasPos;
+  if(btnCancel) btnCancel.disabled=!canCancel;
+  if(btnLong) btnLong.disabled=false;
+  if(btnShort) btnShort.disabled=false;
 }
 
 function renderIdleStrategy(){
