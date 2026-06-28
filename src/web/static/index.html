@@ -874,8 +874,8 @@ function handleMsg(msg){
     case 'depth': renderOrderbook(msg); break;
     case 'event':
       addLog(msg.event, msg.detail);
-      // Toast 交易事件
-      if(/成交|超时|挂单|保护|止损|止盈/.test(msg.event)) toastTrade(msg.event, msg.detail);
+      // Toast 交易事件 + API 错误
+      if(/成交|超时|挂单|保护|止损|止盈|API错误/.test(msg.event)) toastTrade(msg.event, msg.detail);
       // 音效 — 对齐 TUI _trigger_sound: 仅成交/平仓/超时有声
       var evt=msg.event;
       if(/开仓成交/.test(evt)) playBeep('open', 1);
@@ -2065,28 +2065,35 @@ document.querySelectorAll('#period-group button').forEach(function(btn){
 });
 
 // ====== Action Buttons ======
+function _apiToast(d, okMsg) {
+  if (d.ok) { showToast('success', okMsg); return; }
+  var err = d.error || '操作失败';
+  // 精简 API 错误前缀便于阅读
+  var short = err.replace(/^\[API错误\]\s*/,'').replace(/^\[-?\d+\]\s*/,'').split(' (tr-id:')[0];
+  showToast('error', short);
+}
 document.getElementById('btn-long').onclick=function(){
   fetch('/api/open',{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()},body:JSON.stringify({side:'LONG'})})
     .then(function(r){return r.json();})
-    .then(function(d){if(d.ok) showToast('success','做多指令已发送'); else showToast('error','操作失败');})
+    .then(function(d){_apiToast(d,'做多指令已发送');})
     .catch(function(){showToast('error','网络错误');});
 };
 document.getElementById('btn-short').onclick=function(){
   fetch('/api/open',{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()},body:JSON.stringify({side:'SHORT'})})
     .then(function(r){return r.json();})
-    .then(function(d){if(d.ok) showToast('success','做空指令已发送'); else showToast('error','操作失败');})
+    .then(function(d){_apiToast(d,'做空指令已发送');})
     .catch(function(){showToast('error','网络错误');});
 };
 document.getElementById('btn-early-close').onclick=function(){
   fetch('/api/close_percent',{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()},body:JSON.stringify({percent:50})})
     .then(function(r){return r.json();})
-    .then(function(d){if(d.ok) showToast('info','提前平仓指令已发送'); else showToast('error','操作失败');})
+    .then(function(d){_apiToast(d,'提前平仓指令已发送');})
     .catch(function(){showToast('error','网络错误');});
 };
 document.getElementById('btn-cancel').onclick=function(){
   fetch('/api/cancel',{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()}})
     .then(function(r){return r.json();})
-    .then(function(d){if(d.ok) showToast('warning','撤单指令已发送'); else showToast('error','操作失败');})
+    .then(function(d){_apiToast(d,'撤单指令已发送');})
     .catch(function(){showToast('error','网络错误');});
 };
 // 市价全平 with confirm modal
@@ -2116,7 +2123,7 @@ document.getElementById('modal-ok').onclick=function(){
   document.getElementById('modal-confirm').classList.remove('open');
   fetch('/api/close',{method:'POST',headers:{'Content-Type':'application/json','X-Token':getToken()}})
     .then(function(r){return r.json();})
-    .then(function(d){if(d.ok) showToast('success','平仓指令已发送'); else showToast('error','操作失败');})
+    .then(function(d){_apiToast(d,'平仓指令已发送');})
     .catch(function(){showToast('error','网络错误');});
 };
 

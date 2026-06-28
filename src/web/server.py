@@ -1009,11 +1009,13 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         try:
             if self.log:
                 self.log.info(f'[Web] 移动端操作 — {side} 开仓')
-            asyncio.create_task(self.app.place_order(side))
+            await self.app.place_order(side)
             return web.json_response({'ok': True, 'action': 'open', 'side': side})
         except Exception as e:
+            msg = f'[API错误] 开仓失败: {e}'
             if self.log:
-                self.log.error(f'[Web] 开仓异常: {e}', exc_info=True)
+                self.log.error(msg, exc_info=True)
+            self.push_event(msg, str(e))
             return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_close(self, request: web.Request) -> web.Response:
@@ -1023,11 +1025,13 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         try:
             if self.log:
                 self.log.info('[Web] 移动端操作 — 全部平仓')
-            asyncio.create_task(self.trader.close_position_market())
+            await self.trader.close_position_market()
             return web.json_response({'ok': True, 'action': 'close'})
         except Exception as e:
+            msg = f'[API错误] 平仓失败: {e}'
             if self.log:
-                self.log.error(f'[Web] 市价全平异常: {e}', exc_info=True)
+                self.log.error(msg, exc_info=True)
+            self.push_event(msg, str(e))
             return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_close_percent(self, request: web.Request) -> web.Response:
@@ -1044,11 +1048,13 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         try:
             if self.log:
                 self.log.info(f'[Web] 移动端操作 — 提前平仓')
-            asyncio.create_task(self.app.close_position_early())
+            await self.app.close_position_early()
             return web.json_response({'ok': True, 'action': 'close_percent', 'percent': percent})
         except Exception as e:
+            msg = f'[API错误] 提前平仓失败: {e}'
             if self.log:
-                self.log.error(f'[Web] 提前平仓异常: {e}', exc_info=True)
+                self.log.error(msg, exc_info=True)
+            self.push_event(msg, str(e))
             return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_cancel(self, request: web.Request) -> web.Response:
@@ -1058,11 +1064,13 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         try:
             if self.log:
                 self.log.info('[Web] 移动端操作 — 撤单')
-            asyncio.create_task(self.app.cancel_order())
+            await self.app.cancel_order()
             return web.json_response({'ok': True, 'action': 'cancel'})
         except Exception as e:
+            msg = f'[API错误] 撤单失败: {e}'
             if self.log:
-                self.log.error(f'[Web] 撤单异常: {e}', exc_info=True)
+                self.log.error(msg, exc_info=True)
+            self.push_event(msg, str(e))
             return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_settings_get(self, request: web.Request) -> web.Response:
