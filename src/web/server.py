@@ -24,13 +24,33 @@ DATA_DIR = Path(__file__).parent.parent.parent / 'data' / 'klines'
 
 
 class DecimalEncoder(json.JSONEncoder):
-    """JSON 序列化 Decimal → float"""
+    """JSON 序列化 Decimal → float，拦截 Infinity/NaN"""
     def default(self, obj):
         if isinstance(obj, Decimal):
             return float(obj)
         if isinstance(obj, datetime):
             return obj.strftime('%H:%M:%S')
         return super().default(obj)
+
+    def encode(self, o):
+        return super().encode(_sanitize(o))
+
+
+def _sanitize(obj):
+    """递归替换 float('inf') / float('nan') → None，避免 JSON 序列化非法值"""
+    if isinstance(obj, float):
+        if obj != obj:  # NaN
+            return None
+        if obj == float('inf'):
+            return None
+        if obj == float('-inf'):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    return obj
 
 
 def _fmt_d(v):
@@ -145,7 +165,7 @@ class WebServer:
         else:
             pressure = 'balanced'
         # 最新成交价（优先于买卖中点）
-        trade_price = float(self.trader.last_trade_price) if self.trader.last_trade_price else None
+        trade_price = float(getattr(self.trader, 'last_trade_price', None) or 0) if getattr(self.trader, 'last_trade_price', None) else None
         self._depth_snapshot = {
             'type': 'depth',
             'ts': int(time.time() * 1000),
@@ -221,7 +241,8 @@ class WebServer:
         indicators = t.indicators
 
         # 价格 — 优先使用成交价，降级为买一价
-        price = float(t.last_trade_price or t.last_price) if (t.last_trade_price or t.last_price) else 0
+        ltp = getattr(t, 'last_trade_price', None)
+        price = float(ltp or t.last_price) if (ltp or t.last_price) else 0
 
         # ATR14
         atr14 = 0
@@ -338,13 +359,17 @@ class WebServer:
                 fp = (price - entry) * size if price and entry else 0
             else:
                 fp = (entry - price) * size if price and entry else 0
+            pos_time = t.position.get('time')
             position = {
                 'side': side,
                 'size': size,
                 'entry_weighted_avg': entry,
                 'floating_pnl': round(fp, 4),
-                'peak_floating_profit': float(getattr(t, '_peak_floating_profit', 0) or 0),
-                'peak_floating_loss': float(getattr(t, '_peak_floating_loss', 0) or 0)
+                'peak_floating_profit': float(getattr(t, '_max_float_pnl', 0) or 0),
+                'peak_floating_loss': float(getattr(t, '_min_float_pnl', 0) or 0),
+                'peak_floating_profit_price': float(getattr(t, '_max_float_pnl_price', 0) or 0),
+                'peak_floating_loss_price': float(getattr(t, '_min_float_pnl_price', 0) or 0),
+                'open_time': pos_time.isoformat() if pos_time else None
             }
 
         # 挂单列表
@@ -386,7 +411,9 @@ class WebServer:
         risk = {
             'sl_price': 0,
             'sm_price': 0,
-            'loss_protection_active': False
+            'loss_protection_active': False,
+            'loss_protection': None,
+            'trailing_stop': None
         }
         if t.batch_state and t.batch_state.get('enabled'):
             if t.batch_state.get('sl_order_id'):
@@ -395,13 +422,30 @@ class WebServer:
                 risk['sm_price'] = float(t.batch_state.get('sm_price', 0) or 0)
         else:
             if t.sl_order:
-                risk['sl_price'] = float(t.sl_order.get('triggerPrice', 0))
+                risk['sl_price'] = float(t.sl_order.get('trigger', 0))
             if t.stop_market_order:
-                risk['sm_price'] = float(t.stop_market_order.get('triggerPrice', 0))
+                risk['sm_price'] = float(t.stop_market_order.get('trigger', 0))
+        # 浮亏保护详情
         if t.loss_protection_manager:
             lp_status = t.loss_protection_manager.get_status()
+            risk['loss_protection'] = lp_status
             risk['loss_protection_active'] = lp_status.get('status', '未启用') in ('已保护',)
             risk['loss_protection_status'] = lp_status.get('status', '未启用')
+        # 移动止损详情
+        ts_mgr = getattr(t, 'trailing_stop_manager', None)
+        if ts_mgr and ts_mgr.enabled and ts_mgr.entry_price and ts_mgr.grid_prices:
+            p = Decimal(str(price)) if price else Decimal('0')
+            cl = ts_mgr._get_current_level(p) if price else 0
+            risk['trailing_stop'] = {
+                'enabled': True,
+                'grid_count': ts_mgr.grid_count,
+                'grid_prices': [float(gp) for gp in ts_mgr.grid_prices],
+                'max_level_reached': ts_mgr.max_level_reached,
+                'current_level': cl,
+                'entry_price': float(ts_mgr.entry_price)
+            }
+        else:
+            risk['trailing_stop'] = {'enabled': False}
 
         # 24h 统计 / 统计周期
         stats_period_cfg = cfg.get('stats_period', {}) if cfg else {}
@@ -606,7 +650,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_klines(self, request: web.Request) -> web.Response:
-        """K 线数据 API（支持 interval 聚合）"""
+        """K 线数据 API（支持 interval 聚合）— 兜底链: 内存deque → 文件 → 币安API"""
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
         try:
@@ -615,25 +659,83 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             limit = 120
         limit = min(limit, 1440)
         interval = request.query.get('interval', '1m')
-        # 聚合倍数：1m=1, 5m=5, 15m=15, 1h=60
         factor = {'1m': 1, '5m': 5, '15m': 15, '1h': 60}.get(interval, 1)
 
-        # 从 indicators 的 deque 获取最近的 1m K 线
         raw_klines = []
+        # Layer 1: 内存 deque
         if self.trader.indicators:
             vol = self.trader.indicators.volatility
             kline_deque = vol._klines if hasattr(vol, '_klines') else None
             if kline_deque:
                 raw_klines = list(kline_deque)
-            # 若 deque 为空但有 current_kline，则用 current_kline 补齐（系统刚启动时）
             cur = vol.current_kline if hasattr(vol, 'current_kline') else None
             if not raw_klines and cur and cur.get('timestamp'):
                 raw_klines = [cur]
             elif raw_klines and cur and cur.get('timestamp'):
-                # 确保 current_kline 也在列表中（如果还没收盘）
                 last_ts = raw_klines[-1].get('timestamp', 0) if raw_klines else 0
                 if cur.get('timestamp', 0) != last_ts:
                     raw_klines.append(cur)
+
+        # Layer 2: 文件兜底（当天 JSONL）
+        need = limit * factor
+        if len(raw_klines) < need:
+            try:
+                from pathlib import Path
+                from datetime import datetime as _dt
+                data_dir = Path(__file__).parent.parent.parent / 'data' / 'klines' / self.trader.symbol
+                today = _dt.now().strftime('%Y-%m-%d')
+                file_path = data_dir / f'{today}.jsonl'
+                if file_path.exists():
+                    file_data = []
+                    existing_ts = {k.get('timestamp') for k in raw_klines}
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            try:
+                                k = json.loads(line.strip())
+                                ts = k.get('timestamp') if isinstance(k, dict) else k.get('t')
+                                if ts and ts not in existing_ts:
+                                    existing_ts.add(ts)
+                                    file_data.append({
+                                        'timestamp': ts,
+                                        'open': float(k.get('open', 0)),
+                                        'high': float(k.get('high', 0)),
+                                        'low': float(k.get('low', 0)),
+                                        'close': float(k.get('close', 0)),
+                                        'volume': float(k.get('volume', 0))
+                                    })
+                            except Exception:
+                                pass
+                    if file_data:
+                        raw_klines.extend(file_data)
+                        raw_klines.sort(key=lambda x: x.get('timestamp', 0))
+            except Exception as e:
+                if self.log:
+                    self.log.system.warning(f'[Web] K线文件兜底失败: {e}')
+
+        # Layer 3: 币安 API 兜底
+        if len(raw_klines) < min(need, 60):
+            try:
+                api_klines = await asyncio.to_thread(
+                    self.trader.api.get_klines, self.trader.symbol, '1m', limit=need
+                )
+                if api_klines:
+                    api_ts = {k.get('timestamp') for k in raw_klines}
+                    for k in api_klines:
+                        ts = k[0] if isinstance(k, list) else k.get('timestamp')
+                        if isinstance(k, list):
+                            entry = {'timestamp': ts, 'open': float(k[1]), 'high': float(k[2]),
+                                     'low': float(k[3]), 'close': float(k[4]), 'volume': float(k[5])}
+                        else:
+                            entry = {'timestamp': ts, 'open': float(k.get('open',0)),
+                                     'high': float(k.get('high',0)), 'low': float(k.get('low',0)),
+                                     'close': float(k.get('close',0)), 'volume': float(k.get('volume',0))}
+                        if ts and ts not in api_ts:
+                            api_ts.add(ts)
+                            raw_klines.append(entry)
+                    raw_klines.sort(key=lambda x: x.get('timestamp', 0))
+            except Exception as e:
+                if self.log:
+                    self.log.system.warning(f'[Web] K线API兜底失败: {e}')
 
         # 聚合为指定周期
         result = []
@@ -893,6 +995,14 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                     continue
                 self.trader.config_manager.set(key, value)
             self.trader.config_manager.save()
+            # 刷新实时管理器配置（移动止损格数等修改后即时生效）
+            cfg = self.trader.config_manager
+            ts_mgr = getattr(self.trader, 'trailing_stop_manager', None)
+            if ts_mgr:
+                ts_mgr.refresh_config(cfg.get_trailing_stop_config())
+            lp_mgr = getattr(self.trader, 'loss_protection_manager', None)
+            if lp_mgr:
+                lp_mgr.refresh_config(cfg.get_loss_protection_config())
             if self.log:
                 self.log.info('[Web] 设置已通过 WebUI 保存')
         return web.json_response({'ok': True})
@@ -1129,6 +1239,9 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         self._app.router.add_get('/tv-charts.umd.js', lambda r: web.FileResponse(static_dir / 'tv-charts.umd.js'))
         # 图表测试页（免认证）
         self._app.router.add_get('/chart-test', lambda r: web.FileResponse(static_dir / 'chart-test.html'))
+        # 音效文件
+        _sounds_dir = Path(__file__).parent.parent.parent / 'sounds'
+        self._app.router.add_get('/sounds/ding.wav', lambda r: web.FileResponse(_sounds_dir / 'ding.wav'))
 
         # 路由
         self._app.router.add_get('/', self._handle_index)

@@ -1099,11 +1099,9 @@ function initChart() {
 }
 
 function _resetChartView() {
-  if (!chart || !klineData || !klineData.length) return;
-  try {
-    var len = klineData.length;
-    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, len - 40), to: len + 3 });
-  } catch (e) {}
+  // 从根本上刷新 K 线数据：内存 deque → 文件 → 币安 API（由后端兜底链保证）
+  _klineLoadSeq++; _klineRetryCount = 0;
+  loadKlines();
 }
 
 // ── 可见范围最高/最低价标记 ─────────────────────────────
@@ -1178,6 +1176,13 @@ function loadKlines(limit) {
       if (seq !== _klineLoadSeq) return;
       if (!data || !data.length) { retryLoadKlines(); return; }
       klineData = data;
+      // 同步 _lastTickTime，防止重连后 updateKlineTick 误判跳空
+      var lastK = data[data.length - 1];
+      if (lastK && lastK.t) {
+        _lastTickTime = Math.floor(lastK.t / 1000);
+        _lastTickClose = lastK.c;
+      }
+      _klineRetryCount = 0;
       renderChart();
       // 首次加载：显示最近 120 根，右侧留白
       if (chart && klineData.length) {
@@ -1481,6 +1486,42 @@ function updatePosCard(){
   var hasPos=pos&&pos.side&&pos.side!=='NONE';
   var isBatch=state.pending_orders&&state.pending_orders.length>1||(state.tp_orders&&state.tp_orders.length>1);
 
+  // ── Button state (MUST run before early return, so position close resets buttons) ──
+  var hasPend=!!(state.pending_orders&&state.pending_orders.length);
+  var hasEarlyClose=!!state.early_close_order;
+  var batchActive=!!(state.batch_state&&state.batch_state.enabled&&!state.batch_state.round_closed);
+  var canCancel=hasPend||hasEarlyClose||batchActive;
+  var tradingBlocked=hasPos||hasPend||batchActive;
+  var btnClose=document.getElementById('btn-close-all');
+  var btnEarly=document.getElementById('btn-early-close');
+  var btnCancel=document.getElementById('btn-cancel');
+  var btnLong=document.getElementById('btn-long');
+  var btnShort=document.getElementById('btn-short');
+  var btnSettings=document.querySelector('.bottom-tab[data-tab="settings"]');
+  if(btnClose) btnClose.disabled=!hasPos;
+  if(btnEarly) btnEarly.disabled=!hasPos;
+  if(btnCancel) btnCancel.disabled=!canCancel;
+  if(btnLong) btnLong.disabled=tradingBlocked;
+  if(btnShort) btnShort.disabled=tradingBlocked;
+  if(btnSettings){
+    if(tradingBlocked){ btnSettings.classList.add('locked'); }
+    else { btnSettings.classList.remove('locked'); }
+    if(tradingBlocked && document.getElementById('settings-overlay').classList.contains('show')){
+      document.getElementById('settings-overlay').classList.remove('show');
+      document.querySelectorAll('.bottom-tab').forEach(function(b){b.classList.remove('active');});
+      var mainTab=document.querySelector('.bottom-tab[data-tab="main"]');
+      if(mainTab) mainTab.classList.add('active');
+    }
+  }
+
+  // ── Position timers ──
+  if(hasPos&&posOpenTime){
+    if(!posTimerId) posTimerId=setInterval(updatePosTimers,1000);
+  }else{
+    if(posTimerId){clearInterval(posTimerId);posTimerId=null;}
+    posOpenTime=null;lpRemainingSec=0;
+  }
+
   // Section title
   document.getElementById('pos-sec-title').style.display=hasPos?'flex':'none';
 
@@ -1669,43 +1710,6 @@ function updatePosCard(){
     document.getElementById('pos-risk-line2').innerHTML=r2.map(function(s){return '<span>'+s+'</span>';}).join('');
   }
 
-  // Button state: align with TUI — 持仓/挂单中不可开新仓，不可进入设置
-  var hasPend=!!(state.pending_orders&&state.pending_orders.length);
-  var hasEarlyClose=!!state.early_close_order;
-  var batchActive=!!(state.batch_state&&state.batch_state.enabled&&!state.batch_state.round_closed);
-  var canCancel=hasPend||hasEarlyClose||batchActive;
-  var tradingBlocked=hasPos||hasPend||batchActive;
-  var btnClose=document.getElementById('btn-close-all');
-  var btnEarly=document.getElementById('btn-early-close');
-  var btnCancel=document.getElementById('btn-cancel');
-  var btnLong=document.getElementById('btn-long');
-  var btnShort=document.getElementById('btn-short');
-  var btnSettings=document.querySelector('.bottom-tab[data-tab="settings"]');
-  if(btnClose) btnClose.disabled=!hasPos;
-  if(btnEarly) btnEarly.disabled=!hasPos;
-  if(btnCancel) btnCancel.disabled=!canCancel;
-  if(btnLong) btnLong.disabled=tradingBlocked;
-  if(btnShort) btnShort.disabled=tradingBlocked;
-  // 设置页：持仓/挂单/分批状态下锁定，不可进入
-  if(btnSettings){
-    if(tradingBlocked){ btnSettings.classList.add('locked'); }
-    else { btnSettings.classList.remove('locked'); }
-    // 如果设置已打开且被锁定，自动切回主页面
-    if(tradingBlocked && document.getElementById('settings-overlay').classList.contains('show')){
-      document.getElementById('settings-overlay').classList.remove('show');
-      document.querySelectorAll('.bottom-tab').forEach(function(b){b.classList.remove('active');});
-      var mainTab=document.querySelector('.bottom-tab[data-tab="main"]');
-      if(mainTab) mainTab.classList.add('active');
-    }
-  }
-
-  // ── position timers ──
-  if(hasPos&&posOpenTime){
-    if(!posTimerId) posTimerId=setInterval(updatePosTimers,1000);
-  }else{
-    if(posTimerId){clearInterval(posTimerId);posTimerId=null;}
-    posOpenTime=null;lpRemainingSec=0;
-  }
 }
 
 function updatePosTimers(){
