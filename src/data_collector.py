@@ -209,11 +209,18 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
 
         # 检查是否已存在且完整
         if file_path.exists():
-            existing_data = load_existing_data(file_path)
+            try:
+                existing_data = load_existing_data(file_path)
+            except Exception as e:
+                print(f"[WARN] {date_str}: 文件读取失败 ({e})，跳过并重建")
+                existing_data = []
 
             # v1.5.5 修复：清洗跨日期数据（旧Bug导致的污染）
             # 只保留当天时间范围内的K线
-            cleaned_data = [k for k in existing_data if day_start_ms <= k['timestamp'] < day_end_ms]
+            try:
+                cleaned_data = [k for k in existing_data if day_start_ms <= k.get('timestamp', 0) < day_end_ms]
+            except Exception:
+                cleaned_data = existing_data
             if len(cleaned_data) != len(existing_data):
                 removed_count = len(existing_data) - len(cleaned_data)
                 print(f"[CLEAN] {date_str}: 清洗掉 {removed_count} 根跨日期污染数据")
@@ -267,7 +274,7 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
         # 检查是否存在开头缺口（start_time → 第一条已存K线之间）
         has_start_gap = False
         if existing_data:
-            first_ts = existing_data[0]['timestamp']
+            first_ts = existing_data[0].get('timestamp', 0)
             if first_ts > start_time:
                 has_start_gap = True
                 print(f"[INFO] {date_str}: 检测到开头缺口 ({datetime.fromtimestamp(start_time/1000)} ~ {datetime.fromtimestamp(first_ts/1000)})")
