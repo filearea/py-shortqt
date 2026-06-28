@@ -1025,6 +1025,11 @@ class LiveTrader:
         self.action_log.append({'time': datetime.now(), 'action': action, 'details': details})
         if len(self.action_log) > 20:
             self.action_log = self.action_log[-20:]
+
+        # v1.10.0: 推送事件到 Web UI（Toast + 日志）
+        ws = getattr(self, 'web_server', None)
+        if ws:
+            ws.push_event(action, details)
         
         # 写入文件日志
         if self.logger:
@@ -2478,13 +2483,19 @@ class LiveTrader:
                 self.log_manager.system.debug(f"[BNB费率] 增量拉取失败：{e}") if self.log_manager else None
 
     async def _refresh_history_delayed(self, delay: float = 5.0):
-        """延迟刷新历史持仓（等 Binance 同步 trade 记录）"""
+        """延迟刷新历史持仓（等 Binance 同步 trade 记录），失败时最多重试 3 次"""
         await asyncio.sleep(delay)
-        await self.fetch_position_history()
-        # 通知 Web UI 刷新历史列表
-        ws = getattr(self, 'web_server', None)
-        if ws:
-            ws.push_event('history_updated', 'position_history_refreshed')
+        success = await self.fetch_position_history()
+        retries = 0
+        while not success and retries < 3:
+            retries += 1
+            await asyncio.sleep(3.0)
+            success = await self.fetch_position_history()
+        # 仅成功时才通知前端刷新
+        if success:
+            ws = getattr(self, 'web_server', None)
+            if ws:
+                ws.push_event('history_updated', 'position_history_refreshed')
 
     async def fetch_position_history(self, days: int = 7):
         """从币安拉取成交记录，配对生成历史持仓（API 调用在线程池执行）"""
@@ -2511,7 +2522,7 @@ class LiveTrader:
                     break
 
             if not all_fills:
-                return
+                return False
 
             # 2. 拉取资费记录（线程池）
             funding = await asyncio.to_thread(
@@ -2543,6 +2554,7 @@ class LiveTrader:
 
             # 7. 更新 24h 交易统计（复用已拉取的 fills，避免重复 API 调用）
             self._update_trade_stats_24h(all_fills)
+            return True
 
         except Exception as e:
             if self.log_manager:
@@ -2550,6 +2562,7 @@ class LiveTrader:
             else:
                 import traceback
                 traceback.print_exc()
+            return False
 
     def _get_bnb_price_for_time(self, trade_time_ms: int) -> Decimal:
         """根据成交时间戳获取 BNB 价格（缓存K线优先，失败回退实时价）"""
@@ -2831,7 +2844,7 @@ class LiveTrader:
         if avg_loss > 0 and avg_win > 0:
             avg_pnl_ratio = float(avg_win / avg_loss)
         elif win_count > 0:
-            avg_pnl_ratio = float('inf')
+            avg_pnl_ratio = float('inf')  # 全胜无亏损 — 序列化层会转为 null，前端/TUI 显示 "∞"
         elif loss_count > 0:
             avg_pnl_ratio = 0
         else:
@@ -3354,9 +3367,10 @@ class LiveTrader:
 
         # 挂新 SL（STOP 限价止损）
         sl_side = 'SELL' if side == 'LONG' else 'BUY'
-        _, sl_params = self.config_manager.get_stop_loss_params(
+        sl_trigger, sl_params = self.config_manager.get_stop_loss_params(
             self.symbol, avg_entry, side, total_size
         )
+        bs['sl_price'] = float(sl_trigger)
         try:
             sl_result = await asyncio.to_thread(
                 self.api.place_algo_order, **sl_params
@@ -3372,6 +3386,7 @@ class LiveTrader:
             self.available_balance,
             Decimal('0')  # liquidation_price — 简化处理
         )
+        bs['sm_price'] = float(sm_price)
         sm_side = 'SELL' if side == 'LONG' else 'BUY'
         try:
             sm_result = await asyncio.to_thread(

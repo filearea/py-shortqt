@@ -879,9 +879,13 @@ function handleMsg(msg){
       if(/开仓成交/.test(evt)) playBeep('open', 1);
       else if(/持仓超时/.test(evt)) playBeep(null, 4);
       else if(/止盈成交|止损成交|保底止损成交|提前平仓成交|移动止损成交|手动平仓成交|持仓同步成交|浮亏保护成交/.test(evt)) playBeep('close', 3);
-      // 平仓事件 → 立即标记状态脏，等后端 history_updated 推送后刷新
+      // 平仓事件 → 标记脏 + 延迟拉取 state 更新上一笔持仓（后端需等Binance同步，5~14s）
       if(/持仓同步成交|止盈成交|止损成交|保底止损成交|提前平仓成交|移动止损成交|手动平仓成交|浮亏保护成交/.test(evt)){
         historyStale=true;
+        // 首次延迟 6s（等后端 _refresh_history_delayed 5s 延迟）
+        setTimeout(function(){ fetchState(); }, 6000);
+        // 保底延迟 12s（等后端全部重试完成）
+        setTimeout(function(){ fetchState(); }, 12000);
       }
       break;
     case 'history_updated':
@@ -925,18 +929,28 @@ function showToast(type, msg) {
     setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 200);
   }
 }
+function _maskDetail(detail) {
+  // 对 detail 字符串中的 PnL/金额数值做脱敏处理
+  if (!isPrivacyOn()) return detail;
+  return detail.replace(/([+-]?\d+\.?\d*)\s*(USDT|USDC|U)/g, function(m, num, unit) {
+    var v = parseFloat(num);
+    if (isNaN(v)) return m;
+    return fmtMoney(v, {unit: false}) + ' ' + unit;
+  });
+}
+
 function toastTrade(eventType, detail) {
-  // 根据事件类型选择 toast 样式
+  var masked = _maskDetail(detail || '');
   if (/开仓|挂单|部分成交/.test(eventType)) {
-    showToast('info', eventType + ' ' + detail);
+    showToast('info', eventType + ' ' + masked);
   } else if (/止盈/.test(eventType)) {
-    showToast('success', eventType + ' ' + detail);
+    showToast('success', eventType + ' ' + masked);
   } else if (/止损|保底|浮亏保护|超时/.test(eventType)) {
-    showToast('error', eventType + ' ' + detail);
+    showToast('error', eventType + ' ' + masked);
   } else if (/平仓|移动止损|提前/.test(eventType)) {
-    showToast('warning', eventType + ' ' + detail);
+    showToast('warning', eventType + ' ' + masked);
   } else {
-    showToast('info', eventType + ' ' + detail);
+    showToast('info', eventType + ' ' + masked);
   }
 }
 
