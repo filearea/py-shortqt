@@ -806,19 +806,29 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         if side not in ('LONG', 'SHORT'):
             return web.json_response({'error': 'side must be LONG or SHORT'}, status=400)
 
-        if self.log:
-            self.log.info(f'[Web] 移动端操作 — {side} 开仓')
-        asyncio.create_task(self.app.place_order(side))
-        return web.json_response({'ok': True, 'action': 'open', 'side': side})
+        try:
+            if self.log:
+                self.log.info(f'[Web] 移动端操作 — {side} 开仓')
+            asyncio.create_task(self.app.place_order(side))
+            return web.json_response({'ok': True, 'action': 'open', 'side': side})
+        except Exception as e:
+            if self.log:
+                self.log.error(f'[Web] 开仓异常: {e}', exc_info=True)
+            return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_close(self, request: web.Request) -> web.Response:
         """全部平仓"""
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
-        if self.log:
-            self.log.info('[Web] 移动端操作 — 全部平仓')
-        asyncio.create_task(self.trader.close_position_market())
-        return web.json_response({'ok': True, 'action': 'close'})
+        try:
+            if self.log:
+                self.log.info('[Web] 移动端操作 — 全部平仓')
+            asyncio.create_task(self.trader.close_position_market())
+            return web.json_response({'ok': True, 'action': 'close'})
+        except Exception as e:
+            if self.log:
+                self.log.error(f'[Web] 市价全平异常: {e}', exc_info=True)
+            return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_close_percent(self, request: web.Request) -> web.Response:
         """部分平仓 — 提前平仓（Maker 挂单）"""
@@ -831,19 +841,29 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         percent = body.get('percent', 50)
         if not isinstance(percent, (int, float)) or percent <= 0 or percent > 100:
             return web.json_response({'error': 'percent must be 1-100'}, status=400)
-        if self.log:
-            self.log.info(f'[Web] 移动端操作 — 提前平仓')
-        asyncio.create_task(self.app.close_position_early())
-        return web.json_response({'ok': True, 'action': 'close_percent', 'percent': percent})
+        try:
+            if self.log:
+                self.log.info(f'[Web] 移动端操作 — 提前平仓')
+            asyncio.create_task(self.app.close_position_early())
+            return web.json_response({'ok': True, 'action': 'close_percent', 'percent': percent})
+        except Exception as e:
+            if self.log:
+                self.log.error(f'[Web] 提前平仓异常: {e}', exc_info=True)
+            return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_cancel(self, request: web.Request) -> web.Response:
         """撤销所有挂单"""
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
-        if self.log:
-            self.log.info('[Web] 移动端操作 — 撤单')
-        asyncio.create_task(self.app.cancel_order())
-        return web.json_response({'ok': True, 'action': 'cancel'})
+        try:
+            if self.log:
+                self.log.info('[Web] 移动端操作 — 撤单')
+            asyncio.create_task(self.app.cancel_order())
+            return web.json_response({'ok': True, 'action': 'cancel'})
+        except Exception as e:
+            if self.log:
+                self.log.error(f'[Web] 撤单异常: {e}', exc_info=True)
+            return web.json_response({'error': str(e)}, status=500)
 
     async def _handle_settings_get(self, request: web.Request) -> web.Response:
         """获取当前设置"""
