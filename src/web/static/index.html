@@ -1464,7 +1464,9 @@ function updateHeader(){
   var pos=state.position;
   if(pos&&pos.side&&pos.side!=='NONE'){
     label.textContent=pos.side;
-    stateLabel.textContent=fmtMoney(pos.floating_pnl,{unit:false});
+    var fp=pos.floating_pnl||0;
+    stateLabel.textContent=fmtMoney(fp,{unit:false});
+    stateLabel.style.color=fp===0?'var(--color-brand)':(fp>0?'var(--color-up)':'var(--color-down)');
   }else if(state.pending_orders&&state.pending_orders.length>0){
     label.textContent='挂单中';
     stateLabel.textContent='';
