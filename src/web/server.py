@@ -807,10 +807,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
 
         if self.log:
             self.log.info(f'[Web] 移动端操作 — {side} 开仓')
-        if side == 'LONG':
-            self.trader.long()
-        else:
-            self.trader.short()
+        asyncio.create_task(self.trader.open_position(side))
         return web.json_response({'ok': True, 'action': 'open', 'side': side})
 
     async def _handle_close(self, request: web.Request) -> web.Response:
@@ -819,11 +816,11 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': 'unauthorized'}, status=403)
         if self.log:
             self.log.info('[Web] 移动端操作 — 全部平仓')
-        self.trader.close_all_positions()
+        asyncio.create_task(self.trader.close_position_market())
         return web.json_response({'ok': True, 'action': 'close'})
 
     async def _handle_close_percent(self, request: web.Request) -> web.Response:
-        """部分平仓"""
+        """部分平仓 — 提前平仓（Maker 挂单）"""
         if not self._check_auth(request):
             return web.json_response({'error': 'unauthorized'}, status=403)
         try:
@@ -834,8 +831,8 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         if not isinstance(percent, (int, float)) or percent <= 0 or percent > 100:
             return web.json_response({'error': 'percent must be 1-100'}, status=400)
         if self.log:
-            self.log.info(f'[Web] 移动端操作 — 部分平仓 {percent}%')
-        self.trader.close_percent(percent)
+            self.log.info(f'[Web] 移动端操作 — 提前平仓')
+        asyncio.create_task(self.trader.close_position_early())
         return web.json_response({'ok': True, 'action': 'close_percent', 'percent': percent})
 
     async def _handle_cancel(self, request: web.Request) -> web.Response:
@@ -844,7 +841,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             return web.json_response({'error': 'unauthorized'}, status=403)
         if self.log:
             self.log.info('[Web] 移动端操作 — 撤单')
-        self.trader.cancel_all_orders()
+        self.trader.cancel_open_order()
         return web.json_response({'ok': True, 'action': 'cancel'})
 
     async def _handle_settings_get(self, request: web.Request) -> web.Response:
