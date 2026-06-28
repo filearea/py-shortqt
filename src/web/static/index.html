@@ -778,6 +778,8 @@ function wsConnect(){
   ws.onopen=function(){
     setConnected(true); wsReconnectDelay=1000;
     if(wsReconnectTimer){clearTimeout(wsReconnectTimer);wsReconnectTimer=null;}
+    // 重连后刷新 K 线数据（断开期间 recorder 持续写入 deque，但前端没收到 tick）
+    loadKlines();
   };
   ws.onmessage=function(e){try{var msg=JSON.parse(e.data);handleMsg(msg);}catch(ex){console.error('ws error:',ex.message,ex.stack);document.getElementById('h-price').textContent='ERR:'+ex.message;}};
   ws.onclose=function(){setConnected(false);scheduleReconnect();};
