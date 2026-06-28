@@ -89,9 +89,10 @@ requirements.txt 新增:
 ```
 src/web/
   __init__.py          # 模块入口
-  server.py            # HTTP + WebSocket 服务 (约 150 行)
+  server.py            # HTTP + WebSocket 服务 (~1400 行)
   static/
-    index.html          # 移动端 SPA (约 400 行，纯 HTML+CSS+JS)
+    index.html          # 移动端 SPA (~2600 行，纯 HTML+CSS+JS)
+    tv-charts.umd.js    # TradingView Lightweight Charts 本地托管
 ```
 
 ### 2.4 启动方式
@@ -208,9 +209,9 @@ TUI 盘面指标区的 ATR(14) 行增加 24h 滚动百分位评价（与 WebUI 3
 - 颜色圆取自已有的 emoji 字符体系，与振幅状态标记风格统一
 - 需要对 `VolatilityAnalyzer` 新增 `get_atr14_percentile()` 方法（从 `IndicatorsManager` 获取 24h ATR14% 分布）
 
-### 2.6 K 线图表
+### 2.10 K 线图表
 
-#### 2.6.1 技术选型
+#### 2.10.1 技术选型
 
 使用 **TradingView Lightweight Charts**（CDN 引入，~50KB gzip）：
 
@@ -223,7 +224,7 @@ TUI 盘面指标区的 ATR(14) 行增加 24h 滚动百分位评价（与 WebUI 3
 | 体积 | 约 50KB gzip，无其他依赖 |
 | 许可 | Apache 2.0，免费商用 |
 
-#### 2.6.2 数据来源
+#### 2.10.2 数据来源
 
 系统已有 K 线数据采集（`src/data_collector.py` + `data/klines/`），Web 端需要两个数据通道：
 
@@ -261,7 +262,7 @@ TUI 盘面指标区的 ATR(14) 行增加 24h 滚动百分位评价（与 WebUI 3
 
 当前 K 线收盘时 `is_closed` 变为 `true`，前端将其固化，开启下一根。
 
-#### 2.6.3 K 线周期切换
+#### 2.10.3 K 线周期切换
 
 前端本地实现聚合，不请求服务端：
 
@@ -274,7 +275,7 @@ TUI 盘面指标区的 ATR(14) 行增加 24h 滚动百分位评价（与 WebUI 3
 
 无需服务端参与，前端收到 1m 原始数据后自行聚合。
 
-### 2.6.4 K 线图上的持仓标记
+### 2.10.4 K 线图上的持仓标记
 
 在前端 K 线图上标记关键价格线（水平虚线）：
 
@@ -283,31 +284,36 @@ TUI 盘面指标区的 ATR(14) 行增加 24h 滚动百分位评价（与 WebUI 3
 | 统一止损线 | 红色实线 | 统一止损触发价 | P1（必须）| 1 |
 | 保底止损线 | 暗红实线 | 保底止损价 | P1（必须）| 1 |
 | 开仓加权均价 | 白色实线 | 所有已成交批次加权均价 | P2（必须）| 1 |
+| 开仓挂单 | 金色虚线 | 挂单等待成交价 | P2（必须）| 无限制 |
 | 独立止盈线 | 绿色虚线 | 各批次止盈价 | P3（可选）| 20 |
-| 各批开仓价 | 灰色虚线 | 各批次原始入场价 | P4（可选）| 20 |
 
-**分批模式显示管理**：
-- 当止盈线 > 20 条或开仓线 > 20 条时，按**价格距离当前价最近的优先显示**
-- 超出限制的标记不画，图表上方显示 "已隐藏 N 条标记线"
-- 每条线 hover/点击时显示该价格下的**数量**和**批次编号**
-- 用户可在图表设置中关闭「显示各批开仓价」以减少视觉噪音
+**注**：`drawChartMarkers()` 在每次 `updateUI` 时重建全部标记线，数据源为 state 快照（每秒推送），因此标记线随持仓/挂单变化实时更新。挂单价格线在无持仓仅有挂单时也可见，方便交易员跟踪挂单位置。
 
-### 2.7 API 接口（完整）
+### 2.11 API 接口（完整）
 
 | 方法 | 路径 | 认证 | 说明 |
 |------|------|------|------|
 | `GET` | `/` | token 参数 | 返回 `index.html` |
-| `WS` | `/ws?token=xxx` | token 参数 | 实时状态推送（1s 间隔）+ K 线 tick |
-| `GET` | `/api/klines?limit=100&interval=1m` | Header `X-Token` | 最近 N 根 K 线 |
-| `GET` | `/api/klines/history?from=2026-06-17&to=2026-06-23&interval=1m` | Header `X-Token` | 按日期范围查询历史 K 线（优先本地文件，回退币安 API）|
-| `GET` | `/api/history?offset=0&limit=20` | Header `X-Token` | 历史持仓懒加载查询（偏移量+每批条数，最多返回 30 天内数据）|
-| `POST` | `/api/open` | Header `X-Token` | 开仓（做多/做空） |
-| `POST` | `/api/close` | Header `X-Token` | 平仓（全部平仓） |
-| `POST` | `/api/close_percent` | Header `X-Token` | 部分平仓（指定比例） |
-| `POST` | `/api/cancel` | Header `X-Token` | 撤销所有挂单 |
-| `GET` | `/api/state` | Header `X-Token` | 获取当前状态快照（HTTP 轮询备用） |
+| `WS` | `/ws?token=xxx` | token 参数 | 实时状态推送（1s 间隔）+ K 线 tick + 事件推送 |
+| `GET` | `/api/klines?limit=100&interval=1m` | Header `X-Token` | 最近 N 根 K 线（内存→文件→币安API 三层兜底，自动填补缺口并回写）|
+| `GET` | `/api/klines/history?from=2026-06-17&to=2026-06-23&interval=1m` | Header `X-Token` | 按日期范围查询历史 K 线 |
+| `GET` | `/api/history?offset=0&limit=20` | Header `X-Token` | 历史持仓懒加载查询 |
+| `POST` | `/api/history/refresh` | Header `X-Token` | 触发从币安重新拉取历史持仓 |
+| `POST` | `/api/open` | Header `X-Token` | 开仓（做多/做空）|
+| `POST` | `/api/close` | Header `X-Token` | 全部市价平仓 |
+| `POST` | `/api/close_percent` | Header `X-Token` | 部分平仓（指定比例）|
+| `POST` | `/api/cancel` | Header `X-Token` | 撤销所有挂单/止盈止损单/分批 |
+| `GET` | `/api/state` | Header `X-Token` | 获取当前状态快照（HTTP 轮询备用）|
+| `GET` | `/api/settings` | Header `X-Token` | 获取完整设置（含隐私脱敏）|
+| `POST` | `/api/settings` | Header `X-Token` | 保存设置（整份覆盖）|
+| `GET` | `/api/settings/backups` | Header `X-Token` | 列出配置备份 |
+| `POST` | `/api/settings/backup` | Header `X-Token` | 创建配置备份 |
+| `POST` | `/api/settings/restore` | Header `X-Token` | 从备份还原配置 |
+| `POST` | `/api/settings/backup/delete` | Header `X-Token` | 删除指定备份 |
+| `POST` | `/api/settings/reset` | Header `X-Token` | 重置为默认配置 |
+| `POST` | `/api/privacy/reset` | Header `X-Token` | 重置隐私脱敏基数 |
 
-### 2.8 安全模型
+### 2.12 安全模型
 
 - 启动时生成 32 位随机 hex token，打印在终端日志中
 - 所有 API 和 WebSocket 连接必须携带有效 token
@@ -1357,16 +1363,17 @@ v1.9.0 原计划 TUI 零改动，但技术评审确认以下 TUI 改动是必要
 
 ## 十三、发布确认
 
-- [ ] 需求文档完成
-- [ ] 代码开发完成
-- [ ] requirements.txt 更新完成
-- [ ] 配置模板更新完成
-- [ ] 设置面板新增标签页
-- [ ] 移动端 3 个 Tab 功能验证通过（行情交易 / 历史统计 / 设置）
+- [x] 需求文档完成
+- [x] 代码开发完成
+- [x] requirements.txt 更新完成（aiohttp>=3.9）
+- [x] 配置模板更新完成
+- [x] 设置面板新增标签页
+- [x] 移动端 3 个 Tab 功能验证通过（行情交易 / 历史统计 / 设置）
 - [ ] iOS Safari 真机测试通过
 - [ ] Android Chrome 真机测试通过
-- [ ] PC TUI 回归测试通过（非分批模式 + 分批模式）
-- [ ] 断线重连测试通过
+- [x] PC TUI 回归测试通过（非分批模式）
+- [ ] PC TUI 回归测试通过（分批模式 — 明日测试）
+- [x] 断线重连测试通过
 - [ ] Git 标签创建
 - [ ] 推送到远程仓库
 
@@ -1471,10 +1478,67 @@ v1.9.0 原计划 TUI 零改动，但技术评审确认以下 TUI 改动是必要
 | `src/main_live.py` | 3 处 start_web_server 调用传入 app=self |
 | `src/web/__init__.py` | start_web_server 签名更新 |
 
----
+### 14.10 平仓自动刷新机制强化（live.py + index.html）
 
-**撰写人**: 老杨（技术总监）
-**审核人**: 杰哥（CEO）
-**撰写时间**: 2026-06-23
+**问题**：平仓后「上一笔持仓」卡片不自动更新，需手动到历史页刷新。根因是 `_refresh_history_delayed` 5s 延迟 + 3 次重试（总窗口 14s）不足以等 Binance 同步 trade 记录。
+
+**修复**：
+- `_refresh_history_delayed`: 延迟 6s，重试 5 次 × 间隔 4s = 总窗口 26s；增加成功/失败日志
+- `fetch_position_history`: 返回 bool 表示成功/失败，仅成功时推送 `history_updated`
+- 前端平仓事件 fallback: `fetchState()` 延迟调用从 6s/12s 改为 8s/16s/24s，对齐后端重试窗口
+- `history_updated` WebSocket 推送 → `fetchState()` → `updateUI()` → `updatePrevPosition()` 全链路打通
+
+### 14.11 K 线缺口检测与三层兜底回写（server.py）
+
+**问题**：前端无浏览器连接期间，内存 K 线队列出现缺口（recorder 线程在后台正常写入但前端 `klineData` 不更新）。原回退逻辑仅按数量判断，无法检测队列中间缺口。
+
+**修复**：
+- `_handle_klines`: 改为时间连续性检测——相邻 K 线时间差 > 60s 即判定为缺口
+- `_fill_kline_gaps`: 缺口填补链 → 内存 deque → 本地 JSONL 文件 → 币安 API
+- `_writeback_klines`: 从文件/API 补回的 K 线写回内存 deque + JSONL 文件
+- WebSocket 重连 `onopen` 触发 `loadKlines()` 刷新 K 线数据
+- `_lastTickTime` / `_lastTickClose` 在 `loadKlines` 后同步，防止误判缺口
+
+### 14.12 Web UI 交互细节修复（index.html）
+
+**音效对齐 TUI**：仅成交/平仓/超时事件触发 ding 声，挂单/撤单/已下不发声（对齐 `live.py._trigger_sound`）
+
+**移动端 K 线双指重置**：`touchend` 事件 400ms 双击检测替代 `dblclick`（PC 端 dblclick 保留）
+
+**按钮禁用逻辑对齐 TUI**：做多/做空在有持仓或挂单时禁用；设置 Tab 在交易活动期间锁定（`.locked` CSS 类 + JS 拦截点击）
+
+**头栏浮动盈亏颜色**：`h-state-label` 红盈绿亏（`var(--color-up)` / `var(--color-down)`），对齐中国盘惯例
+
+**Toast PnL 脱敏**：平仓 Toast 的 detail 文本中的 PnL 数值经 `_maskDetail()` 正则替换，通过 `fmtMoney` 转为百分比
+
+**K 线挂单价格线**：`drawChartMarkers` 新增金色虚线标记开仓挂单价格，在无持仓仅有挂单时可见
+
+### 14.13 data_collector 容错增强
+
+**问题**：K 线文件损坏或格式异常时 `load_existing_data` 抛出异常，导致 14 天回填整体失败。
+
+**修复**：
+- `load_existing_data` 调用包裹 try/except，文件读取失败时跳过并重建
+- `cleaned_data` 推导式使用 `.get('timestamp', 0)` 防御缺失键
+- `existing_data[0]['timestamp']` 改为 `.get('timestamp', 0)`
+
+### 14.14 启动崩溃修复（main_live.py）
+
+**问题**：`MetricsRecorder.get_stats()` 返回 `{'records_saved': N}` 不含 `save_interval`/`data_dir` 键，退出时的统计日志 `stats['save_interval']` 触发 `KeyError` 崩溃。
+
+**修复**：改为直接读取 `self.metrics_recorder.save_interval` 属性。
+
+### 14.15 涉及文件（补充 v2）
+
+| 文件 | 改动 |
+|------|------|
+| `src/trading/live.py` | `_refresh_history_delayed` 重试窗口延长 + 日志 |
+| `src/web/server.py` | K 线缺口检测 + 三层兜底回写 + `_fill_kline_gaps` |
+| `src/web/static/index.html` | 音效/按钮/移动端双击/Toast脱敏/挂单标记线/fallback定时器/头栏PnL颜色 |
+| `src/data_collector.py` | 文件读取容错 + 数据格式防御 |
+| `src/main_live.py` | 修复 `save_interval` KeyError |
+
+---
+**更新于**: 2026-06-28
 **目标版本**: v1.10.0
 **最后修订**: 2026-06-28 — 发布后修复：K线数据质量防护 / WS双流 / H/L数据源修正 / 14天回填 / Web下单复用TUI逻辑
