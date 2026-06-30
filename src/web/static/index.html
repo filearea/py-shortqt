@@ -2579,14 +2579,32 @@ function drawAssetCurve(){
     if(displayValues[i]>displayValues[hiIdx]) hiIdx=i;
     if(displayValues[i]<displayValues[loIdx]) loIdx=i;
   }
-  var markers=[];
-  markers.push({idx:firstIdx,color:'#22c55e',shape:'circle'});
-  if(hiIdx!==firstIdx&&hiIdx!==lastIdx) markers.push({idx:hiIdx,color:'#f6465d',shape:'tri-up'});
-  if(loIdx!==firstIdx&&loIdx!==lastIdx) markers.push({idx:loIdx,color:'#f6465d',shape:'tri-down'});
-  markers.push({idx:lastIdx,color:colorPri,shape:'circle'});
+  var annots=[];
+  // 起点 — 绿点
+  annots.push({idx:firstIdx,color:'#22c55e',shape:'circle',label:'起点'});
+  // 最高点 — 红三角 (始终显示)
+  if(hiIdx!==firstIdx&&hiIdx!==lastIdx){
+    annots.push({idx:hiIdx,color:'#f6465d',shape:'tri-up',label:'最高'});
+  }
+  // 最低点 — 红三角 (始终显示)
+  if(loIdx!==firstIdx&&loIdx!==lastIdx){
+    annots.push({idx:loIdx,color:'#f6465d',shape:'tri-down',label:'最低'});
+  }
+  // 最高/最低与首尾重合时，用不同颜色标注首尾
+  if(hiIdx===firstIdx) annots[0].color='#f6465d';
+  if(loIdx===firstIdx) annots[0].color='#f6465d';
+  if(hiIdx===lastIdx||loIdx===lastIdx){
+    // 当前点后面添加
+  }
+  // 当前点 — 品牌色圆
+  annots.push({idx:lastIdx,color:colorPri,shape:'circle',label:'当前'});
 
-  for(var mi=0;mi<markers.length;mi++){
-    var m=markers[mi], mx=xOf(m.idx), my=yOf(displayValues[m.idx]);
+  function _fmtAnnotVal(v){
+    if(isPrivacy) return v.toFixed(2)+'%';
+    return fmtMoney(v,{unit:false});
+  }
+  for(var mi=0;mi<annots.length;mi++){
+    var m=annots[mi], mx=xOf(m.idx), my=yOf(displayValues[m.idx]);
     ctx.fillStyle=m.color; ctx.strokeStyle=m.color;
     if(m.shape=='tri-up'){
       ctx.beginPath(); ctx.moveTo(mx,my-8); ctx.lineTo(mx-5,my+2); ctx.lineTo(mx+5,my+2); ctx.closePath(); ctx.fill();
@@ -2595,6 +2613,33 @@ function drawAssetCurve(){
     }else{
       ctx.beginPath(); ctx.arc(mx,my,4,0,Math.PI*2); ctx.fill();
     }
+    // 数值标签：标注在点上方或下方，避开边界
+    var labelVal=_fmtAnnotVal(displayValues[m.idx]);
+    var labelFull=m.label+' '+labelVal;
+    ctx.font='10px sans-serif'; ctx.textAlign='center';
+    var lw=ctx.measureText(labelFull).width;
+    var labelY=(m.shape=='tri-up')?my-14:my+18;
+    if(labelY<margin.top+10) labelY=my+18;
+    if(labelY>H-margin.bottom-2) labelY=my-14;
+    // 避开左右边界
+    var labelX=mx;
+    if(labelX-lw/2<margin.left+2) labelX=margin.left+2+lw/2;
+    if(labelX+lw/2>W-margin.right-2) labelX=W-margin.right-2-lw/2;
+    // 背景
+    var lrx=labelX-lw/2-4, lry=labelY-8, lrw=lw+8, lrh=16;
+    ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(lrx+4,lry); ctx.lineTo(lrx+lrw-4,lry);
+    ctx.arcTo(lrx+lrw,lry,lrx+lrw,lry+4,4);
+    ctx.lineTo(lrx+lrw,lry+lrh-4);
+    ctx.arcTo(lrx+lrw,lry+lrh,lrx+lrw-4,lry+lrh,4);
+    ctx.lineTo(lrx+4,lry+lrh);
+    ctx.arcTo(lrx,lry+lrh,lrx,lry+lrh-4,4);
+    ctx.lineTo(lrx,lry+4);
+    ctx.arcTo(lrx,lry,lrx+4,lry,4);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#fff'; ctx.fillText(labelFull,labelX,labelY+5);
   }
 
   // ── HOVER / TOUCH ──
