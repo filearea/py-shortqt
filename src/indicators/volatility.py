@@ -402,7 +402,7 @@ class VolatilityAnalyzer:
             self._update_atr14_rank()
 
     def _update_atr14_rank(self):
-        """轻量更新 P 档：O(n) 计数，不重新排序，不改变 P50/P75/P95 分级"""
+        """轻量更新 P 档 + 分级：O(n) 计数，不重新排序，但同步 ref 保证一致性"""
         history = list(self._atr14_percentile_history)
         current_pct = self.get_atr14_pct()
         if not history or current_pct is None:
@@ -410,6 +410,16 @@ class VolatilityAnalyzer:
         n = len(history)
         rank = sum(1 for v in history if v <= current_pct)
         self._atr14_percentile = round(rank / n * 100)
+        # 同步更新 ref 分级（与 recompute 规则一致）
+        p = self._atr14_percentile
+        if p < 50:
+            self._atr14_ref = 'low'
+        elif p < 75:
+            self._atr14_ref = 'normal'
+        elif p < 95:
+            self._atr14_ref = 'elevated'
+        else:
+            self._atr14_ref = 'high'
 
     def recompute_atr14_percentile(self):
         """

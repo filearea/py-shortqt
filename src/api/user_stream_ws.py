@@ -28,12 +28,14 @@ class UserStreamWebSocket:
         self.api_client = api_client  # 用于 keep-alive 和 listen key 管理
         self._log = log_func or print  # 日志函数，默认 print
 
+        # v1.10.0：Binance 2026-04-23 升级，用户数据流必须使用 /private 端点
+        # 旧版 /ws/<listenKey> 已退役，连接成功但零消息
         if testnet:
             base_url = "wss://stream.binancefuture.com"
+            self.ws_url = f"{base_url}/ws/{listen_key}"
         else:
             base_url = "wss://fstream.binance.com"
-
-        self.ws_url = f"{base_url}/ws/{listen_key}"
+            self.ws_url = f"{base_url}/private/ws?listenKey={listen_key}&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE"
         self.running = False
         self.connected = False
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -51,6 +53,7 @@ class UserStreamWebSocket:
 
         # v1.9.0：健康监控
         self._last_msg_ts: float = 0.0
+        self._connected_at: float = 0.0  # 本次连接建立时间（用于僵尸检测下限）
         self._msg_count: int = 0
         self._restart_count: int = 0
         self._health_check_task: Optional[asyncio.Task] = None
@@ -76,6 +79,13 @@ class UserStreamWebSocket:
         if self._last_msg_ts == 0:
             return float('inf')
         return time.time() - self._last_msg_ts
+
+    @property
+    def last_msg_or_connect_ts(self) -> float:
+        """返回 last_msg_ts，若从未收到消息则返回连接时间"""
+        if self._last_msg_ts > 0:
+            return self._last_msg_ts
+        return self._connected_at if self._connected_at > 0 else 0.0
 
     def add_order_callback(self, callback: Callable):
         """添加订单更新回调"""
@@ -117,25 +127,34 @@ class UserStreamWebSocket:
 
         while self.running:
             try:
-                # 重连时刷新 listen key（v1.9.0）
-                if self._restart_count > 0 or self._last_msg_ts > 0:
-                    await self._refresh_listen_key()
+                # 每次连接前刷新 listen key（确保 key 有效）
+                await self._refresh_listen_key()
+                await asyncio.sleep(0.5)  # 短暂延迟让 Binance 后端同步
 
                 self.ws_url = self._build_ws_url()
                 connect_kwargs = {
                     'close_timeout': 5,
                     'open_timeout': 10,
+                    'ping_interval': 20,
+                    'compression': None,   # 禁用压缩，避免代理丢帧
                 }
                 if self.proxy:
                     connect_kwargs['proxy'] = self.proxy
                     self._log(f"[UserStream] 通过代理连接：{self.ws_url}")
-                async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
-                    self.ws = ws
-                    self.connected = True
-                    self._last_msg_ts = time.time()
-                    self._log("✓ 用户数据流已连接")
-                    reconnect_delay = 3  # 连接成功后重置延迟
+                # 使用与市场 WS 相同的连接模式（避免 async with 的差异）
+                ws = await asyncio.wait_for(
+                    websockets.connect(self.ws_url, **connect_kwargs),
+                    timeout=15
+                )
+                self.ws = ws
+                self.connected = True
+                self._connected_at = time.time()
+                if self._msg_count == 0:
+                    self._last_msg_ts = 0.0  # 从未收过消息，不伪造时间戳
+                self._log("✓ 用户数据流已连接")
+                reconnect_delay = 3  # 连接成功后重置延迟
 
+                try:
                     while self.running:
                         try:
                             message = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -145,7 +164,9 @@ class UserStreamWebSocket:
                                 self._log(f"[UserStream] 收到第{self._msg_count}条消息：{message[:200]}")
                             await self.process_message(message)
                         except asyncio.TimeoutError:
-                            age = time.time() - self._last_msg_ts
+                            # 僵尸检测：用 _connected_at 兜底，防止从未收到消息时误判
+                            ref_ts = self._last_msg_ts if self._last_msg_ts > 0 else self._connected_at
+                            age = time.time() - ref_ts
                             self._log(f"[UserStream] 30秒无消息（距上次 {age:.0f}s，已收{self._msg_count}条）")
                             if age >= self.ZOMBIE_TIMEOUT:
                                 self._log("[UserStream] 疑似僵尸连接，强制断开重连")
@@ -157,6 +178,12 @@ class UserStreamWebSocket:
                         except OSError as e:
                             self._log(f"用户数据流网络错误：{e}")
                             break
+                finally:
+                    self.connected = False
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
 
             except OSError as e:
                 self.connected = False
@@ -218,12 +245,13 @@ class UserStreamWebSocket:
                     self._log(f"[账户回调错误] {e}")
 
     def _build_ws_url(self) -> str:
-        """构建 WebSocket URL"""
+        """构建 WebSocket URL（v1.10.0：使用 /private 端点 + events 参数）"""
         if self.api_client and getattr(self.api_client, 'testnet', False):
             base = "wss://stream.binancefuture.com"
+            return f"{base}/ws/{self.listen_key}"
         else:
             base = "wss://fstream.binance.com"
-        return f"{base}/ws/{self.listen_key}"
+            return f"{base}/private/ws?listenKey={self.listen_key}&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE"
 
     async def _refresh_listen_key(self):
         """刷新 listen key：获取新 key + 关闭旧 key"""
@@ -250,8 +278,9 @@ class UserStreamWebSocket:
             await asyncio.sleep(15)
             if not self.running:
                 break
-            if self.connected and self._last_msg_ts > 0:
-                age = time.time() - self._last_msg_ts
+            if self.connected:
+                ref_ts = self._last_msg_ts if self._last_msg_ts > 0 else self._connected_at
+                age = time.time() - ref_ts
                 if age > self.ZOMBIE_TIMEOUT:
                     self._log(f"[UserStream] 健康检测失败：{age:.0f}s 无消息，触发重连")
                     if self.ws:

@@ -21,7 +21,7 @@ class IndicatorsManager:
     """指标管理器"""
 
     def __init__(self):
-        self.volatility = VolatilityAnalyzer(max_klines=200)
+        self.volatility = VolatilityAnalyzer(max_klines=5760)
         self.liquidity = LiquidityAnalyzer(max_levels=50, price_step=0.5)
         self.tick_tracker = TickTracker(window_seconds=30.0)
         self.price_range = PriceRangeTracker(window_minutes=30.0)

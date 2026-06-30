@@ -3136,6 +3136,41 @@ class LiveTrader:
         except Exception:
             pass
 
+    async def _monitor_batch_tp_order(self, batch: dict):
+        """v1.10.0：独立监控止盈单成交（不依赖 WS，不依赖 REST 兜底）
+
+        每 5 秒轮询 REST get_order，直到止盈单成交/取消或超时。
+        解决 WS 零消息时 REST 兜底需等 60s 才激活的盲区问题。
+        """
+        tp_oid = batch.get('tp_order_id')
+        if not tp_oid:
+            return
+
+        await asyncio.sleep(3)  # 止盈单不会瞬间成交，先等 3 秒
+
+        deadline = time.time() + 180  # 最多监控 3 分钟
+        while time.time() < deadline and self.running:
+            if batch.get('status') != 'tp_placed':
+                return
+            if batch.get('tp_order_id') != tp_oid:
+                return
+
+            try:
+                order = await asyncio.to_thread(self.api.get_order, self.symbol, tp_oid)
+                status = order.get('status', '')
+                if status == 'FILLED':
+                    self._on_batch_event('TP_FILLED', order, source='REST_POLL')
+                    return
+                elif status in ('EXPIRED', 'CANCELED'):
+                    self._log_batch_action(f"批次 {batch['index']+1} 止盈单已取消/过期，重新挂单")
+                    batch['tp_order_id'] = None
+                    asyncio.create_task(self._place_batch_tp(batch))
+                    return
+            except Exception:
+                pass
+
+            await asyncio.sleep(5)
+
     # ==================== v1.9.0: 分批建仓引擎 ====================
 
     # --- 初始化与状态管理 ---
@@ -3277,17 +3312,22 @@ class LiveTrader:
 
     async def _place_batch_orders(self) -> dict:
         """通过 batchOrders 接口批量挂出分批订单（GTX 优先）
+        只提交 status=='pending' 且尚未分配 order_id 的批次
         返回 {'success': N, 'failed': N, 'errors': [...]}"""
         bs = self.batch_state
-        batches = bs['batches']
-        total = len(batches)
+        # v1.10.0：只提交新批次，避免重复提交已成交/已取消/已止盈的批次
+        new_batches = [b for b in bs['batches'] if b['status'] == 'pending' and not b.get('order_id')]
+        if not new_batches:
+            return {'success': 0, 'failed': 0, 'errors': []}
+
+        total = len(new_batches)
         success = 0
         failed = 0
         error_details = []
 
         # 每 5 笔一组提交
         for chunk_start in range(0, total, 5):
-            chunk = batches[chunk_start:chunk_start + 5]
+            chunk = new_batches[chunk_start:chunk_start + 5]
             batch_orders = []
             for b in chunk:
                 order = {
@@ -3308,11 +3348,10 @@ class LiveTrader:
                     self.symbol, batch_orders
                 )
                 for j, result in enumerate(results):
-                    batch_idx = chunk_start + j
+                    b = chunk[j]  # new_batches 中的引用即 bs['batches'] 中的同一对象
                     if 'code' in result:
                         code = result['code']
                         msg = result.get('msg', 'Unknown error')
-                        b = batches[batch_idx]
                         err_desc = f"批次 {b['index']+1} @ {b['price']}: [{code}] {msg}"
                         error_details.append(err_desc)
                         failed += 1
@@ -3322,9 +3361,9 @@ class LiveTrader:
                             self.log_manager.system.warning(f"[分批下单] {err_desc}")
                     elif 'orderId' in result:
                         success += 1
-                        batches[batch_idx]['order_id'] = result['orderId']
-                        batches[batch_idx]['client_order_id'] = result.get('clientOrderId', '')
-                        self._batch_order_map[result['orderId']] = batch_idx
+                        b['order_id'] = result['orderId']
+                        b['client_order_id'] = result.get('clientOrderId', '')
+                        self._batch_order_map[result['orderId']] = b['index']
             except Exception as e:
                 # 整批调用失败（网络/Signature 等）
                 failed += len(chunk)
@@ -3332,20 +3371,20 @@ class LiveTrader:
                 if self.log_manager:
                     self.log_manager.system.warning(f"[分批下单] batchOrders 调用失败：{e}")
 
-        # 只保留成功挂出的批次
-        bs['batches'] = [b for b in batches if b.get('order_id')]
-        bs['total_count'] = len(bs['batches'])
-
+        # v1.10.0：累计 max_position_size（补充 + 初始共用同一累加逻辑）
         if success > 0:
-            bs['max_position_size'] = sum(
-                b['size'] for b in bs['batches']
+            bs['max_position_size'] += sum(
+                b['size'] for b in new_batches if b.get('order_id')
             )
-            self._add_action("分批开仓", f"{success} 笔 GTX 挂单成功")
+            context = "分批开仓" if bs['state'] == 'pending_only' else "补单"
+            self._add_action(context, f"{success} 笔 GTX 挂单成功")
         if failed > 0:
             self._add_action("分批开仓", f"{failed} 笔失败: {'; '.join(error_details)}")
 
-        # 如果没有成功挂出任何批次 → 清空状态
-        if success == 0:
+        # 如果没有成功挂出任何批次且是首次开仓 → 清空状态
+        if success == 0 and bs['state'] == 'pending_only' and not any(
+            b.get('status') in ('filled', 'tp_placed') for b in bs['batches']
+        ):
             self._add_action("分批开仓失败", f"所有 {total} 笔订单被拒: {'; '.join(error_details)}")
             await self._cleanup_batch_state(reason="开仓失败")
 
@@ -3435,6 +3474,7 @@ class LiveTrader:
                 batch['tp_price'] = tp_price
                 batch['status'] = 'tp_placed'
                 self._batch_tp_map[result['orderId']] = batch['index']
+                asyncio.create_task(self._monitor_batch_tp_order(batch))
                 return
         except Exception:
             pass
@@ -3457,6 +3497,7 @@ class LiveTrader:
                 batch['tp_price'] = tp_price
                 batch['status'] = 'tp_placed'
                 self._batch_tp_map[result['orderId']] = batch['index']
+                asyncio.create_task(self._monitor_batch_tp_order(batch))
         except Exception as e:
             self._add_action("止盈挂单失败", f"批次 {batch['index']+1}：{e}")
 
@@ -3683,9 +3724,8 @@ class LiveTrader:
             })
 
         bs['batches'].extend(new_batches)
-        bs['total_count'] = len(bs['batches'])
 
-        # 批量下单
+        # 批量下单（_place_batch_orders 只提交 status=='pending' 且无 order_id 的新批次）
         result = await self._place_batch_orders()
         if result['success'] > 0:
             self._add_action("补单", f"已挂出 {result['success']} 笔新批次")

@@ -42,12 +42,14 @@ class BinanceClient:
         for attempt in range(2):
             signed = build_signed_params(params or {}, self.api_secret)
             query_string = '&'.join(f'{k}={v}' for k, v in sorted(signed.items()))
-            url = f"{self.base_url}{path}?{query_string}"
             if method == 'GET':
+                url = f"{self.base_url}{path}?{query_string}"
                 resp = self.session.get(url, timeout=10)
             elif method == 'POST':
+                url = f"{self.base_url}{path}"
                 resp = self.session.post(url, data=query_string, timeout=10)
             elif method == 'DELETE':
+                url = f"{self.base_url}{path}?{query_string}"
                 resp = self.session.delete(url, timeout=10)
             else:
                 raise ValueError(f'不支持的方法: {method}')
@@ -368,7 +370,8 @@ class BinanceClient:
     
     def get_listen_key(self) -> str:
         """获取用户数据流 listenKey"""
-        data = self._post('/fapi/v1/listenKey')
+        import time
+        data = self._post(f'/fapi/v1/listenKey?_t={int(time.time()*1000)}')
         return data['listenKey']
     
     def keep_alive_listen_key(self, listen_key: str) -> dict:

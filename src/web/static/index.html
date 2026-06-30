@@ -1605,8 +1605,15 @@ function updatePosCard(){
   if(btnClose) btnClose.disabled=!hasPos;
   if(btnEarly) btnEarly.disabled=!hasPos;
   if(btnCancel) btnCancel.disabled=!canCancel;
-  if(btnLong) btnLong.disabled=tradingBlocked;
-  if(btnShort) btnShort.disabled=tradingBlocked;
+  // v1.10.0：分批模式有持仓时，禁用反向开仓按钮
+  if(isBatch && hasPos){
+    var dirSide=pos.side||(state.batch_state&&state.batch_state.side);
+    if(btnLong) btnLong.disabled=(dirSide==='SHORT')||tradingBlocked;
+    if(btnShort) btnShort.disabled=(dirSide==='LONG')||tradingBlocked;
+  }else{
+    if(btnLong) btnLong.disabled=tradingBlocked;
+    if(btnShort) btnShort.disabled=tradingBlocked;
+  }
   if(btnSettings){
     if(tradingBlocked){ btnSettings.classList.add('locked'); }
     else { btnSettings.classList.remove('locked'); }
