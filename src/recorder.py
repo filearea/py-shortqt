@@ -36,6 +36,7 @@ class RealtimeRecorder:
         self._orderbooks_saved = 0
         self._last_kline_ts = 0  # 上次保存的 K 线时间戳，防重复
         self._kline_timer_running = False
+        self._recent_cache: Dict[int, dict] = {}  # ts → kline_dict，最近 ~20 条，用于运行时值比较修正
 
     def start_kline_timer(self):
         """启动 K 线定时拉取（每 60 秒从 API 拉取最近已关闭的 K 线）"""
@@ -83,6 +84,33 @@ class RealtimeRecorder:
         now_ms = int(time.time() * 1000)
         return (now_ms - kline_close_time) > 10000
 
+    def _kline_ohlcv_changed(self, cached: dict, api_data: dict) -> bool:
+        """比较核心 OHLCV 字段，判断 API 数据是否与缓存不一致"""
+        for field in ('open', 'high', 'low', 'close', 'volume'):
+            if abs(cached.get(field, 0) - api_data.get(field, 0)) > 1e-8:
+                return True
+        return False
+
+    def _overwrite_kline_in_file(self, ts: int, api_data: dict):
+        """覆写文件中指定时间戳的 K 线数据（用于运行时值修正）"""
+        if not self.klines_file.exists():
+            return
+        try:
+            with open(self.klines_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            for i in range(len(lines) - 1, -1, -1):
+                try:
+                    d = json.loads(lines[i].strip())
+                    if d.get('timestamp') == ts:
+                        lines[i] = json.dumps(api_data, ensure_ascii=False) + '\n'
+                        with open(self.klines_file, 'w', encoding='utf-8') as f:
+                            f.writelines(lines)
+                        return
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except Exception:
+            pass
+
     def _build_kline_dict(self, k: list) -> dict:
         """将 API 返回的 kline 数组转为存储字典"""
         return {
@@ -121,10 +149,35 @@ class RealtimeRecorder:
 
         now_ms = int(time.time() * 1000)
         saved_count = 0
+        corrected_count = 0
         for k in klines[:-1]:
             ts = k[0]
 
             if ts <= self._last_kline_ts:
+                # v1.10.0: 运行时值比较 — 若 API 数据与缓存不一致，覆写文件
+                cached = self._recent_cache.get(ts)
+                if cached is not None:
+                    api_data = self._build_kline_dict(k)
+                    if self._kline_ohlcv_changed(cached, api_data):
+                        self._overwrite_kline_in_file(ts, api_data)
+                        self._recent_cache[ts] = api_data
+                        corrected_count += 1
+                        # 已修正的也需通知回调，让图表更新
+                        if self.on_new_kline:
+                            from decimal import Decimal
+                            kline_dict = {
+                                'timestamp': ts,
+                                'open': Decimal(k[1]),
+                                'high': Decimal(k[2]),
+                                'low': Decimal(k[3]),
+                                'close': Decimal(k[4]),
+                                'volume': Decimal(k[5]),
+                                'is_closed': True,
+                            }
+                            try:
+                                self.on_new_kline(kline_dict)
+                            except Exception:
+                                pass
                 continue
 
             # 数据校验：已闭合超过 10 秒的 K 线，buy_turnover 不应为 0（volume>0 时）
@@ -156,6 +209,7 @@ class RealtimeRecorder:
                     except Exception:
                         pass
 
+            kline_data = None
             if not skip_file_save:
                 kline_data = self._build_kline_dict(k)
                 self.klines_file.parent.mkdir(parents=True, exist_ok=True)
@@ -165,6 +219,15 @@ class RealtimeRecorder:
 
             self._last_kline_ts = ts
             saved_count += 1
+
+            # 缓存最近数据（用于下次值比较）
+            if kline_data is None:
+                kline_data = self._build_kline_dict(k)
+            self._recent_cache[ts] = kline_data
+            # 剪裁缓存，只保留最近 20 条
+            if len(self._recent_cache) > 20:
+                keep = sorted(self._recent_cache.keys())[-20:]
+                self._recent_cache = {k: self._recent_cache[k] for k in keep}
 
             # 回调通知（无论文件是否跳过，deque 必须保持连续）
             if self.on_new_kline:
@@ -183,8 +246,13 @@ class RealtimeRecorder:
                 except Exception:
                     pass
 
-        if saved_count > 0:
-            self._log(f"[Recorder] 保存 {saved_count} 根K线 (总计 {self._klines_saved})")
+        if saved_count > 0 or corrected_count > 0:
+            parts = []
+            if saved_count > 0:
+                parts.append(f"保存 {saved_count} 根")
+            if corrected_count > 0:
+                parts.append(f"修正 {corrected_count} 根")
+            self._log(f"[Recorder] {'，'.join(parts)} (总计 {self._klines_saved})")
 
         # 每次轮询后检查并修正文件中已有的脏数据
         self._correct_recent_dirty_klines()
@@ -250,6 +318,13 @@ class RealtimeRecorder:
             if corrected > 0:
                 with open(self.klines_file, 'w', encoding='utf-8') as f:
                     f.writelines(all_lines)
+                # 同步更新缓存，避免下一轮重复修正
+                for idx, ts in bad_indices:
+                    if ts in api_map:
+                        fk = api_map[ts]
+                        bt = float(fk[10]) if len(fk) > 10 else 0.0
+                        if bt > 0:
+                            self._recent_cache[ts] = self._build_kline_dict(fk)
         except Exception:
             pass
 
