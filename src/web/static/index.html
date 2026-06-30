@@ -2277,6 +2277,7 @@ function refreshPrevPosition(){
     .then(function(d){
       _apiToast(d,'已刷新');
       fetchState();
+      assetCurveData=null; fetchAssetCurve();
     }).catch(function(){
       showToast('error','刷新失败');
     }).then(function(){
@@ -2291,6 +2292,7 @@ function refreshHistory(){
     .then(function(){
       btn.textContent='刷新'; btn.disabled=false;
       loadHistory(true);
+      assetCurveData=null; fetchAssetCurve();
     }).catch(function(){
       btn.textContent='刷新'; btn.disabled=false;
     });
