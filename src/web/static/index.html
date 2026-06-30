@@ -511,7 +511,7 @@ html, body {
 .history-card .hc-sub { font-size: 11px; color: var(--text-tertiary); }
 .history-card .hc-bottom { display: flex; gap: 14px; margin-top: var(--space-xs); padding-top: var(--space-xs); border-top: 1px solid var(--border); font-size: 10px; color: var(--text-tertiary); }
 .history-card .hc-net { font-size: 13px; font-weight: 700; margin-left: auto; }
-.pull-indicator { text-align: center; padding: var(--space-md); font-size: 12px; color: var(--text-tertiary); }
+
 .load-more-indicator { text-align: center; padding: var(--space-md); font-size: 12px; color: var(--text-tertiary); display: none; }
 .load-more-indicator.show { display: block; }
 
@@ -682,7 +682,6 @@ html, body {
 <!-- History Overlay -->
 <div class="ov-page" id="history-overlay">
   <div class="page-scroll" id="history-scroll">
-    <div id="history-pull-indicator" class="pull-indicator"></div>
     <div class="card" style="margin-bottom:var(--space-sm)">
       <div class="card-header" style="display:flex;align-items:center;gap:8px">
         <span class="card-title" id="history-stats-title">24h 数据</span>
@@ -2383,29 +2382,6 @@ historyScrollEl.onscroll=function(){
   if(this.scrollTop+this.clientHeight>=this.scrollHeight-40) loadHistory();
 };
 
-// Pull-to-refresh
-var pullStart=0, pullActive=false;
-historyScrollEl.addEventListener('touchstart',function(e){
-  if(this.scrollTop<=0){pullStart=e.touches[0].clientY;pullActive=true;}
-},{passive:true});
-historyScrollEl.addEventListener('touchmove',function(e){
-  if(!pullActive) return;
-  var dy=e.touches[0].clientY-pullStart;
-  var ind=document.getElementById('history-pull-indicator');
-  if(dy>40) ind.textContent='释放刷新';
-  else if(dy>0) ind.textContent='下拉刷新';
-},{passive:true});
-historyScrollEl.addEventListener('touchend',function(){
-  if(!pullActive) return;
-  var ind=document.getElementById('history-pull-indicator');
-  var dy=ind.textContent==='释放刷新'?1:0;
-  ind.textContent='';
-  pullActive=false;
-  if(dy){
-    ind.textContent='刷新中...';
-    setTimeout(function(){ind.textContent='';loadHistory(true);},300);
-  }
-});
 
 // Render 24h stats
 function render24hStats(){
