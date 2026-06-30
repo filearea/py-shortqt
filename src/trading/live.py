@@ -3935,12 +3935,18 @@ class LiveTrader:
             pass
 
         # 恢复止盈单
+        restored_count = 0
         for backup in bs.get('tp_backup', []):
             batch = next((b for b in bs['batches'] if b['index'] == backup['index']), None)
             if not batch or batch['status'] != 'filled':
+                if self.log_manager:
+                    self.log_manager.system.warning(
+                        f"  ✗ 批次 {backup['index']+1} 恢复止盈跳过 — status={batch['status'] if batch else 'NOT_FOUND'}"
+                    )
                 continue
             try:
                 tp_side = 'SELL' if bs['side'] == 'LONG' else 'BUY'
+                tp_price_str = str(backup['tp_price'])
                 result = await asyncio.to_thread(
                     self.api.place_order,
                     symbol=self.symbol,
@@ -3948,20 +3954,34 @@ class LiveTrader:
                     type='LIMIT',
                     timeInForce='GTC',
                     quantity=str(batch['size']),
-                    price=str(backup['tp_price']),
+                    price=tp_price_str,
                     positionSide=bs['side'],
                 )
                 if result.get('orderId'):
+                    actual_price = str(result.get('price', tp_price_str))
                     batch['tp_order_id'] = result['orderId']
                     batch['tp_price'] = backup['tp_price']
                     batch['status'] = 'tp_placed'
                     self._batch_tp_map[result['orderId']] = batch['index']
-            except Exception:
-                pass
+                    restored_count += 1
+                    if self.log_manager:
+                        self.log_manager.system.info(
+                            f"  ✓ 批次 {batch['index']+1} 止盈恢复 @ {tp_price_str} (API返回 {actual_price}) orderId={result['orderId']}"
+                        )
+                else:
+                    if self.log_manager:
+                        self.log_manager.system.warning(
+                            f"  ✗ 批次 {batch['index']+1} 止盈恢复失败 — 无 orderId: {result}"
+                        )
+            except Exception as e:
+                if self.log_manager:
+                    self.log_manager.system.warning(f"  ✗ 批次 {backup['index']+1} 止盈恢复异常: {e}")
 
         bs['tp_backup'] = []
         bs['state'] = 'partial_filled'
-        self._add_action("恢复止盈单", f"已撤销提前平仓")
+        # v1.10.0: 恢复止盈后重建关键价格表，确保止盈单被 _check_key_prices 检测
+        self._rebuild_key_prices()
+        self._add_action("恢复止盈单", f"已撤销提前平仓，恢复 {restored_count} 笔止盈")
         return True
 
     async def _close_position_market_batch(self) -> bool:
