@@ -118,6 +118,7 @@ class LiveTrader:
         }
         self._rest_fallback_task: Optional[asyncio.Task] = None
         self._rest_fallback_interval: float = 3.0  # REST 轮询间隔（秒）
+        self._batch_tp_monitor_task: Optional[asyncio.Task] = None  # v1.10.0：全局 TP 批量监控
 
         self._has_web_clients = False  # v1.10.0：由 Web 服务更新，控制 TUI 音效
         self.running = False
@@ -3136,36 +3137,60 @@ class LiveTrader:
         except Exception:
             pass
 
-    async def _monitor_batch_tp_order(self, batch: dict):
-        """v1.10.0：独立监控止盈单成交（不依赖 WS，不依赖 REST 兜底）
-
-        每 5 秒轮询 REST get_order，直到止盈单成交/取消或超时。
-        解决 WS 零消息时 REST 兜底需等 60s 才激活的盲区问题。
-        """
-        tp_oid = batch.get('tp_order_id')
-        if not tp_oid:
+    def _start_batch_tp_monitor(self):
+        """启动全局 TP 批量监控（幂等：已有任务在跑则跳过）"""
+        if self._batch_tp_monitor_task and not self._batch_tp_monitor_task.done():
             return
+        self._batch_tp_monitor_task = asyncio.create_task(self._batch_tp_monitor_loop())
 
-        await asyncio.sleep(3)  # 止盈单不会瞬间成交，先等 3 秒
+    def _stop_batch_tp_monitor(self):
+        """停止全局 TP 批量监控"""
+        if self._batch_tp_monitor_task and not self._batch_tp_monitor_task.done():
+            self._batch_tp_monitor_task.cancel()
+        self._batch_tp_monitor_task = None
 
-        deadline = time.time() + 180  # 最多监控 3 分钟
-        while time.time() < deadline and self.running:
-            if batch.get('status') != 'tp_placed':
+    async def _batch_tp_monitor_loop(self):
+        """v1.10.0：全局 TP 批量监控 — 用 get_open_orders 一次查所有 TP 单
+
+        每 5s 调一次 get_open_orders（权重 5），O(1) 而非 O(N)。
+        200 个 TP 单也只需 60 权重/min，避免 per-order 监控爆炸。
+        """
+        await asyncio.sleep(3)  # 启动后稍等
+
+        while self.running:
+            bs = self.batch_state
+            if not bs or bs.get('round_closed'):
                 return
-            if batch.get('tp_order_id') != tp_oid:
-                return
+
+            # 收集当前所有 tp_placed 批次
+            tp_batches = [b for b in bs.get('batches', []) if b.get('status') == 'tp_placed' and b.get('tp_order_id')]
+            if not tp_batches:
+                return  # 没有需要监控的 TP 单，任务结束
 
             try:
-                order = await asyncio.to_thread(self.api.get_order, self.symbol, tp_oid)
-                status = order.get('status', '')
-                if status == 'FILLED':
-                    self._on_batch_event('TP_FILLED', order, source='REST_POLL')
-                    return
-                elif status in ('EXPIRED', 'CANCELED'):
-                    self._log_batch_action(f"批次 {batch['index']+1} 止盈单已取消/过期，重新挂单")
-                    batch['tp_order_id'] = None
-                    asyncio.create_task(self._place_batch_tp(batch))
-                    return
+                open_orders = await asyncio.to_thread(self.api.get_open_orders, self.symbol)
+                open_ids = {o.get('orderId') for o in (open_orders or [])}
+
+                for b in tp_batches:
+                    tp_oid = b.get('tp_order_id')
+                    if not tp_oid:
+                        continue
+                    if tp_oid in open_ids:
+                        continue  # 订单还在挂单簿中，未成交
+
+                    # 订单消失 → 单独确认状态
+                    try:
+                        order = await asyncio.to_thread(self.api.get_order, self.symbol, tp_oid)
+                        status = order.get('status', '')
+                        if status == 'FILLED':
+                            self._on_batch_event('TP_FILLED', order, source='REST_POLL')
+                        elif status in ('EXPIRED', 'CANCELED'):
+                            self._log_batch_action(f"批次 {b['index']+1} 止盈单已取消/过期，重新挂单")
+                            b['tp_order_id'] = None
+                            asyncio.create_task(self._place_batch_tp(b))
+                    except Exception:
+                        pass
+
             except Exception:
                 pass
 
@@ -3474,7 +3499,8 @@ class LiveTrader:
                 batch['tp_price'] = tp_price
                 batch['status'] = 'tp_placed'
                 self._batch_tp_map[result['orderId']] = batch['index']
-                asyncio.create_task(self._monitor_batch_tp_order(batch))
+                self._start_batch_tp_monitor()
+                self._rebuild_key_prices()
                 return
         except Exception:
             pass
@@ -3497,7 +3523,8 @@ class LiveTrader:
                 batch['tp_price'] = tp_price
                 batch['status'] = 'tp_placed'
                 self._batch_tp_map[result['orderId']] = batch['index']
-                asyncio.create_task(self._monitor_batch_tp_order(batch))
+                self._start_batch_tp_monitor()
+                self._rebuild_key_prices()
         except Exception as e:
             self._add_action("止盈挂单失败", f"批次 {batch['index']+1}：{e}")
 
@@ -3601,6 +3628,7 @@ class LiveTrader:
             self._add_action("SM 更新失败", str(e))
 
         self._add_action("止损已更新", f"SL {avg_entry} / SM {sm_price}")
+        self._rebuild_key_prices()
 
     # --- 止盈处理 ---
 
@@ -3950,6 +3978,7 @@ class LiveTrader:
             return
 
         bs['round_closed'] = True
+        self._stop_batch_tp_monitor()
 
         # 撤销所有未成交批次
         pending = [b for b in bs['batches'] if b['status'] == 'pending']
