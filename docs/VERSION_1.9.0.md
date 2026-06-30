@@ -1154,14 +1154,18 @@ def _on_batch_event(self, event_type: str, payload: dict, source: str = 'WS'):
 - 新增 `_check_disappeared_tp_order` 方法，对 `tp_placed` 批次检测订单消失
 - 修正 `_check_disappeared_order` 中 `get_order` 参数名 `orderId` → `order_id`
 
-### 18.8 TP 成交检测盲区（独立监控）
+### 18.8 TP 成交检测盲区（独立监控 → 全局批量轮询）
 
 **问题**：18.7 修复了 REST 兜底循环的检测逻辑，但兜底循环仅在 `fallback_active=True` 时运行（WS 超 60s 无消息才激活）。若 WS 每隔几十秒收到一条 ACCOUNT_UPDATE 消息，`last_msg_ts` 持续刷新，兜底永不激活，止盈成交仍不被检测。
 
-**修复**：
-- 新增 `_monitor_batch_tp_order` 方法：每笔止盈单挂出后立即启动独立异步监控任务，每 5s 轮询 `get_order`，不依赖 WS 状态也不依赖 REST 兜底激活，最长监控 3 分钟
-- `_place_batch_tp` 两处成功路径（GTX / GTC 降级）挂单后启动 `_monitor_batch_tp_order`
-- 监控到 FILLED → 分发 `TP_FILLED`；监控到 EXPIRED/CANCELED → 重新挂单
+**v1 修复**（已废弃）：新增 `_monitor_batch_tp_order`，每笔止盈单独立 `get_order` 轮询。200 笔时 2400 权重/min。
+
+**v2 修复**（当前）：替换为全局批量监控 `_batch_tp_monitor_loop`：
+- 全局唯一任务，`_start_batch_tp_monitor` 幂等启动，`_stop_batch_tp_monitor` 在 `_cleanup_batch_state` 停止
+- 每 5s 调一次 `get_open_orders`（权重固定 5），O(1) 不随订单数增长
+- 订单消失（不在 open_orders 中）→ 单独 `get_order` 确认 FILLED 或 CANCELED
+- 200 笔 TP 单只需 60 权重/min，远低于 2400 限额
+- `_place_batch_tp` 和 `_update_batch_sl_sm` 补充 `_rebuild_key_prices()` 调用，确保 key price 穿透检测及时更新
 
 ### 18.9 补单重复提交 + 前端方向按钮 + `max_position_size` 累加
 
