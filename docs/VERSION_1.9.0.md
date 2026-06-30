@@ -1153,3 +1153,28 @@ def _on_batch_event(self, event_type: str, payload: dict, source: str = 'WS'):
 - `src/trading/live.py` `_rest_fallback_loop` — 成交流水按 `orderId` 匹配批次 `order_id` 或 `tp_order_id` 后分发正确事件类型
 - 新增 `_check_disappeared_tp_order` 方法，对 `tp_placed` 批次检测订单消失
 - 修正 `_check_disappeared_order` 中 `get_order` 参数名 `orderId` → `order_id`
+
+### 18.8 TP 成交检测盲区（独立监控）
+
+**问题**：18.7 修复了 REST 兜底循环的检测逻辑，但兜底循环仅在 `fallback_active=True` 时运行（WS 超 60s 无消息才激活）。若 WS 每隔几十秒收到一条 ACCOUNT_UPDATE 消息，`last_msg_ts` 持续刷新，兜底永不激活，止盈成交仍不被检测。
+
+**修复**：
+- 新增 `_monitor_batch_tp_order` 方法：每笔止盈单挂出后立即启动独立异步监控任务，每 5s 轮询 `get_order`，不依赖 WS 状态也不依赖 REST 兜底激活，最长监控 3 分钟
+- `_place_batch_tp` 两处成功路径（GTX / GTC 降级）挂单后启动 `_monitor_batch_tp_order`
+- 监控到 FILLED → 分发 `TP_FILLED`；监控到 EXPIRED/CANCELED → 重新挂单
+
+### 18.9 补单重复提交 + 前端方向按钮 + `max_position_size` 累加
+
+**问题 1**：`_place_batch_orders` 遍历全部 `bs['batches']` 提交 batchOrders 而不是只提交新增批次，导致补单时重复提交已成交/已取消/已止盈的批次。
+
+**问题 2**：`_supplement_batch_orders` 调用 `_place_batch_orders` 后，`_place_batch_orders` 内 `bs['batches'] = [b for b in batches if b.get('order_id')]` 会丢弃已成交批次，再重置 `total_count`，计数混乱。
+
+**问题 3**：分批模式有持仓时，前端未禁止反向开仓按钮。
+
+**问题 4**：`max_position_size` 在每次 `_place_batch_orders` 成功后直接赋值为已挂批次总和，补单时被覆盖为较小值。
+
+**修复**：
+- `_place_batch_orders`：只提交 `status=='pending' and not b.get('order_id')` 的新批次；不再过滤 `bs['batches']` 列表、不再修改 `total_count`
+- `_supplement_batch_orders`：移除 `bs['total_count'] = len(bs['batches'])` 赋值
+- `max_position_size` 改为累加（`+=`）而非替换（`=`）
+- 前端 `updatePosCard`：分批模式有持仓时 `dirSide` 取 `pos.side`，LONG 禁用 SHORT 按钮，SHORT 禁用 LONG 按钮
