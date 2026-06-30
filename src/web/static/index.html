@@ -499,7 +499,7 @@ html, body {
 .settings-preview .pv-lbl { color: var(--text-tertiary); }
 
 /* History stats */
-.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; }
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; } @media (min-width: 420px) { .stat-grid { grid-template-columns: 1fr 1fr 1fr 1fr; } }
 .stat-grid .lbl { font-size: 10px; color: var(--text-tertiary); }
 .stat-grid .val { font-size: 14px; font-weight: 600; }
 .history-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-xs); }
@@ -690,7 +690,7 @@ html, body {
         <button class="btn btn-sm" id="ac-btn-7d" onclick="switchAssetCurve('7d')" style="padding:1px 8px;font-size:10px;line-height:1.5;min-width:0">7D</button>
       </div>
       <div class="card-body">
-        <canvas id="asset-curve-canvas" width="600" height="160" style="width:100%;height:auto;display:none;margin-bottom:8px;border-radius:6px;background:var(--bg-page);cursor:crosshair"></canvas>
+        <canvas id="asset-curve-canvas" width="600" height="180" style="width:100%;height:auto;display:none;margin-bottom:8px;border-radius:6px;background:var(--bg-card);cursor:crosshair"></canvas>
         <div class="stat-grid" id="stat-grid"></div>
       </div>
     </div>
@@ -2459,10 +2459,28 @@ function drawAssetCurve(){
   canvas.style.display='block';
   var samples=assetCurveData.samples;
   var isPrivacy=isPrivacyOn();
+
+  // ── Read theme colors from computed styles (canvas can't resolve CSS vars) ──
+  var cs=getComputedStyle(document.documentElement);
+  var isDark=document.documentElement.getAttribute('data-theme')==='dark';
+  var textPri=cs.getPropertyValue('--text-primary').trim()||(isDark?'#eaecef':'#1e2329');
+  var textSec=cs.getPropertyValue('--text-secondary').trim()||(isDark?'#848e9c':'#707a8a');
+  var textTer=cs.getPropertyValue('--text-tertiary').trim()||(isDark?'#5e6673':'#aeb4bc');
+  var bgCard=cs.getPropertyValue('--bg-card').trim()||(isDark?'#1e2329':'#ffffff');
+  var bgPage=cs.getPropertyValue('--bg-page').trim()||(isDark?'#0b0e11':'#f5f5f5');
+  var colorPri=cs.getPropertyValue('--color-primary');
+  if(!colorPri||colorPri==='') colorPri=isDark?'#388bfd':'#1a6fdc';
+  var gridAlpha=isDark?'0.08':'0.10';
+  var fillTop=isDark?'rgba(56,139,253,0.18)':'rgba(26,111,220,0.12)';
+  var fillBot=isDark?'rgba(56,139,253,0.01)':'rgba(26,111,220,0.00)';
+  var tipBg=isDark?'rgba(30,35,41,0.95)':'rgba(255,255,255,0.95)';
+  var tipBorder=isDark?'rgba(255,255,255,0.15)':'rgba(0,0,0,0.12)';
+  var tipText=isDark?'#eaecef':'#1e2329';
+
   var dpr=Math.min(window.devicePixelRatio||1,2);
   var rect=canvas.parentElement.getBoundingClientRect();
   var W=rect.width-32; if(W<200) W=340;
-  var H=160;
+  var H=180;
   canvas.width=W*dpr; canvas.height=H*dpr;
   canvas.style.width=W+'px'; canvas.style.height=H+'px';
   var ctx=canvas.getContext('2d');
@@ -2480,30 +2498,39 @@ function drawAssetCurve(){
 
   var minVal=Math.min.apply(null,displayValues), maxVal=Math.max.apply(null,displayValues);
   var range=maxVal-minVal||1;
-  var pad=range*0.1;
+  var pad=range*0.12;
   minVal-=pad; maxVal+=pad;
-  var margin={top:12,right:36,bottom:20,left:0};
+
+  var margin={top:16,right:12,bottom:24,left:12};
+  margin.right=46;
   var pw=W-margin.left-margin.right, ph=H-margin.top-margin.bottom;
   function xOf(i){return margin.left+(i/(samples.length-1))*pw;}
   function yOf(v){return margin.top+ph-((v-minVal)/(maxVal-minVal))*ph;}
 
-  ctx.clearRect(0,0,W,H);
+  // ── Card background ──
+  ctx.fillStyle=bgCard; ctx.fillRect(0,0,W,H);
 
-  // Grid lines
-  ctx.strokeStyle='rgba(128,128,128,0.12)'; ctx.lineWidth=1;
+  // ── Horizontal grid lines + Y labels ──
   var gridLines=4;
+  ctx.strokeStyle='rgba(128,128,128,'+gridAlpha+')'; ctx.lineWidth=1;
   for(var g=0;g<=gridLines;g++){
     var gy=margin.top+(g/gridLines)*ph;
     ctx.beginPath(); ctx.moveTo(margin.left,gy); ctx.lineTo(W-margin.right,gy); ctx.stroke();
+    var gv=minVal+(g/gridLines)*(maxVal-minVal);
+    ctx.fillStyle=textTer; ctx.font='10px sans-serif'; ctx.textAlign='right';
+    var yLabel;
     if(isPrivacy){
-      var gv=minVal+(g/gridLines)*(maxVal-minVal);
-      ctx.fillStyle='var(--text-tertiary)'; ctx.font='9px sans-serif';
-      ctx.textAlign='right'; ctx.fillText(gv.toFixed(1)+'%',W-margin.right+2,gy+3);
+      yLabel=gv.toFixed(1)+'%';
+    }else{
+      if(Math.abs(gv)>=100) yLabel=gv.toFixed(0);
+      else if(Math.abs(gv)>=1) yLabel=gv.toFixed(2);
+      else yLabel=gv.toFixed(4);
     }
+    ctx.fillText(yLabel,W-margin.right+4,gy+4);
   }
 
-  // X axis labels
-  ctx.fillStyle='var(--text-tertiary)'; ctx.font='9px sans-serif'; ctx.textAlign='center';
+  // ── X axis labels ──
+  ctx.fillStyle=textTer; ctx.font='10px sans-serif'; ctx.textAlign='center';
   var n=samples.length;
   var xStep=Math.max(1,Math.floor(n/5));
   for(var i=0;i<n;i+=xStep){
@@ -2511,16 +2538,20 @@ function drawAssetCurve(){
     var h=String(d.getHours()).padStart(2,'0');
     var m=String(d.getMinutes()).padStart(2,'0');
     var label=(assetCurvePeriod=='7d')?(String(d.getMonth()+1)+'/'+String(d.getDate())):(h+':'+m);
-    ctx.fillText(label,xOf(i),H-margin.bottom+13);
+    ctx.fillText(label,xOf(i),H-margin.bottom+15);
   }
   if((n-1)%xStep!==0){
     var lastD=new Date(samples[n-1].t);
     var lh=String(lastD.getHours()).padStart(2,'0'), lm=String(lastD.getMinutes()).padStart(2,'0');
     var lastLabel=(assetCurvePeriod=='7d')?(String(lastD.getMonth()+1)+'/'+String(lastD.getDate())):(lh+':'+lm);
-    ctx.fillText(lastLabel,xOf(n-1),H-margin.bottom+13);
+    ctx.fillText(lastLabel,xOf(n-1),H-margin.bottom+15);
   }
 
-  // ---- LINE (smooth via cubic bezier) ----
+  // ── Clipping region ──
+  ctx.save();
+  ctx.beginPath(); ctx.rect(margin.left,margin.top,pw,ph); ctx.clip();
+
+  // ── LINE (smooth cubic bezier) ──
   var pts=[];
   for(var i=0;i<samples.length;i++) pts.push({x:xOf(i),y:yOf(displayValues[i])});
   ctx.beginPath();
@@ -2532,7 +2563,7 @@ function drawAssetCurve(){
     var cp2x=p2.x-(p3.x-p1.x)*t, cp2y=p2.y-(p3.y-p1.y)*t;
     ctx.bezierCurveTo(cp1x,cp1y,cp2x,cp2y,p2.x,p2.y);
   }
-  ctx.strokeStyle='var(--color-primary)'; ctx.lineWidth=1.5;
+  ctx.strokeStyle=colorPri; ctx.lineWidth=2;
   ctx.stroke();
 
   // Fill area
@@ -2540,11 +2571,13 @@ function drawAssetCurve(){
   ctx.lineTo(pts[0].x, margin.top+ph);
   ctx.closePath();
   var grad=ctx.createLinearGradient(0,margin.top,0,margin.top+ph);
-  grad.addColorStop(0,'rgba(56,139,253,0.15)');
-  grad.addColorStop(1,'rgba(56,139,253,0.01)');
+  grad.addColorStop(0,fillTop);
+  grad.addColorStop(1,fillBot);
   ctx.fillStyle=grad; ctx.fill();
 
-  // ---- ANNOTATIONS ----
+  ctx.restore();
+
+  // ── ANNOTATIONS ──
   var firstIdx=0, lastIdx=samples.length-1;
   var hiIdx=0, loIdx=0;
   for(var i=1;i<displayValues.length;i++){
@@ -2553,24 +2586,28 @@ function drawAssetCurve(){
   }
   var markers=[];
   markers.push({idx:firstIdx,color:'#22c55e',shape:'circle'});
-  if(hiIdx!==firstIdx&&hiIdx!==lastIdx) markers.push({idx:hiIdx,color:'#f87171',shape:'tri-up'});
-  if(loIdx!==firstIdx&&loIdx!==lastIdx) markers.push({idx:loIdx,color:'#f87171',shape:'tri-down'});
-  markers.push({idx:lastIdx,color:'#3b82f6',shape:'circle'});
+  if(hiIdx!==firstIdx&&hiIdx!==lastIdx) markers.push({idx:hiIdx,color:'#f6465d',shape:'tri-up'});
+  if(loIdx!==firstIdx&&loIdx!==lastIdx) markers.push({idx:loIdx,color:'#f6465d',shape:'tri-down'});
+  markers.push({idx:lastIdx,color:colorPri,shape:'circle'});
 
   for(var mi=0;mi<markers.length;mi++){
     var m=markers[mi], mx=xOf(m.idx), my=yOf(displayValues[m.idx]);
     ctx.fillStyle=m.color; ctx.strokeStyle=m.color;
     if(m.shape=='tri-up'){
-      ctx.beginPath(); ctx.moveTo(mx,my-7); ctx.lineTo(mx-5,my+2); ctx.lineTo(mx+5,my+2); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(mx,my-8); ctx.lineTo(mx-5,my+2); ctx.lineTo(mx+5,my+2); ctx.closePath(); ctx.fill();
     }else if(m.shape=='tri-down'){
-      ctx.beginPath(); ctx.moveTo(mx,my+7); ctx.lineTo(mx-5,my-2); ctx.lineTo(mx+5,my-2); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(mx,my+8); ctx.lineTo(mx-5,my-2); ctx.lineTo(mx+5,my-2); ctx.closePath(); ctx.fill();
     }else{
-      ctx.beginPath(); ctx.arc(mx,my,3.5,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(mx,my,4,0,Math.PI*2); ctx.fill();
     }
   }
 
-  // ---- HOVER/TOUCH ----
-  canvas._acMeta={samples:samples,displayValues:displayValues,xOf:xOf,yOf:yOf,margin:margin,W:W,H:H,isPrivacy:isPrivacy,baseline:baseline};
+  // ── HOVER / TOUCH ──
+  canvas._acMeta={samples:samples,displayValues:displayValues,xOf:xOf,yOf:yOf,
+    margin:margin,W:W,H:H,isPrivacy:isPrivacy,baseline:baseline,
+    colorPri:colorPri,tipBg:tipBg,tipBorder:tipBorder,tipText:tipText,
+    textSec:textSec,isDark:isDark};
+
   canvas.onmousemove=function(e){
     var meta=canvas._acMeta; if(!meta) return;
     var r=canvas.getBoundingClientRect();
@@ -2599,29 +2636,40 @@ function drawAssetCurve(){
   canvas.ontouchend=function(){acHoverIdx=-1;drawAssetCurve();};
   canvas.ontouchcancel=function(){acHoverIdx=-1;drawAssetCurve();};
 
-  // ---- Tooltip ----
+  // ── Tooltip ──
   if(acHoverIdx>=0&&acHoverIdx<samples.length){
     var hx=xOf(acHoverIdx), hy=yOf(displayValues[acHoverIdx]);
-    ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+
+    // Dashed indicator line
+    ctx.strokeStyle=colorPri; ctx.globalAlpha=0.5; ctx.lineWidth=1; ctx.setLineDash([3,3]);
     ctx.beginPath(); ctx.moveTo(hx,margin.top); ctx.lineTo(hx,margin.top+ph); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(hx,hy,4,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle='var(--color-primary)'; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.arc(hx,hy,4,0,Math.PI*2); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1;
+
+    // Dot
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(hx,hy,5,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=colorPri; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.arc(hx,hy,5,0,Math.PI*2); ctx.stroke();
+
+    // Tooltip box
     var tipVal=displayValues[acHoverIdx];
     var tipText=isPrivacy?(tipVal.toFixed(2)+'%'):fmtMoney(tipVal,{unit:false});
     var d=new Date(samples[acHoverIdx].t);
     var tipTime=(assetCurvePeriod=='7d')
       ? (String(d.getMonth()+1)+'/'+String(d.getDate())+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'))
       : String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+
+    ctx.font='600 12px sans-serif';
+    var valW=ctx.measureText(tipText).width;
     ctx.font='11px sans-serif';
-    var tw=Math.max(ctx.measureText(tipText).width,ctx.measureText(tipTime).width)+16;
-    var th=34, tx=hx, ty=hy-th-10;
-    if(ty<margin.top) ty=hy+10;
+    var timeW=ctx.measureText(tipTime).width;
+    var tw=Math.max(valW,timeW)+20;
+    var th=38, tx=hx, ty=hy-th-12;
+    if(ty<margin.top+4) ty=hy+12;
     if(tx+tw/2>W-margin.right) tx=W-margin.right-tw/2;
     if(tx-tw/2<margin.left) tx=margin.left+tw/2;
-    ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=1;
+
     var rx=tx-tw/2, ry=ty, rw=tw, rh=th, rr=6;
+    ctx.fillStyle=tipBg; ctx.strokeStyle=tipBorder; ctx.lineWidth=1;
     ctx.beginPath();
     ctx.moveTo(rx+rr,ry); ctx.lineTo(rx+rw-rr,ry);
     ctx.arcTo(rx+rw,ry,rx+rw,ry+rr,rr);
@@ -2633,10 +2681,11 @@ function drawAssetCurve(){
     ctx.arcTo(rx,ry,rx+rr,ry,rr);
     ctx.closePath();
     ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#fff';
-    ctx.textAlign='center'; ctx.fillText(tipText,tx,ty+14);
-    ctx.fillStyle='var(--text-tertiary)'; ctx.font='10px sans-serif';
-    ctx.fillText(tipTime,tx,ty+26);
+
+    ctx.fillStyle=tipText; ctx.textAlign='center';
+    ctx.font='600 12px sans-serif'; ctx.fillText(tipText,tx,ty+16);
+    ctx.fillStyle=textSec; ctx.font='10px sans-serif';
+    ctx.fillText(tipTime,tx,ty+29);
   }
 }
 
