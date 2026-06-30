@@ -1087,3 +1087,69 @@ def _on_batch_event(self, event_type: str, payload: dict, source: str = 'WS'):
 30. **事件幂等去重**：同一 orderId 的 WS 和 REST 事件先后到达 → 不重复触发处理
 31. **TUI WS 指示灯**：验证 🟢🟡🔴 三色状态随消息间隔变化正确
 32. **清理修复**：退出时验证 listenKey 被正确 close，WS 任务无残留
+
+---
+
+## 十八、v1.9.0 实现订正（2026-06-30）
+
+以下为 v1.9.0 上线后发现并修复的实现级 bug，订正至本文档以保持设计与代码一致。
+
+### 18.1 双向持仓模式 `reduceOnly` 参数误传
+
+**问题**：`place_order()` 和 `place_algo_order()` 均不接受 `reduceOnly` 参数（双向持仓模式不允许此参数）。分批模式 6 处代码传入了 `reduceOnly=True`，导致 `TypeError`，被各处的 `except Exception: pass` 静默吞掉。
+
+**影响**：
+- 止盈限价单（GTX + GTC 降级）全部静默失败
+- 保底止损市价单（STOP_MARKET）静默失败
+- 提前平仓单静默失败
+- 提前平仓撤销后的止盈恢复静默失败
+- 浮亏保护限价平仓单静默失败
+
+**修复**：`src/trading/live.py` — 移除 `_place_batch_tp`、`_update_batch_sl_sm`、`_batch_early_close`、`_cancel_batch_early_close`、`_place_loss_protection_limit` 中所有 `reduceOnly=True` 传参（共 6 处）。
+
+### 18.2 `float(None)` 状态推送崩溃
+
+**问题**：`server.py` `_build_state()` 中 `b.get('tp_price', 0)` 在 key 存在但值为 `None` 时不走默认值（Python `.get()` 只在 key 缺失时用默认值），导致 `float(None)` 抛出 `TypeError`，状态推送循环每秒钟崩溃一次。
+
+**修复**：`src/web/server.py:395` — 改为 `b.get('tp_price') or 0`。同时异常处理中增加 `logs/_crash_state.log` 完整堆栈写入。
+
+### 18.3 保底止损参数名错误
+
+**问题**：`_update_batch_sl_sm()` 中 `place_algo_order(**{stopPrice=...})` 传参名为 `stopPrice`，但 `place_algo_order`（Algo Order API `/fapi/v1/algoOrder`）的参数名为 `triggerPrice`。`stopPrice` 是普通订单 API 的参数名。导致 `TypeError` 被 `except Exception` 静默吞掉。
+
+**附带差异**：分批模式 `workingType='CONTRACT_PRICE'`，非分批模式使用 `MARK_PRICE`，订正为一致使用 `MARK_PRICE`。
+
+**修复**：`src/trading/live.py` `_update_batch_sl_sm` — `stopPrice` → `triggerPrice`，`workingType` → `MARK_PRICE`，增加成功/失败 INFO 日志。
+
+### 18.4 SL/SM 更新节流丢失
+
+**问题**：`_schedule_sl_sm_update()` 的 3 秒节流逻辑在命中节流时设置 `_pending_sl_update = True`，但该标志无任何代码检查。若第二笔成交在 3 秒内到达，SL/SM 更新被永久丢弃。
+
+**修复**：`src/main_live.py` 价格 tick 循环中增加兜底检查，当 `_pending_sl_update == True` 且距上次更新 ≥3 秒时，自动触发 `_schedule_sl_sm_update()`。
+
+### 18.5 浮亏保护 UI 显示 undefined
+
+**问题**：分批模式下 `loss_protection_manager.set_entry_info()` 从未调用（仅在非分批模式 `_safe_place_tp_sl_orders` 中调用）。`get_status()` 只返回 `{status:'等待开仓'}`，缺少 `remaining_time` 和 `pnl_status` 字段。前端渲染为 "浮亏保护 undefined (undefined)"。
+
+**修复**：
+- `src/trading/live.py` `_handle_batch_fill` — 首笔批次成交时调用 `loss_protection_manager.set_entry_info()`
+- `src/trading/live.py` `_init_batch_state` — 重置 `_max_float_pnl` / `_min_float_pnl` 防止上轮数据泄漏
+
+### 18.6 分批模式持仓卡片数据缺失
+
+**问题**：`server.py` 构建分批模式 position 时：
+- 缺少 `open_time` → 前端倒计时定时器不启动
+- 从 `batch_state['peak_floating_profit']` 读取浮盈峰值，但该 key 从未被写入（`update_price` 写入的是 `_max_float_pnl` 属性）→ 最高浮盈浮亏始终为 0
+
+**修复**：`src/web/server.py` — 分批模式 position 改为从 `_max_float_pnl` / `_min_float_pnl` 读取（与非分批一致），补齐 `_max_float_pnl_price` / `_min_float_pnl_price`，取首笔批次 `fill_time` 作为 `open_time`。
+
+### 18.7 REST 兜底不检测止盈成交
+
+**问题**：`_rest_fallback_loop` 对所有成交流水无条件分发 `BATCH_FILLED`，不区分开仓成交/止盈成交，导致止盈成交不被检测。同时只检查 `status=='pending'` 批次的订单消失，不检查 `tp_placed` 批次。UserStream WS 零消息时，止盈成交永远不被感知 → 系统认为持仓仍在。
+
+**附带**：`_check_disappeared_order` 中 `self.api.get_order(self.symbol, orderId=order_id)` 参数名错误（应为 `order_id`），被 `except Exception: pass` 静默吞掉。
+
+**修复**：
+- `src/trading/live.py` `_rest_fallback_loop` — 成交流水按 `orderId` 匹配批次 `order_id` 或 `tp_order_id` 后分发正确事件类型
+- 新增 `_check_disappeared_tp_order` 方法，对 `tp_placed` 批次检测订单消失
+- 修正 `_check_disappeared_order` 中 `get_order` 参数名 `orderId` → `order_id`

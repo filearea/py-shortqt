@@ -258,15 +258,19 @@ class WebServer:
             hist_len = len(pct_history) if pct_history else 0
             atr14_percentile = getattr(vol, '_atr14_percentile', 0)
             atr14_ref = getattr(vol, '_atr14_ref', 'normal')
-            # 百分位未计算（初始状态 0/normal）时的自愈逻辑
+            last_recompute = getattr(vol, '_atr14_last_recompute', 0)
+            # 自愈逻辑：
+            # 1. 初始状态（百分位=0且ref=normal）→ 触发重算或初始化
             if atr14_percentile == 0 and atr14_ref == 'normal':
                 if hist_len > 0:
-                    # 情况A：历史有数据但 recompute 从未被调用 → 触发重算
                     vol.recompute_atr14_percentile()
                 elif hist_len == 0 and atr14_pct > 0:
-                    # 情况B：历史为空但 ATR14% 可用（track 在 kline 回调中未成功）
-                    # 直接用当前值初始化历史队列
                     vol.track_atr14_percentile()
+                atr14_percentile = getattr(vol, '_atr14_percentile', 0)
+                atr14_ref = getattr(vol, '_atr14_ref', 'normal')
+            # 2. 兜底：距上次全量重算超过 1 小时，且有足够历史数据 → 触发重算
+            elif hist_len >= 60 and last_recompute > 0 and (time.time() - last_recompute) >= 3600:
+                vol.recompute_atr14_percentile()
                 atr14_percentile = getattr(vol, '_atr14_percentile', 0)
                 atr14_ref = getattr(vol, '_atr14_ref', 'normal')
 
@@ -343,13 +347,22 @@ class WebServer:
                     fp = (Decimal(str(price)) - wavg) * total_size if price else Decimal('0')
                 else:
                     fp = (wavg - Decimal(str(price))) * total_size if price else Decimal('0')
+                # 分批模式取首笔成交时间作为开仓时间
+                first_fill = None
+                for b in filled:
+                    ft = b.get('fill_time')
+                    if ft:
+                        first_fill = first_fill if first_fill and first_fill < ft else ft
                 position = {
                     'side': side,
                     'size': float(total_size),
                     'entry_weighted_avg': float(wavg),
                     'floating_pnl': float(fp),
-                    'peak_floating_profit': float(t.batch_state.get('peak_floating_profit', 0) or 0),
-                    'peak_floating_loss': float(t.batch_state.get('peak_floating_loss', 0) or 0)
+                    'peak_floating_profit': float(getattr(t, '_max_float_pnl', 0) or 0),
+                    'peak_floating_loss': float(getattr(t, '_min_float_pnl', 0) or 0),
+                    'peak_floating_profit_price': float(getattr(t, '_max_float_pnl_price', 0) or 0),
+                    'peak_floating_loss_price': float(getattr(t, '_min_float_pnl_price', 0) or 0),
+                    'open_time': first_fill.isoformat() if first_fill else None
                 }
         elif t.position:
             side = t.position.get('side', 'NONE')
@@ -388,7 +401,7 @@ class WebServer:
                     tp_orders.append({
                         'index': b['index'] + 1,
                         'entry': float(b['price']),
-                        'tp_price': float(b.get('tp_price', 0)),
+                        'tp_price': float(b.get('tp_price') or 0),
                         'size': float(b['size'])
                     })
         else:
@@ -497,7 +510,11 @@ class WebServer:
         # 连接状态
         ws_healthy = getattr(t, '_ws_health', {})
         connection = {
-            'ws_healthy': ws_healthy.get('market', True) if ws_healthy else self._market_ws_healthy
+            'ws_healthy': ws_healthy.get('market', True) if ws_healthy else self._market_ws_healthy,
+            'user_stream_connected': ws_healthy.get('user_stream_connected', False) if ws_healthy else False,
+            'user_stream_last_msg_ts': ws_healthy.get('user_stream_last_msg_ts', 0) if ws_healthy else 0,
+            'user_stream_msg_count': ws_healthy.get('user_stream_msg_count', 0) if ws_healthy else 0,
+            'user_stream_restart_count': ws_healthy.get('user_stream_restart_count', 0) if ws_healthy else 0,
         }
 
         # v1.10.0: 诊断 - WebSocket 事件类型
@@ -550,7 +567,13 @@ class WebServer:
             'early_close_order': t.early_close_order is not None,
             'batch_state': {
                 'enabled': t.batch_state.get('enabled', False) if t.batch_state else False,
-                'round_closed': t.batch_state.get('round_closed', True) if t.batch_state else True
+                'state': t.batch_state.get('state', 'idle') if t.batch_state else 'idle',
+                'round_closed': t.batch_state.get('round_closed', True) if t.batch_state else True,
+                'early_close_order_id': t.batch_state.get('early_close_order_id') if t.batch_state else None,
+                'supplement_blocked': t.batch_state.get('supplement_blocked', False) if t.batch_state else False,
+                'total_filled_size': float(t.batch_state.get('total_filled_size', 0)) if t.batch_state else 0,
+                'total_count': t.batch_state.get('total_count', 0) if t.batch_state else 0,
+                'side': t.batch_state.get('side', '') if t.batch_state else '',
             } if t.batch_state else None,
         }
 
@@ -1103,6 +1126,18 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             lp_mgr = getattr(self.trader, 'loss_protection_manager', None)
             if lp_mgr:
                 lp_mgr.refresh_config(cfg.get_loss_protection_config())
+            # 如果修改了 API 杠杆，同步到币安交易所
+            if any(k.startswith('leverage.') for k in body):
+                api_lev, actual_lev = cfg.get_leverage_config()
+                self.trader.leverage_limit = api_lev
+                self.trader.actual_leverage = actual_lev
+                try:
+                    self.trader.api.set_leverage(self.trader.symbol, api_lev)
+                    if self.log:
+                        self.log.info(f'[Web] 杠杆已同步到交易所：{api_lev}x')
+                except Exception as e:
+                    if self.log:
+                        self.log.warning(f'[Web] 杠杆同步到交易所失败：{e}')
             if self.log:
                 self.log.info('[Web] 设置已通过 WebUI 保存')
         return web.json_response({'ok': True})
@@ -1262,8 +1297,13 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                             stale.add(ws)
                     self._ws_clients -= stale
             except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
                 if self.log:
                     self.log.system.warning(f'[Web] 状态推送异常: {e}')
+                # 完整堆栈写入文件（log 系统可能截断多行消息）
+                with open('logs/_crash_state.log', 'a', encoding='utf-8') as f:
+                    f.write(f'\n{"="*60}\n{datetime.now().isoformat()}\n{tb}\n')
             await asyncio.sleep(1)
 
     async def _broadcast_kline_loop(self):

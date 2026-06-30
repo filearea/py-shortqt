@@ -211,6 +211,7 @@ class LiveTradingBot:
             start_ms = int(today.timestamp() * 1000)
             current_minute_start = now.replace(second=0, microsecond=0)
             current_minute_ms = int(current_minute_start.timestamp() * 1000)
+            now_ms = int(now.timestamp() * 1000)
             date_str = today.strftime("%Y-%m-%d")
             kline_file = KLINES_DIR / self.symbol / f"{date_str}.jsonl"
 
@@ -233,7 +234,6 @@ class LiveTradingBot:
             local_count = len(local_raw)
             # 预期应有 kline 数（00:00 到上一个完整分钟）
             expected = max(0, (current_minute_ms - start_ms) // 60000)
-            # 本地文件"不全"：不存在 / 为空 / 数量落后预期超过 3 根
             need_api = (
                 not kline_file.exists() or
                 local_count == 0 or
@@ -253,7 +253,6 @@ class LiveTradingBot:
                 kline_file.parent.mkdir(parents=True, exist_ok=True)
                 write_count = 0
                 skip_dirty = 0
-                now_ms = int(datetime.now().timestamp() * 1000)
                 with open(kline_file, 'w', encoding='utf-8') as f:
                     for k in today_api[:-1]:
                         if len(k) < 11:
@@ -293,6 +292,27 @@ class LiveTradingBot:
                         d.get('buy_volume', 0), d.get('buy_turnover', 0)
                     ])
                 today_api = [k for k in raw_klines if k[0] >= start_ms]
+
+            # ── 刷新最近 10 根已闭合 K 线（修复重启导致的本地脏数据）──
+            try:
+                refresh_n = 10
+                refresh_raw = self.trader.api.get_klines(self.symbol, '1m', limit=refresh_n + 1)
+                if refresh_raw:
+                    api_map = {k[0]: k for k in refresh_raw if len(k) >= 6}
+                    replaced = 0
+                    for i, k in enumerate(today_api):
+                        ts = k[0]
+                        if ts in api_map and ts < current_minute_ms:
+                            today_api[i] = api_map[ts]
+                            replaced += 1
+                    if replaced > 0:
+                        self.log_manager.system.info(
+                            f'API 刷新覆盖 {replaced} 根本地 K 线（修复脏数据）'
+                        )
+                        # 同步更新本地文件
+                        self._overwrite_kline_file(kline_file, today_api)
+            except Exception as e:
+                self.log_manager.system.info(f'刷新最近K线失败（非致命）：{e}')
 
             # ── 第二步：喂给指标管理器 ──
             closed = [k for k in today_api if k[0] < current_minute_ms and len(k) >= 6]
@@ -361,6 +381,28 @@ class LiveTradingBot:
             self.log_manager.system.warning(error_msg)
             self.error_log.append({'time': datetime.now(), 'msg': str(e)})
 
+    @staticmethod
+    def _overwrite_kline_file(filepath: Path, klines: list):
+        """用 klines 列表覆盖写入本地文件（跳过未闭合的最后一根）"""
+        closed = [k for k in klines if len(k) >= 6]
+        if not closed:
+            return
+        with open(filepath, 'w', encoding='utf-8') as f:
+            for k in closed:
+                kd = {
+                    'timestamp': k[0],
+                    'open': float(k[1]),
+                    'high': float(k[2]),
+                    'low': float(k[3]),
+                    'close': float(k[4]),
+                    'volume': float(k[5]),
+                    'turnover': float(k[7]) if len(k) > 7 else 0,
+                    'trades': int(k[8]) if len(k) > 8 else 0,
+                    'buy_volume': float(k[9]) if len(k) > 9 else 0,
+                    'buy_turnover': float(k[10]) if len(k) > 10 else 0,
+                }
+                f.write(json.dumps(kd, ensure_ascii=False) + '\n')
+
     def _backfill_atr14_history(self, klines_dir: Path):
         """从本地文件回填过去 24h 的 ATR14% 到 volatility 历史队列"""
         vol = self.indicators.volatility
@@ -420,10 +462,12 @@ class LiveTradingBot:
                 vol._atr14_percentile_history.append(atr14_pct)
 
         if len(vol._atr14_percentile_history) > 0:
+            vol.recompute_atr14_percentile()
+            self.indicators._update_snapshot()  # v1.10.0：刷新快照，否则 atr14_ref 停留在默认 'normal'
             self.log_manager.system.info(
                 f'ATR14 24h 历史回填完成：{len(vol._atr14_percentile_history)} 个样本'
+                f' | 当前={vol.get_atr14_pct():.4f}% | 百分位={vol._atr14_percentile} 分级={vol._atr14_ref}'
             )
-            vol.recompute_atr14_percentile()
 
         # v1.10.0: 回填 _klines deque（Web UI K线图数据源）
         if batch:
@@ -477,6 +521,9 @@ class LiveTradingBot:
                 # v1.9.0：分批模式浮亏保护
                 if self.trader.batch_state and self.trader.batch_state.get('enabled') and not self.trader.batch_state.get('round_closed'):
                     self.trader._check_batch_loss_protection()
+                    # v1.10.0：兜底处理被节流拦截的 SL/SM 更新
+                    if self.trader.batch_state.get('_pending_sl_update') and time.time() - self.trader.batch_state.get('last_sl_update_ts', 0) >= 3.0:
+                        self.trader._schedule_sl_sm_update()
             
             elif event_type == 'depth':
                 bids = data.get('bids', [])
@@ -544,20 +591,22 @@ class LiveTradingBot:
     
     async def place_order(self, side: str):
         """开仓"""
-        await self.trader.open_position(side)
+        ok = await self.trader.open_position(side)
+        if not ok:
+            raise RuntimeError("开仓失败 — 请检查保证金/杠杆/设置")
     
     async def cancel_order(self):
         """撤单（v1.9.0：含分批模式）"""
         # v1.9.0：分批模式
         if self.trader.batch_state and self.trader.batch_state.get('enabled') and not self.trader.batch_state.get('round_closed'):
-            self.trader.cancel_open_order()
+            await self.trader.cancel_open_order()
             return
         # 如果有提前平仓单，撤销并恢复止盈止损
         if self.trader.early_close_order:
             self.trader.cancel_early_close()
         # 否则撤销开仓挂单
         elif self.trader.pending_order:
-            self.trader.cancel_open_order()
+            await self.trader.cancel_open_order()
     
     async def close_position_early(self):
         """提前平仓"""
@@ -1124,6 +1173,7 @@ class LiveTradingBot:
                     
                     # 成交检测：bookTicker 穿透 → REST 确认（零消耗 unless 穿透）
                     await self.trader.check_pending_order_filled()
+                    await self.trader.check_batch_orders_filled()
 
                     # 关键价格检测：订单簿 vs 关键价格比对 → REST 确认平仓
                     await self.trader._check_key_prices()
