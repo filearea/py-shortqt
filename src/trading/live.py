@@ -3483,8 +3483,11 @@ class LiveTrader:
         batch_size = batch['size']
         side = bs['side']
 
-        # 计算止盈价
-        tp_price = self.config_manager.get_take_profit_price(entry_price, side)
+        # 计算止盈价（对齐非分批模式：传入 ATR 以支持 ATR14 策略）
+        atr = None
+        if self.indicators:
+            atr = self.indicators.volatility.get_atr(14)
+        tp_price = self.config_manager.get_take_profit_price(entry_price, side, atr)
         tp_side = 'SELL' if side == 'LONG' else 'BUY'
 
         # 尝试 GTX
@@ -3569,6 +3572,26 @@ class LiveTrader:
         total_size = bs['total_filled_size']
         side = bs['side']
 
+        # 对齐非分批模式：获取 ATR、总权益、强平价
+        atr = None
+        if self.indicators:
+            atr = self.indicators.volatility.get_atr(14)
+        api_leverage, _ = self.config_manager.get_leverage_config()
+        position_value = avg_entry * total_size
+        position_margin = position_value / Decimal(str(api_leverage))
+        total_equity = self.available_balance + position_margin
+        liquidation_price = Decimal('0')
+        try:
+            positions = await asyncio.to_thread(self.api.get_position, self.symbol)
+            for pos in positions:
+                if Decimal(pos.get('positionAmt', 0)) != 0:
+                    lp = pos.get('liquidationPrice')
+                    if lp:
+                        liquidation_price = Decimal(str(lp))
+                    break
+        except Exception:
+            pass
+
         # 撤销旧 SL
         if bs['sl_order_id']:
             try:
@@ -3592,7 +3615,7 @@ class LiveTrader:
         # 挂新 SL（STOP 限价止损）
         sl_side = 'SELL' if side == 'LONG' else 'BUY'
         sl_trigger, sl_params = self.config_manager.get_stop_loss_params(
-            self.symbol, avg_entry, side, total_size
+            self.symbol, avg_entry, side, total_size, atr
         )
         bs['sl_price'] = float(sl_trigger)
         try:
@@ -3607,8 +3630,8 @@ class LiveTrader:
         # 挂新 SM（STOP_MARKET 保底止损）
         sm_price = self.config_manager.get_stop_market_price(
             avg_entry, side, total_size,
-            self.available_balance,
-            Decimal('0')  # liquidation_price — 简化处理
+            total_equity,         # 使用总权益（对齐非分批）
+            liquidation_price,    # 使用实际强平价（对齐非分批）
         )
         bs['sm_price'] = float(sm_price)
         sm_side = 'SELL' if side == 'LONG' else 'BUY'
