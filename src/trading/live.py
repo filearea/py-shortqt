@@ -2020,7 +2020,7 @@ class LiveTrader:
                         'order_category': 'LIMIT',
                     })
             if bs.get('sl_order_id'):
-                sl_price = self.batch_state.get('weighted_avg_entry', Decimal('0'))
+                sl_price = Decimal(str(bs.get('sl_price', 0)))
                 if sl_price > 0:
                     self._key_prices.append({
                         'type': 'BATCH_SL',
@@ -2029,21 +2029,23 @@ class LiveTrader:
                         'order_category': 'ALGO',
                     })
             if bs.get('sm_order_id'):
-                sm_price = Decimal('0')  # SM 价格由 config 计算
-                self._key_prices.append({
-                    'type': 'BATCH_SM',
-                    'price': sm_price,
-                    'order_id': bs['sm_order_id'],
-                    'order_category': 'ALGO',
-                })
+                sm_price = Decimal(str(bs.get('sm_price', 0)))
+                if sm_price > 0:
+                    self._key_prices.append({
+                        'type': 'BATCH_SM',
+                        'price': sm_price,
+                        'order_id': bs['sm_order_id'],
+                        'order_category': 'ALGO',
+                    })
             if bs.get('early_close_order_id'):
-                ec_price = self.last_price or Decimal('0')
-                self._key_prices.append({
-                    'type': 'BATCH_EARLY_CLOSE',
-                    'price': ec_price,
-                    'order_id': bs['early_close_order_id'],
-                    'order_category': 'LIMIT',
-                })
+                ec_price = Decimal(str(bs.get('early_close_price', 0)))
+                if ec_price > 0:
+                    self._key_prices.append({
+                        'type': 'BATCH_EARLY_CLOSE',
+                        'price': ec_price,
+                        'order_id': bs['early_close_order_id'],
+                        'order_category': 'LIMIT',
+                    })
             return
 
         if not self.position:
@@ -2276,6 +2278,11 @@ class LiveTrader:
             'EARLY_CLOSE': '提前平仓成交',
             'TRAILING_STOP': '移动止损成交',
             'LOSS_PROTECTION': '浮亏保护成交',
+            'BATCH_TP': '止盈成交',
+            'BATCH_SL': '止损成交',
+            'BATCH_SM': '保底止损成交',
+            'BATCH_EARLY_CLOSE': '提前平仓成交',
+            'BATCH_OPEN': '平仓成交',
         }.get(trigger_type, '平仓成交')
 
         self._add_action(action_name,
@@ -2844,8 +2851,8 @@ class LiveTrader:
             self.trade_stats_24h = {
                 'open_count': 0, 'close_count': 0, 'win_count': 0,
                 'win_rate': 0, 'total_volume': Decimal('0'),
-                'total_pnl': Decimal('0'), 'avg_pnl_ratio': 0,
-                'avg_hold_time': '--', 'expected_value': 0
+                'total_pnl': Decimal('0'), 'total_fee': Decimal('0'),
+                'avg_pnl_ratio': 0, 'avg_hold_time': '--', 'expected_value': 0
             }
             return
 
@@ -2859,6 +2866,7 @@ class LiveTrader:
         completed_rounds = 0
         total_volume = Decimal('0')
         total_pnl = Decimal('0')
+        total_fee = Decimal('0')
         win_count = 0
         loss_count = 0
         total_win_usd = Decimal('0')  # 累计盈利金额
@@ -2907,6 +2915,7 @@ class LiveTrader:
                                 completed_rounds += 1
                                 pnl = current_open['realized_pnl'] - current_open['total_fee']
                                 total_pnl += pnl
+                                total_fee += current_open['total_fee']
                                 total_volume += current_open['opened_qty']
                                 if pnl > 0:
                                     win_count += 1
@@ -2959,6 +2968,7 @@ class LiveTrader:
             'win_rate': win_rate,
             'total_volume': total_volume,
             'total_pnl': total_pnl,
+            'total_fee': total_fee,
             'avg_pnl_ratio': avg_pnl_ratio,
             'avg_hold_time': avg_hold_str,
             'expected_value': expected_value,
@@ -3240,6 +3250,7 @@ class LiveTrader:
             'total_filled_size': Decimal('0'),
             'tp_backup': [],
             'early_close_order_id': None,
+            'early_close_price': 0.0,
             'cancelled_batch_indices': [],
             'last_sl_update_ts': 0.0,
             'round_closed': False,
@@ -3478,7 +3489,7 @@ class LiveTrader:
             self._add_action("全部成交", f"{bs['total_count']} 笔全部成交，进入持仓状态")
 
     async def _place_batch_tp(self, batch: dict):
-        """为单个批次挂独立止盈单（GTX 优先，失败降级 GTC BBO）"""
+        """为单个批次挂独立止盈单（对齐非分批：穿透检测 → QUEUE 或策略价 GTC）"""
         bs = self.batch_state
         entry_price = batch['price']
         batch_size = batch['size']
@@ -3491,64 +3502,52 @@ class LiveTrader:
         tp_price = self.config_manager.get_take_profit_price(entry_price, side, atr)
         tp_side = 'SELL' if side == 'LONG' else 'BUY'
 
-        # 尝试 GTX
-        try:
-            result = await asyncio.to_thread(
-                self.api.place_order,
-                symbol=self.symbol,
-                side=tp_side,
-                type='LIMIT',
-                timeInForce='GTX',
-                quantity=str(batch_size),
-                price=str(tp_price),
-                positionSide=side,
-            )
-            if 'orderId' in result:
-                batch['tp_order_id'] = result['orderId']
-                batch['tp_price'] = tp_price
-                batch['status'] = 'tp_placed'
-                self._batch_tp_map[result['orderId']] = batch['index']
-                msg = f"批次 {batch['index']+1} 止盈已下（GTX）@ {tp_price} orderId={result['orderId']}"
-                self._log_batch_action(msg)
-                if self.log_manager: self.log_manager.system.info(f"  ✓ {msg}")
-                self._start_batch_tp_monitor()
-                self._rebuild_key_prices()
-                return
-        except Exception as e:
-            self._log_batch_action(f"批次 {batch['index']+1} 止盈 GTX 失败：{e}，降级 GTC")
-            if self.log_manager: self.log_manager.system.info(f"  ⚠ 批次 {batch['index']+1} 止盈 GTX 失败：{e}，降级 GTC")
+        # 检测是否会立即被吃（对齐非分批 place_tp_sl_orders 的 use_queue 逻辑）
+        use_queue = False
+        if tp_side == 'SELL':
+            if self.orderbook and self.orderbook.get('bids') and tp_price <= self.orderbook['bids'][0][0]:
+                use_queue = True
+        else:
+            if self.orderbook and self.orderbook.get('asks') and tp_price >= self.orderbook['asks'][0][0]:
+                use_queue = True
 
-        # GTX 失败 → 降级 GTC BBO
         try:
-            bbo = self.last_price or entry_price
-            result = await asyncio.to_thread(
-                self.api.place_order,
-                symbol=self.symbol,
-                side=tp_side,
-                type='LIMIT',
-                timeInForce='GTC',
-                quantity=str(batch_size),
-                price=str(tp_price),
-                positionSide=side,
-            )
+            if use_queue:
+                result = await asyncio.to_thread(
+                    self.api.place_order,
+                    symbol=self.symbol, side=tp_side, type='LIMIT',
+                    priceMatch='QUEUE',
+                    quantity=str(batch_size), timeInForce='GTC', positionSide=side,
+                )
+                actual_price = Decimal(result.get('price', '0'))
+                batch['tp_price'] = actual_price
+                msg = f"批次 {batch['index']+1} 止盈已下（QUEUE）@ {actual_price} orderId={result['orderId']}"
+            else:
+                result = await asyncio.to_thread(
+                    self.api.place_order,
+                    symbol=self.symbol, side=tp_side, type='LIMIT',
+                    price=str(tp_price), quantity=str(batch_size),
+                    timeInForce='GTC', positionSide=side,
+                )
+                batch['tp_price'] = tp_price
+                msg = f"批次 {batch['index']+1} 止盈已下（GTC）@ {tp_price} orderId={result['orderId']}"
+
             if 'orderId' in result:
                 batch['tp_order_id'] = result['orderId']
-                batch['tp_price'] = tp_price
                 batch['status'] = 'tp_placed'
                 self._batch_tp_map[result['orderId']] = batch['index']
-                msg = f"批次 {batch['index']+1} 止盈已下（GTC）@ {tp_price} orderId={result['orderId']}"
                 self._log_batch_action(msg)
                 if self.log_manager: self.log_manager.system.info(f"  ✓ {msg}")
                 self._start_batch_tp_monitor()
                 self._rebuild_key_prices()
             else:
-                self._log_batch_action(f"批次 {batch['index']+1} 止盈 GTC 无 orderId：{result}")
-                self._add_action("止盈挂单失败", f"批次 {batch['index']+1} GTC 返回异常")
-                if self.log_manager: self.log_manager.system.warning(f"  ✗ 批次 {batch['index']+1} 止盈 GTC 无 orderId：{result}")
+                self._log_batch_action(f"批次 {batch['index']+1} 止盈无 orderId：{result}")
+                self._add_action("止盈挂单失败", f"批次 {batch['index']+1} 返回异常")
+                if self.log_manager: self.log_manager.system.warning(f"  ✗ 批次 {batch['index']+1} 止盈无 orderId：{result}")
         except Exception as e:
-            self._log_batch_action(f"批次 {batch['index']+1} 止盈 GTC 失败：{e}")
+            self._log_batch_action(f"批次 {batch['index']+1} 止盈失败：{e}")
             self._add_action("止盈挂单失败", f"批次 {batch['index']+1}：{e}")
-            if self.log_manager: self.log_manager.system.warning(f"  ✗ 批次 {batch['index']+1} 止盈 GTC 失败：{e}")
+            if self.log_manager: self.log_manager.system.warning(f"  ✗ 批次 {batch['index']+1} 止盈失败：{e}")
 
     def _recalc_weighted_avg(self):
         """重算已成交批次加权均价（仅基于 filled + tp_placed 状态的批次）"""
@@ -3669,7 +3668,7 @@ class LiveTrader:
             self.log_manager.system.info(f"  ✗ 保底止损失败（分批）：{type(e).__name__}: {e}") if self.log_manager else None
             self._add_action("SM 更新失败", str(e))
 
-        self._add_action("止损已更新", f"SL {avg_entry} / SM {sm_price}")
+        self._add_action("止损已更新", f"SL {sl_trigger} / SM {sm_price}")
         self._rebuild_key_prices()
 
     # --- 止盈处理 ---
@@ -3871,7 +3870,7 @@ class LiveTrader:
     # --- 早期平仓 ---
 
     async def _batch_early_close(self):
-        """分批模式提前平仓（→ 键）"""
+        """分批模式提前平仓（→ 键，QUEUE 保证 Maker，对齐非分批）"""
         bs = self.batch_state
         if not bs or bs.get('round_closed'):
             return
@@ -3900,23 +3899,21 @@ class LiveTrader:
                     pass
                 b['status'] = 'filled'
 
-        # 挂提前平仓单
-        bbo_price = self.last_price
+        # 挂提前平仓单（QUEUE，对齐非分批 close_position_early）
         try:
             result = await asyncio.to_thread(
                 self.api.place_order,
-                symbol=self.symbol,
-                side=close_side,
-                type='LIMIT',
-                timeInForce='GTC',
-                quantity=str(total_size),
-                price=str(bbo_price),
-                positionSide=side,
+                symbol=self.symbol, side=close_side, type='LIMIT',
+                priceMatch='QUEUE',
+                quantity=str(total_size), timeInForce='GTC', positionSide=side,
             )
             if result.get('orderId'):
+                actual_price = Decimal(result.get('price', '0'))
                 bs['early_close_order_id'] = result['orderId']
+                bs['early_close_price'] = float(actual_price)
                 bs['state'] = 'early_close'
-                self._add_action("提前平仓", f"挂单 @ {bbo_price} x {total_size} ETH")
+                self._add_action("提前平仓", f"QUEUE @ {actual_price} x {total_size} ETH")
+                self._rebuild_key_prices()
         except Exception as e:
             self._add_action("提前平仓失败", str(e))
 
@@ -3933,6 +3930,7 @@ class LiveTrader:
                 self.api.cancel_order, self.symbol, order_id=bs['early_close_order_id']
             )
             bs['early_close_order_id'] = None
+            bs['early_close_price'] = 0.0
         except Exception:
             pass
 
