@@ -83,8 +83,10 @@ def _fmt_dt_str(dt):
 
 def _fmt_duration(sec: int) -> str:
     """秒 → 可读时长：3天 12:05:30 / 00:10:41 / 00:00:15"""
-    if sec <= 0:
+    if sec < 0:
         return ''
+    if sec == 0:
+        return '00:00:00'
     days, r = divmod(sec, 86400)
     h, r2 = divmod(r, 3600)
     m, s = divmod(r2, 60)
