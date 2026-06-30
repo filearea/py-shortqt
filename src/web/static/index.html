@@ -2470,7 +2470,7 @@ function drawAssetCurve(){
   var fillBot=isDark?'rgba(56,139,253,0.01)':'rgba(26,111,220,0.00)';
   var tipBg=isDark?'rgba(30,35,41,0.95)':'rgba(255,255,255,0.95)';
   var tipBorder=isDark?'rgba(255,255,255,0.15)':'rgba(0,0,0,0.12)';
-  var tipText=isDark?'#eaecef':'#1e2329';
+  var tipTextColor=isDark?'#eaecef':'#1e2329';
 
   var dpr=Math.min(window.devicePixelRatio||1,2);
   var W=canvas.parentElement.clientWidth; if(W<200) W=340;
@@ -2598,9 +2598,18 @@ function drawAssetCurve(){
   }
 
   // ── HOVER / TOUCH ──
+  function _updateTouchHover(e, meta, r){
+    var tx=(e.touches[0].clientX-r.left)*(canvas.width/dpr/r.width);
+    var best=-1, bestDist=Infinity;
+    for(var i=0;i<meta.samples.length;i++){
+      var sx=meta.xOf(i), dist=Math.abs(tx-sx);
+      if(dist<bestDist){bestDist=dist;best=i;}
+    }
+    acHoverIdx=(bestDist<30)?best:-1;
+  }
   canvas._acMeta={samples:samples,displayValues:displayValues,xOf:xOf,yOf:yOf,
     margin:margin,W:W,H:H,isPrivacy:isPrivacy,baseline:baseline,
-    colorPri:colorPri,tipBg:tipBg,tipBorder:tipBorder,tipText:tipText,
+    colorPri:colorPri,tipBg:tipBg,tipBorder:tipBorder,tipTextColor:tipTextColor,
     textSec:textSec,isDark:isDark};
 
   canvas.onmousemove=function(e){
@@ -2620,13 +2629,14 @@ function drawAssetCurve(){
     e.preventDefault();
     var meta=canvas._acMeta; if(!meta) return;
     var r=canvas.getBoundingClientRect();
-    var tx=(e.touches[0].clientX-r.left)*(canvas.width/dpr/r.width);
-    var best=-1, bestDist=Infinity;
-    for(var i=0;i<meta.samples.length;i++){
-      var sx=meta.xOf(i), dist=Math.abs(tx-sx);
-      if(dist<bestDist){bestDist=dist;best=i;}
-    }
-    acHoverIdx=(bestDist<30)?best:-1;
+    _updateTouchHover(e, meta, r);
+    drawAssetCurve();
+  };
+  canvas.ontouchmove=function(e){
+    e.preventDefault();
+    var meta=canvas._acMeta; if(!meta) return;
+    var r=canvas.getBoundingClientRect();
+    _updateTouchHover(e, meta, r);
     drawAssetCurve();
   };
   canvas.ontouchend=function(){acHoverIdx=-1;drawAssetCurve();};
@@ -2648,14 +2658,14 @@ function drawAssetCurve(){
 
     // Tooltip box
     var tipVal=displayValues[acHoverIdx];
-    var tipText=isPrivacy?(tipVal.toFixed(2)+'%'):fmtMoney(tipVal,{unit:false});
+    var tipValueStr=isPrivacy?(tipVal.toFixed(2)+'%'):fmtMoney(tipVal,{unit:false});
     var d=new Date(samples[acHoverIdx].t);
     var tipTime=(assetCurvePeriod=='7d')
       ? (String(d.getMonth()+1)+'/'+String(d.getDate())+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'))
       : String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
 
     ctx.font='600 12px sans-serif';
-    var valW=ctx.measureText(tipText).width;
+    var valW=ctx.measureText(tipValueStr).width;
     ctx.font='11px sans-serif';
     var timeW=ctx.measureText(tipTime).width;
     var tw=Math.max(valW,timeW)+20;
@@ -2678,8 +2688,8 @@ function drawAssetCurve(){
     ctx.closePath();
     ctx.fill(); ctx.stroke();
 
-    ctx.fillStyle=tipText; ctx.textAlign='center';
-    ctx.font='600 12px sans-serif'; ctx.fillText(tipText,tx,ty+16);
+    ctx.fillStyle=tipTextColor; ctx.textAlign='center';
+    ctx.font='600 12px sans-serif'; ctx.fillText(tipValueStr,tx,ty+16);
     ctx.fillStyle=textSec; ctx.font='10px sans-serif';
     ctx.fillText(tipTime,tx,ty+29);
   }
