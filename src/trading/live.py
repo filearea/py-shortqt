@@ -3157,7 +3157,12 @@ class LiveTrader:
         """
         await asyncio.sleep(3)  # 启动后稍等
 
-        while self.running:
+        # 生命周期 = 浮亏保护超时时间，未配置则默认 10 分钟
+        lp_cfg = self.config_manager.get_loss_protection_config() if self.config_manager else {}
+        timeout_minutes = lp_cfg.get('trigger_minutes', 10) if lp_cfg else 10
+        deadline = time.time() + timeout_minutes * 60
+
+        while self.running and time.time() < deadline:
             bs = self.batch_state
             if not bs or bs.get('round_closed'):
                 return
