@@ -2517,8 +2517,8 @@ function drawAssetCurve(){
   var pad=range*0.12;
   minVal-=pad; maxVal+=pad;
 
-  var margin={top:16,right:4,bottom:24,left:6};
-  margin.right=30;
+  var margin={top:16,right:4,bottom:24,left:38};
+  margin.right=4;
   var pw=W-margin.left-margin.right, ph=H-margin.top-margin.bottom;
   function xOf(i){return margin.left+(i/(samples.length-1))*pw;}
   function yOf(v){return margin.top+ph-((v-minVal)/(maxVal-minVal))*ph;}
@@ -2526,14 +2526,15 @@ function drawAssetCurve(){
   // ── Card background ──
   ctx.fillStyle=bgCard; ctx.fillRect(0,0,W,H);
 
-  // ── Horizontal grid lines + Y labels ──
+  // ── Horizontal grid lines + Y labels (left side) ──
   var gridLines=4;
   ctx.strokeStyle='rgba(128,128,128,'+gridAlpha+')'; ctx.lineWidth=1;
+  ctx.fillStyle=textTer; ctx.font='10px sans-serif'; ctx.textAlign='right';
   for(var g=0;g<=gridLines;g++){
     var gy=margin.top+(g/gridLines)*ph;
     ctx.beginPath(); ctx.moveTo(margin.left,gy); ctx.lineTo(W-margin.right,gy); ctx.stroke();
-    var gv=minVal+(g/gridLines)*(maxVal-minVal);
-    ctx.fillStyle=textTer; ctx.font='10px sans-serif'; ctx.textAlign='right';
+    // top=0 (maxVal), bottom=4 (minVal) — matches canvas yOf mapping
+    var gv=maxVal-(g/gridLines)*(maxVal-minVal);
     var yLabel;
     if(isPrivacy){
       yLabel=gv.toFixed(1)+'%';
@@ -2542,7 +2543,7 @@ function drawAssetCurve(){
       else if(Math.abs(gv)>=1) yLabel=gv.toFixed(2);
       else yLabel=gv.toFixed(4);
     }
-    ctx.fillText(yLabel,W-margin.right+4,gy+4);
+    ctx.fillText(yLabel,margin.left-4,gy+4);
   }
 
   // ── X axis labels ──

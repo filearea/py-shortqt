@@ -1148,14 +1148,23 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                     'avg_pnl_ratio': 0, 'avg_hold_time': '--', 'expected_value': 0,
                 }
 
-            # 从 now 倒退生成采样点
-            num_samples = max(2, int(period_hours / sample_interval_hours) + 1)
+            # 从 start_time 正向生成采样时间锚点（不等距于 now，不随时间推移漂移）
+            # 再从 now 倒退遍历，确保资产倒推算法正确
+            import math
+            num_intervals = int(math.ceil(period_hours / sample_interval_hours))
+            sample_times_desc = []
+            for i in range(num_intervals, -1, -1):
+                t = start_time + i * sample_interval_hours * 3600
+                if t > now:
+                    continue
+                sample_times_desc.append(t)
+            # 确保最新采样点覆盖到 now
+            if not sample_times_desc or sample_times_desc[0] < now - 1:
+                sample_times_desc.insert(0, now)
             samples = []
             pos_idx = 0
             running_assets = current_assets
-
-            for i in range(num_samples):
-                sample_time = now - i * sample_interval_hours * 3600
+            for sample_time in sample_times_desc:
                 # 减去在 sample_time 之后平仓的盈亏
                 while pos_idx < len(closed_positions) and closed_positions[pos_idx]['close_ts'] > sample_time:
                     running_assets -= closed_positions[pos_idx]['net_pnl']
