@@ -1407,12 +1407,28 @@ function drawChartMarkers() {
   if (!candleSeries || !state.price) return;
   var lines = [];
   var posSize = (state.position && state.position.size) ? state.position.size.toFixed(3) : '';
+
+  // 提前平仓判断
+  var isEarlyClose = !!(state.batch_state && state.batch_state.state === 'early_close') || !!state.early_close_order;
+  var ecPrice = 0;
+  if (state.batch_state && state.batch_state.state === 'early_close' && state.batch_state.early_close_price > 0) {
+    ecPrice = state.batch_state.early_close_price;
+  } else if (state.early_close_price > 0) {
+    ecPrice = state.early_close_price;
+  }
+
   if (state.risk.sl_price > 0) { lines.push({ price: state.risk.sl_price, color: '#f6465d', title: '止损' + (posSize?' '+posSize:''), style: 1 }); }
   if (state.risk.sm_price > 0) { lines.push({ price: state.risk.sm_price, color: '#8b0000', title: '保底' + (posSize?' '+posSize:''), style: 1 }); }
   if (state.position && state.position.entry_weighted_avg > 0) {
     lines.push({ price: state.position.entry_weighted_avg, color: '#ffffff', title: '均价' + (posSize?' '+posSize:''), style: 1 });
   }
-  if (state.tp_orders && state.tp_orders.length) {
+  // 提前平仓线（在止盈线之前，用醒目虚线）
+  if (isEarlyClose && ecPrice > 0) {
+    var ecLabel = '提前平' + (posSize?' '+posSize:'');
+    lines.push({ price: ecPrice, color: '#f0b90b', title: ecLabel, style: 2 });
+  }
+  // 止盈线（提前平仓中不绘制，因为止盈已撤销）
+  if (!isEarlyClose && state.tp_orders && state.tp_orders.length) {
     var tps = state.tp_orders.slice(0, 20);
     tps.forEach(function(tp, i) {
       lines.push({ price: tp.tp_price, color: '#0ecb81', title: '止盈#' + tp.index + ' ' + tp.size.toFixed(3), style: 2 });

@@ -565,13 +565,15 @@ class WebServer:
             'depth_pressure_sell': depth_pressure_sell,
             'depth_pressure_samples': depth_pressure_samples,
             'connection': connection,
-            # v1.10.0: 下单按钮状态所需
+            # v1.10.0: 下单按钮状态所需 + 提前平仓价格（K线标记用）
             'early_close_order': t.early_close_order is not None,
+            'early_close_price': float(t.early_close_order.get('price', 0)) if t.early_close_order else 0,
             'batch_state': {
                 'enabled': t.batch_state.get('enabled', False) if t.batch_state else False,
                 'state': t.batch_state.get('state', 'idle') if t.batch_state else 'idle',
                 'round_closed': t.batch_state.get('round_closed', True) if t.batch_state else True,
                 'early_close_order_id': t.batch_state.get('early_close_order_id') if t.batch_state else None,
+                'early_close_price': float(t.batch_state.get('early_close_price', 0)) if t.batch_state else 0,
                 'supplement_blocked': t.batch_state.get('supplement_blocked', False) if t.batch_state else False,
                 'total_filled_size': float(t.batch_state.get('total_filled_size', 0)) if t.batch_state else 0,
                 'total_count': t.batch_state.get('total_count', 0) if t.batch_state else 0,
