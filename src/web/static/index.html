@@ -686,8 +686,8 @@ html, body {
     <div class="card" style="margin-bottom:var(--space-sm)">
       <div class="card-header" style="display:flex;align-items:center;gap:8px">
         <span class="card-title" id="history-stats-title">24h 数据</span>
-        <button class="btn btn-sm" id="ac-btn-1d" onclick="switchAssetCurve('1d')" style="margin-left:auto;padding:1px 8px;font-size:10px;line-height:1.5;min-width:0">1D</button>
-        <button class="btn btn-sm" id="ac-btn-7d" onclick="switchAssetCurve('7d')" style="padding:1px 8px;font-size:10px;line-height:1.5;min-width:0">7D</button>
+        <button class="btn btn-sm" id="ac-btn-1d" onclick="switchAssetCurve('1d')" style="margin-left:auto;padding:1px 8px;font-size:10px;line-height:1.5;min-width:0;border:1px solid transparent;border-radius:4px">1D</button>
+        <button class="btn btn-sm" id="ac-btn-7d" onclick="switchAssetCurve('7d')" style="padding:1px 8px;font-size:10px;line-height:1.5;min-width:0;border:1px solid transparent;border-radius:4px">7D</button>
       </div>
       <div class="card-body">
         <canvas id="asset-curve-canvas" width="600" height="180" style="width:100%;height:auto;display:none;margin-bottom:8px;border-radius:6px;background:var(--bg-card);cursor:crosshair"></canvas>
@@ -2431,8 +2431,13 @@ var acHoverIdx=-1;
 function switchAssetCurve(period){
   assetCurvePeriod=period;
   var b1=document.getElementById('ac-btn-1d'), b7=document.getElementById('ac-btn-7d');
-  if(b1) b1.style.background=period==='1d'?'var(--color-primary)':'';
-  if(b7) b7.style.background=period==='7d'?'var(--color-primary)':'';
+  function setBtn(b,on){
+    if(!b) return;
+    if(on){b.style.background='var(--bg-card)';b.style.borderColor='var(--color-brand)';b.style.color='var(--color-brand)';b.style.fontWeight='600';}
+    else{b.style.background='';b.style.borderColor='';b.style.color='';b.style.fontWeight='';}
+  }
+  setBtn(b1,period==='1d');
+  setBtn(b7,period==='7d');
   fetchAssetCurve();
 }
 
