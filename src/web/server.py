@@ -1148,19 +1148,29 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                     'avg_pnl_ratio': 0, 'avg_hold_time': '--', 'expected_value': 0,
                 }
 
-            # 从 start_time 正向生成采样时间锚点（不等距于 now，不随时间推移漂移）
-            # 再从 now 倒退遍历，确保资产倒推算法正确
+            # 自然日模式：从 start_time 正向生成整点锚点，填满到 24:00
+            # 非自然日：从 now 倒退，保持原逻辑
             import math
-            num_intervals = int(math.ceil(period_hours / sample_interval_hours))
-            sample_times_desc = []
-            for i in range(num_intervals, -1, -1):
-                t = start_time + i * sample_interval_hours * 3600
-                if t > now:
-                    continue
-                sample_times_desc.append(t)
-            # 确保最新采样点覆盖到 now
-            if not sample_times_desc or sample_times_desc[0] < now - 1:
-                sample_times_desc.insert(0, now)
+            if mode == 'calendar_day':
+                # 结束时间 = start_time + N天 (e.g. 1D: 明天00:00 = 今天24:00)
+                days = 1 if period == '1d' else 7
+                end_time = start_time + days * 24 * 3600
+                # 整点(或整4h)取样
+                total_samples = int(days * 24 / sample_interval_hours) + 1
+                sample_times_desc = []
+                for i in range(total_samples - 1, -1, -1):
+                    t = start_time + i * sample_interval_hours * 3600
+                    sample_times_desc.append(t)
+            else:
+                num_intervals = int(math.ceil(period_hours / sample_interval_hours))
+                sample_times_desc = []
+                for i in range(num_intervals, -1, -1):
+                    t = start_time + i * sample_interval_hours * 3600
+                    if t > now:
+                        continue
+                    sample_times_desc.append(t)
+                if not sample_times_desc or sample_times_desc[0] < now - 1:
+                    sample_times_desc.insert(0, now)
             samples = []
             pos_idx = 0
             running_assets = current_assets

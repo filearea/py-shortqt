@@ -2527,19 +2527,20 @@ function drawAssetCurve(){
   // ── X axis labels ──
   ctx.fillStyle=textTer; ctx.font='10px sans-serif'; ctx.textAlign='center';
   var n=samples.length;
+  function _fmtXLabel(idx){
+    var d=new Date(samples[idx].t);
+    if(assetCurvePeriod=='7d') return String(d.getMonth()+1)+'/'+String(d.getDate());
+    var h=d.getHours(), m=d.getMinutes();
+    // 尾点为明天00:00时显示为"24:00"
+    if(idx===n-1&&h===0&&m===0) return '24:00';
+    return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+  }
   var xStep=Math.max(1,Math.floor(n/5));
   for(var i=0;i<n;i+=xStep){
-    var d=new Date(samples[i].t);
-    var h=String(d.getHours()).padStart(2,'0');
-    var m=String(d.getMinutes()).padStart(2,'0');
-    var label=(assetCurvePeriod=='7d')?(String(d.getMonth()+1)+'/'+String(d.getDate())):(h+':'+m);
-    ctx.fillText(label,xOf(i),H-margin.bottom+15);
+    ctx.fillText(_fmtXLabel(i),xOf(i),H-margin.bottom+15);
   }
   if((n-1)%xStep!==0){
-    var lastD=new Date(samples[n-1].t);
-    var lh=String(lastD.getHours()).padStart(2,'0'), lm=String(lastD.getMinutes()).padStart(2,'0');
-    var lastLabel=(assetCurvePeriod=='7d')?(String(lastD.getMonth()+1)+'/'+String(lastD.getDate())):(lh+':'+lm);
-    ctx.fillText(lastLabel,xOf(n-1),H-margin.bottom+15);
+    ctx.fillText(_fmtXLabel(n-1),xOf(n-1),H-margin.bottom+15);
   }
 
   // ── Clipping region ──
