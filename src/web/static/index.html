@@ -2394,8 +2394,12 @@ function render24hStats(){
 
 // Render period stats (from asset-curve API)
 function renderPeriodStats(s, period){
-  var titleEl=document.getElementById('history-stats-title');
-  if(titleEl) titleEl.textContent=period==='7d'?'7天数据统计':'24h 数据';
+  if(period==='7d'){
+    var titleEl=document.getElementById('history-stats-title');
+    if(titleEl) titleEl.textContent='7天数据统计';
+  }else{
+    updateAssetCurveTitle();
+  }
   _renderStatsGrid(s);
 }
 
