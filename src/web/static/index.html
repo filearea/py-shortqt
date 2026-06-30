@@ -2506,8 +2506,8 @@ function drawAssetCurve(){
   var pad=range*0.12;
   minVal-=pad; maxVal+=pad;
 
-  var margin={top:16,right:8,bottom:24,left:12};
-  margin.right=38;
+  var margin={top:16,right:4,bottom:24,left:6};
+  margin.right=30;
   var pw=W-margin.left-margin.right, ph=H-margin.top-margin.bottom;
   function xOf(i){return margin.left+(i/(samples.length-1))*pw;}
   function yOf(v){return margin.top+ph-((v-minVal)/(maxVal-minVal))*ph;}
