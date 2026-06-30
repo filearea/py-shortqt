@@ -1152,10 +1152,8 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             # 非自然日：从 now 倒退，保持原逻辑
             import math
             if mode == 'calendar_day':
-                # 结束时间 = start_time + N天 (e.g. 1D: 明天00:00 = 今天24:00)
                 days = 1 if period == '1d' else 7
                 end_time = start_time + days * 24 * 3600
-                # 整点(或整4h)取样
                 total_samples = int(days * 24 / sample_interval_hours) + 1
                 sample_times_desc = []
                 for i in range(total_samples - 1, -1, -1):
@@ -1171,6 +1169,16 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                     sample_times_desc.append(t)
                 if not sample_times_desc or sample_times_desc[0] < now - 1:
                     sample_times_desc.insert(0, now)
+            # 把平仓时间点也加入采样，让曲线尖尖可被触摸到
+            merged = {}
+            for t in sample_times_desc:
+                merged[round(t)] = t  # 秒级去重
+            max_t = (start_time + (1 if period == '1d' else 7) * 24 * 3600) if mode == 'calendar_day' else now
+            for p in closed_positions:
+                close_sec = round(p['close_ts'])
+                if start_time <= close_sec <= max_t:
+                    merged[close_sec] = p['close_ts']
+            sample_times_desc = sorted(merged.values(), reverse=True)
             samples = []
             pos_idx = 0
             running_assets = current_assets
