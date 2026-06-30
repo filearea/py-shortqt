@@ -138,10 +138,10 @@ def fetch_klines(symbol: str, start_time: Optional[int] = None, end_time: Option
             'low': float(k[3]),
             'close': float(k[4]),
             'volume': float(k[5]),
-            'turnover': float(k[6]),
+            'turnover': float(k[7]),
             'trades': int(k[8]),
-            'buy_volume': float(k[10]),
-            'buy_turnover': float(k[11])
+            'buy_volume': float(k[9]),
+            'buy_turnover': float(k[10])
         })
 
     # 按 end_time 过滤，确保只保留当天的数据
@@ -205,14 +205,22 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
         is_today = (current_date.date() == now.date())
         existing_data = []
         existing_count = 0
+        is_complete = False  # v1.10.0 修复：文件不存在时 is_complete 未定义导致 NameError
 
         # 检查是否已存在且完整
         if file_path.exists():
-            existing_data = load_existing_data(file_path)
+            try:
+                existing_data = load_existing_data(file_path)
+            except Exception as e:
+                print(f"[WARN] {date_str}: 文件读取失败 ({e})，跳过并重建")
+                existing_data = []
 
             # v1.5.5 修复：清洗跨日期数据（旧Bug导致的污染）
             # 只保留当天时间范围内的K线
-            cleaned_data = [k for k in existing_data if day_start_ms <= k['timestamp'] < day_end_ms]
+            try:
+                cleaned_data = [k for k in existing_data if day_start_ms <= k.get('timestamp', 0) < day_end_ms]
+            except Exception:
+                cleaned_data = existing_data
             if len(cleaned_data) != len(existing_data):
                 removed_count = len(existing_data) - len(cleaned_data)
                 print(f"[CLEAN] {date_str}: 清洗掉 {removed_count} 根跨日期污染数据")
@@ -254,42 +262,89 @@ def fetch_missing_klines(symbol: str, days: int = HISTORY_DAYS) -> int:
         
         # 获取缺失的 K 线
         day_klines = []
-        current_start = last_timestamp + 60000 if last_timestamp else start_time
-        
-        # 如果已经有完整数据，跳过
-        if current_start >= end_time:
-            print(f"[OK] {date_str}: 数据已完整")
-            current_date += timedelta(days=1)
-            continue
-        
+        all_new = False  # 标记是否需要全量重取
+
+        if is_complete:
+            # 非今天 + 已完整 → 跳过
+            if not is_today:
+                print(f"[OK] {date_str}: 已完整 ({existing_count}根)")
+                current_date += timedelta(days=1)
+                continue
+
+        # 检查是否存在开头缺口（start_time → 第一条已存K线之间）
+        has_start_gap = False
+        if existing_data:
+            first_ts = existing_data[0].get('timestamp', 0)
+            if first_ts > start_time:
+                has_start_gap = True
+                print(f"[INFO] {date_str}: 检测到开头缺口 ({datetime.fromtimestamp(start_time/1000)} ~ {datetime.fromtimestamp(first_ts/1000)})")
+
+        # 如果有开头缺口（或完全没有数据），从头全量拉取后合并
+        if has_start_gap or not existing_data:
+            all_new = True
+            current_start = start_time
+            existing_set = {k['timestamp'] for k in existing_data}
+            day_klines = list(existing_data)  # 保留已有数据
+        else:
+            # 只有末尾缺口，从最后一条之后开始拉
+            current_start = last_timestamp + 60000
+            # 检查是否已经到末尾
+            if current_start >= end_time:
+                if existing_count >= EXPECTED_KLINES_PER_DAY:
+                    print(f"[OK] {date_str}: 数据已完整")
+                    current_date += timedelta(days=1)
+                    continue
+                else:
+                    # 末尾已到但数量不足 → 内部散点缺口，全量重拉
+                    print(f"[INFO] {date_str}: 内部缺口 ({existing_count}/{EXPECTED_KLINES_PER_DAY})，全量重拉")
+                    all_new = True
+                    current_start = start_time
+                    existing_set = {k['timestamp'] for k in existing_data}
+                    day_klines = list(existing_data)
+
         # 循环获取缺失的 K 线
         while current_start < end_time:
             # API 限流
             last_request_time = rate_limit_sleep(last_request_time, WEIGHT_PER_KLINES)
-            
+
             klines = fetch_klines(symbol, start_time=current_start, end_time=end_time, limit=KLINES_LIMIT)
-            
+
             if not klines:
                 break
-            
-            day_klines.extend(klines)
-            
+
+            if all_new:
+                # 全量模式：去重后加入
+                for k in klines:
+                    if k['timestamp'] not in existing_set:
+                        day_klines.append(k)
+                        existing_set.add(k['timestamp'])
+            else:
+                day_klines.extend(klines)
+
             # 更新起始时间
             current_start = klines[-1]['timestamp'] + 60000  # +1 分钟
-            
+
             # 避免重复
             if len(klines) < KLINES_LIMIT:
                 break
-            
+
             time.sleep(0.1)  # 小延迟
-        
+
         # 保存数据
         if day_klines:
-            # 如果文件已存在，追加模式；否则写入模式
-            append_mode = file_path.exists()
-            save_data(file_path, day_klines, append=append_mode)
-            total_klines += len(day_klines)
-            print(f"[OK] {date_str}: 补全 {len(day_klines)}根 (总计：{existing_count + len(day_klines) if file_path.exists() else len(day_klines)}根)")
+            if all_new:
+                # 全量拉取后排序并覆盖写入（解决开头缺口 + 排序问题）
+                day_klines.sort(key=lambda k: k['timestamp'])
+                save_data(file_path, day_klines, append=False)
+                new_count = len(day_klines) - existing_count
+                total_klines += new_count
+                print(f"[OK] {date_str}: 补全 {new_count}根 (总计：{len(day_klines)}根)")
+            else:
+                # 仅末尾追加
+                append_mode = file_path.exists()
+                save_data(file_path, day_klines, append=append_mode)
+                total_klines += len(day_klines)
+                print(f"[OK] {date_str}: 补全 {len(day_klines)}根 (总计：{existing_count + len(day_klines) if file_path.exists() else len(day_klines)}根)")
         else:
             print(f"[INFO] {date_str}: 无需补全")
         

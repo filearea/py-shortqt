@@ -154,7 +154,7 @@ class LiveTradingUI:
         # 订单簿：header（价格范围3行）+ 买卖盘
         ob_renderable = self._render_orderbook_with_header(asks, bids, levels)
         top_layout["orderbook"].update(Panel(ob_renderable, title="订单簿"))
-        top_layout["history"].update(Panel(self._render_position_history(), title="历史持仓"))
+        top_layout["history"].update(Panel(self._render_position_history(), title="7日历史持仓"))
         top_layout["account"].update(Panel(self._render_account(), title="账户"))
         layout["top"].update(top_layout)
 
@@ -190,8 +190,21 @@ class LiveTradingUI:
         
         # 状态
         status = "就绪 - ↑做多 ↓做空 ←撤单 →平仓 S 设置 H 同步 Q 退出"
-        
-        if self.trader.early_close_order:
+
+        # v1.9.0：分批模式状态
+        if self.trader.batch_state and self.trader.batch_state.get('enabled') and not self.trader.batch_state.get('round_closed'):
+            bs = self.trader.batch_state
+            filled = sum(1 for b in bs.get('batches', []) if b['status'] in ('filled', 'tp_placed', 'tp_closed'))
+            total = bs.get('total_count', 0)
+            batch_states = {
+                'pending_only': f'[yellow]分批挂单中[/yellow] — {filled}/{total} 批',
+                'partial_filled': f'[green]分批持仓[/green] — 已成交 {filled}/{total} 批',
+                'all_filled': f'[green]全部成交[/green] — {total}/{total} 批',
+                'early_close': f'[yellow]提前平仓中[/yellow]',
+            }
+            status = batch_states.get(bs.get('state', ''), f'分批模式 — {filled}/{total}')
+
+        elif self.trader.early_close_order:
             status = f"[yellow]平仓挂单中[/yellow] @ {self.trader.early_close_order['price']:.2f} (←撤单)"
         elif self.trader.pending_order:
             side_text = '多' if self.trader.pending_order['side'] == 'LONG' else '空'
@@ -272,6 +285,17 @@ class LiveTradingUI:
         # 提前平仓单 ◀
         if hasattr(self.trader, 'early_close_order') and self.trader.early_close_order:
             _add_price(self.trader.early_close_order.get('price', 0), '◀', 'bold magenta')
+
+        # v1.9.0：分批订单标记
+        if self.trader.batch_state and self.trader.batch_state.get('enabled') and not self.trader.batch_state.get('round_closed'):
+            for b in self.trader.batch_state.get('batches', []):
+                if b['status'] == 'pending' and b.get('price', 0) > 0:
+                    _add_price(b['price'], '▸', 'bold magenta')
+                elif b['status'] == 'tp_placed' and b.get('tp_price', 0) > 0:
+                    _add_price(b['tp_price'], '✦', 'bold cyan')
+            # 提前平仓单（以当前价标记）
+            if self.trader.batch_state.get('early_close_order_id') and self.trader.last_price:
+                _add_price(self.trader.last_price, '▶', 'bold yellow')
 
         # 订单簿排序：最新价永远居中，卖盘在上，买盘在下，数量相等
         display_levels = min(len(bids), len(asks), max_levels)
@@ -439,8 +463,11 @@ class LiveTradingUI:
             history_text.append("暂无历史持仓", style="dim")
             return history_text
 
-        positions = self.trader.position_history[:10]
-        total_count = len(self.trader.position_history) if hasattr(self.trader, 'position_history') else 0
+        # 按 open_time 降序，取最新 20 条
+        all_positions = list(self.trader.position_history) if hasattr(self.trader, 'position_history') else []
+        all_positions.sort(key=lambda x: x.get('open_time') or datetime.min, reverse=True)
+        positions = all_positions[:20]
+        total_count = len(all_positions)
 
         for i, pos in enumerate(positions):
             side = pos.get('side', '')
@@ -655,6 +682,126 @@ class LiveTradingUI:
                     sign_min = '+' if min_pnl >= 0 else ''
                     acc_text.append(f"\n最高浮亏：{sign_min}{self.trader.format_money(min_pnl)} @ {min_pnl_price:.2f}", style="red")
         
+        # v1.9.0：分批模式
+        elif self.trader.batch_state and self.trader.batch_state.get('enabled') and not self.trader.batch_state.get('round_closed'):
+            bs = self.trader.batch_state
+            side = bs.get('side', '')
+            side_label = "做多" if side == 'LONG' else "做空"
+            color = 'green' if side == 'LONG' else 'red'
+            filled_count = sum(1 for b in bs.get('batches', []) if b['status'] in ('filled', 'tp_placed', 'tp_closed'))
+            total_count = bs.get('total_count', 0)
+            filled_size = bs.get('total_filled_size', Decimal('0'))
+            avg_entry = bs.get('weighted_avg_entry', Decimal('0'))
+
+            # 时间：取首笔成交时间
+            first_fill_ts = None
+            for b in bs.get('batches', []):
+                if b.get('fill_time'):
+                    first_fill_ts = b['fill_time']
+                    break
+            if first_fill_ts:
+                elapsed = int((datetime.now() - first_fill_ts).total_seconds())
+                h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
+                duration_str = f"{h:02d}:{m:02d}:{s:02d}"
+            else:
+                duration_str = "--:--:--"
+
+            acc_text.append(f"持仓：{side_label}  {duration_str}\n", style=f"bold {color}")
+            acc_text.append(f"已成交：{filled_count}/{total_count} 批  ")
+            acc_text.append(f"总量：{filled_size:.3f} ETH\n")
+            if avg_entry > 0:
+                acc_text.append(f"加权均价：{avg_entry:.2f}\n\n")
+
+            # 止盈单（最多5条）
+            tp_batches = [b for b in bs.get('batches', []) if b['status'] == 'tp_placed']
+            if tp_batches:
+                # 按价格接近当前价排序
+                if self.trader.last_price:
+                    ref = self.trader.last_price
+                    if side == 'LONG':
+                        tp_batches.sort(key=lambda b: b.get('tp_price', 0) - ref)
+                    else:
+                        tp_batches.sort(key=lambda b: ref - b.get('tp_price', 0))
+                show_tp = tp_batches[:5]
+                acc_text.append(f"止盈单（共 {len(tp_batches)} 笔）：\n", style="green")
+                for b in show_tp:
+                    acc_text.append(f"  批{b['index']+1} @ {b.get('tp_price', 0):.2f}\n", style="dim")
+                if len(tp_batches) > 5:
+                    acc_text.append(f"  ... 还有 {len(tp_batches) - 5} 笔未显示\n", style="dim")
+
+            # 未成交挂单（最多5条）
+            pending = [b for b in bs.get('batches', []) if b['status'] == 'pending']
+            if pending:
+                if side == 'LONG':
+                    pending.sort(key=lambda b: b.get('price', 0), reverse=True)
+                else:
+                    pending.sort(key=lambda b: b.get('price', 0))
+                show_po = pending[:5]
+                acc_text.append(f"未成交挂单（共 {len(pending)} 笔）：\n", style="yellow")
+                for b in show_po:
+                    acc_text.append(f"  批{b['index']+1} @ {b.get('price', 0):.2f} x {b.get('size', 0):.3f} ETH\n", style="dim")
+                if len(pending) > 5:
+                    acc_text.append(f"  ... 还有 {len(pending) - 5} 笔未显示\n", style="dim")
+            elif filled_count > 0:
+                acc_text.append("全部成交\n", style="green")
+
+            # 止损/保底
+            sl_id = bs.get('sl_order_id')
+            sm_id = bs.get('sm_order_id')
+            if sl_id or sm_id:
+                acc_text.append("\n")
+                if sl_id:
+                    acc_text.append(f"止损：触发 {avg_entry:.2f} (均价)\n", style="red")
+                if sm_id:
+                    acc_text.append("保底：已挂\n", style="bold red")
+
+            # 浮亏保护
+            lp_config = self.config_manager.get_loss_protection_config() if self.config_manager else {}
+            if lp_config.get('enabled') and bs.get('supplement_blocked'):
+                acc_text.append("浮亏保护：已触发\n", style="yellow")
+            elif lp_config.get('enabled'):
+                acc_text.append(f"浮亏保护：检测中\n", style="dim")
+
+            # 状态标签
+            state_labels = {
+                'pending_only': '等待成交',
+                'partial_filled': '部分成交',
+                'all_filled': '全部成交',
+                'early_close': '提前平仓中',
+            }
+            state_label = state_labels.get(bs.get('state', ''), bs.get('state', ''))
+            acc_text.append(f"\n状态：[{state_label}]", style="cyan")
+
+            # 提示
+            acc_text.append("\n", style="default")
+            if bs.get('supplement_blocked'):
+                acc_text.append("浮亏保护已禁止补单", style="yellow")
+            elif bs.get('state') == 'early_close':
+                acc_text.append("← 撤销提前平仓", style="dim")
+            else:
+                acc_text.append("← 撤单  ↑↓ 补单  → 提前平仓", style="dim")
+
+            # 浮动盈亏
+            if self.trader.last_price and avg_entry > 0:
+                if side == 'LONG':
+                    pnl = (self.trader.last_price - avg_entry) * filled_size
+                else:
+                    pnl = (avg_entry - self.trader.last_price) * filled_size
+                c = "green" if pnl >= 0 else "red"
+                sign_pnl = '+' if pnl >= 0 else ''
+                acc_text.append(f"\n浮动：{sign_pnl}{self.trader.format_money(pnl)}", style=c)
+
+                max_pnl = getattr(self.trader, '_max_float_pnl', None)
+                max_pnl_price = getattr(self.trader, '_max_float_pnl_price', None)
+                min_pnl = getattr(self.trader, '_min_float_pnl', None)
+                min_pnl_price = getattr(self.trader, '_min_float_pnl_price', None)
+                if max_pnl is not None and max_pnl_price is not None:
+                    sign_max = '+' if max_pnl >= 0 else ''
+                    acc_text.append(f"\n最高浮盈：{sign_max}{self.trader.format_money(max_pnl)} @ {max_pnl_price:.2f}", style="green")
+                if min_pnl is not None and min_pnl_price is not None:
+                    sign_min = '+' if min_pnl >= 0 else ''
+                    acc_text.append(f"\n最高浮亏：{sign_min}{self.trader.format_money(min_pnl)} @ {min_pnl_price:.2f}", style="red")
+
         elif self.trader.pending_order:
             order = self.trader.pending_order
             side = "做多" if order['side'] == 'LONG' else "做空"
@@ -794,20 +941,22 @@ class LiveTradingUI:
                 vol_parts.append(clean_line)
         vol_row.append(" | ".join(vol_parts[:5]))  # 最多显示 5 个
 
-        # ATR(14) 显示
+        # ATR(14) 显示（含 24h 百分位评价）
         vol_row.append("  |  ", style="dim")
         vol_row.append("ATR(14)：", style="bold cyan")
         if atr_14 is not None:
             vol_row.append(f"{atr_14:.4f}", style="cyan")
             if atr_vol_pct is not None:
                 vol_row.append(f" ({atr_vol_pct:.3f}%)", style="yellow")
+            # v1.10.0：24h 百分位评价
+            atr14_pct = vol_snapshot.get('atr14_percentile', 0)
+            atr14_ref = vol_snapshot.get('atr14_ref', 'normal')
+            if atr14_pct > 0:
+                ref_emoji = {'low': '🔴', 'normal': '🟡', 'elevated': '🟢', 'high': '🔴'}.get(atr14_ref, '🟡')
+                vol_row.append(f" [P{atr14_pct} {ref_emoji}]")
         else:
             vol_row.append("--", style="dim")
 
-        # 添加状态标记
-        if any('🟡' in l or '🔴' in l for l in vol_lines):
-            vol_row.append(" 🟡", style="yellow")
-        
         # 第二行：流动性（买卖深度固定宽度 + 价差 + 深度对比）
         liq_row = Text()
         liq_row.append("流动性：", style="bold cyan")
@@ -839,7 +988,17 @@ class LiveTradingUI:
                           style="green" if buy_pct >= sell_pct else "red")
         else:
             liq_row.append(" 采样中...", style="dim")
-        
+
+        # v1.10.0：主动成交比率（Taker Buy/Sell）
+        if self.trader and hasattr(self.trader, 'indicators') and self.trader.indicators:
+            taker = self.trader.indicators.get_taker_ratio()
+            buy_pct = taker.get('buy_pct', 50)
+            sell_pct = taker.get('sell_pct', 50)
+            liq_row.append("  主动: ", style="dim")
+            liq_row.append(f"买 {buy_pct:.1f}%", style="green" if buy_pct > 55 else "")
+            liq_row.append("  ", style="dim")
+            liq_row.append(f"卖 {sell_pct:.1f}%", style="red" if sell_pct > 55 else "")
+
         # 第三行：综合评分 + 方向 + 分类评分
         score_row = Text()
         score_row.append(f"综合：{score['score']:.1f}/100 ", style=f"bold {score['color']}")

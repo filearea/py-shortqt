@@ -20,7 +20,8 @@ class BinanceClient:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False):
         self.api_key = api_key
         self.api_secret = api_secret
-        
+        self.testnet = testnet  # v1.9.0：暴露给 UserStreamWebSocket
+
         # API 端点
         if testnet:
             self.base_url = "https://demo-fapi.binance.com"  # 新测试网
@@ -36,9 +37,33 @@ class BinanceClient:
         # v1.4.0 新增：API 请求速率限制器
         self.rate_limiter = RateLimiter(weight_limit=1200, window_seconds=60)
     
+    def _request_signed(self, method: str, path: str, params: dict = None):
+        """发送签名请求，自动处理时间戳 -1021 错误（重同步时间并重试一次）"""
+        for attempt in range(2):
+            signed = build_signed_params(params or {}, self.api_secret)
+            query_string = '&'.join(f'{k}={v}' for k, v in sorted(signed.items()))
+            if method == 'GET':
+                url = f"{self.base_url}{path}?{query_string}"
+                resp = self.session.get(url, timeout=10)
+            elif method == 'POST':
+                url = f"{self.base_url}{path}"
+                resp = self.session.post(url, data=query_string, timeout=10)
+            elif method == 'DELETE':
+                url = f"{self.base_url}{path}?{query_string}"
+                resp = self.session.delete(url, timeout=10)
+            else:
+                raise ValueError(f'不支持的方法: {method}')
+            if resp.status_code == 200:
+                return resp.json()
+            err = resp.json() if resp.text else {'code': resp.status_code, 'msg': 'Unknown error'}
+            code = err.get('code', -1)
+            if code == -1021 and attempt == 0:
+                self.sync_time()
+                continue
+            raise BinanceAPIError(code, err.get('msg', 'Unknown error'))
+
     def _get(self, path: str, params: dict = None, signed: bool = False, weight: int = 1) -> dict:
         """GET 请求（带速率限制）"""
-        # 同步等待获取请求权限
         import time
         while True:
             if self.rate_limiter.get_available_weight() >= weight:
@@ -51,18 +76,11 @@ class BinanceClient:
                     time.sleep(wait_time)
                 else:
                     time.sleep(0.1)
-        
-        url = f"{self.base_url}{path}"
-        
+
         if signed:
-            params = build_signed_params(params or {}, self.api_secret)
-            # 签名后，把参数字符串直接拼接到 URL（避免 requests 再次编码）
-            query_string = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
-            url = f"{url}?{query_string}"
-            response = self.session.get(url, timeout=10)
-        else:
-            response = self.session.get(url, params=params, timeout=10)
-        
+            return self._request_signed('GET', path, params)
+        url = f"{self.base_url}{path}"
+        response = self.session.get(url, params=params, timeout=10)
         return self._handle_response(response)
     
     def get_klines(self, symbol: str, interval: str, limit: int = 100, startTime: int = None, endTime: int = None) -> list:
@@ -93,31 +111,18 @@ class BinanceClient:
     
     def _post(self, path: str, params: dict = None, signed: bool = False) -> dict:
         """POST 请求"""
-        url = f"{self.base_url}{path}"
-        
         if signed:
-            params = build_signed_params(params or {}, self.api_secret)
-            # 签名后，把参数字符串直接作为 data 发送（避免 requests 再次编码）
-            data = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
-            response = self.session.post(url, data=data, timeout=10)
-        else:
-            response = self.session.post(url, data=params, timeout=10)
-        
+            return self._request_signed('POST', path, params)
+        url = f"{self.base_url}{path}"
+        response = self.session.post(url, data=params, timeout=10)
         return self._handle_response(response)
     
     def _delete(self, path: str, params: dict = None, signed: bool = False) -> dict:
         """DELETE 请求"""
-        url = f"{self.base_url}{path}"
-        
         if signed:
-            params = build_signed_params(params or {}, self.api_secret)
-            # 签名后，把参数字符串直接拼接到 URL
-            query_string = '&'.join(f'{k}={v}' for k, v in sorted(params.items()))
-            url = f"{url}?{query_string}"
-            response = self.session.delete(url, timeout=10)
-        else:
-            response = self.session.delete(url, params=params, timeout=10)
-        
+            return self._request_signed('DELETE', path, params)
+        url = f"{self.base_url}{path}"
+        response = self.session.delete(url, params=params, timeout=10)
         return self._handle_response(response)
     
     def _handle_response(self, response: requests.Response) -> dict:
@@ -169,6 +174,12 @@ class BinanceClient:
     def get_account(self) -> dict:
         """获取账户信息"""
         return self._get('/fapi/v2/account', signed=True)
+
+    def get_user_trades(self, symbol: str, limit: int = 10) -> list:
+        """获取最近的成交记录（v1.9.0 新增）"""
+        return self._get('/fapi/v1/userTrades', {
+            'symbol': symbol, 'limit': limit
+        }, signed=True, weight=5)
     
     # ==================== 交易接口（需要签名）====================
     
@@ -359,13 +370,53 @@ class BinanceClient:
     
     def get_listen_key(self) -> str:
         """获取用户数据流 listenKey"""
-        data = self._post('/fapi/v1/listenKey')
+        import time
+        data = self._post(f'/fapi/v1/listenKey?_t={int(time.time()*1000)}')
         return data['listenKey']
     
     def keep_alive_listen_key(self, listen_key: str) -> dict:
         """保活 listenKey"""
         return self._put('/fapi/v1/listenKey', {'listenKey': listen_key})
-    
+
+    def close_listen_key(self, listen_key: str) -> dict:
+        """关闭 listenKey（v1.9.0 新增）"""
+        return self._delete('/fapi/v1/listenKey', {'listenKey': listen_key})
+
+    # ==================== 批量下单（v1.9.0）====================
+
+    def place_batch_orders(self, symbol: str, orders: list) -> list:
+        """批量下单（每批最多 5 笔）"""
+        params = {
+            'batchOrders': json.dumps([{
+                'symbol': o.get('symbol', symbol),
+                'side': o['side'],
+                'type': o['type'],
+                'timeInForce': o.get('timeInForce', 'GTC'),
+                'quantity': o['quantity'],
+                'price': o['price'],
+                'positionSide': o.get('positionSide', ''),
+                'newClientOrderId': o.get('newClientOrderId', ''),
+            } for o in orders])
+        }
+        url = f"{self.base_url}/fapi/v1/batchOrders"
+        params_signed = build_signed_params(params, self.api_secret)
+        data = '&'.join(f'{k}={v}' for k, v in sorted(params_signed.items()))
+        response = self.session.post(url, data=data, timeout=10)
+        return self._handle_response(response)
+
+    def cancel_batch_orders(self, symbol: str, order_ids: list) -> list:
+        """批量撤单（每批最多 5 笔）"""
+        params = {
+            'symbol': symbol,
+            'orderIdList': json.dumps(order_ids)
+        }
+        url = f"{self.base_url}/fapi/v1/batchOrders"
+        params_signed = build_signed_params(params, self.api_secret)
+        query_string = '&'.join(f'{k}={v}' for k, v in sorted(params_signed.items()))
+        url = f"{url}?{query_string}"
+        response = self.session.delete(url, timeout=10)
+        return self._handle_response(response)
+
     def _put(self, path: str, params: dict = None) -> dict:
         """PUT 请求（用于 listenKey 保活）"""
         url = f"{self.base_url}{path}"

@@ -81,6 +81,29 @@ class SettingsUI:
                      'visible_cond': lambda c: c.get('loss_protection', {}).get('enabled', False)},
                 ]
             },
+            {
+                'name': '分批模式',
+                'fields': [
+                    {'key': 'batch_mode.enabled', 'label': '启用分批模式', 'type': 'bool'},
+                    {'key': 'batch_mode.count', 'label': '拆单笔数', 'type': 'int',
+                     'min': 2, 'max': 50, 'step': 1, 'unit': '笔',
+                     'visible_cond': lambda c: c.get('batch_mode', {}).get('enabled', False)},
+                    {'key': 'batch_mode.distribution', 'label': '数量分配', 'type': 'select',
+                     'options': ['equal', 'increase', 'decrease', 'random'],
+                     'labels': ['均分', '递增', '递减', '随机'],
+                     'visible_cond': lambda c: c.get('batch_mode', {}).get('enabled', False)},
+                    {'key': 'batch_mode.ladder_mode', 'label': '价格阶梯', 'type': 'select',
+                     'options': ['fixed', 'percentage', 'atr14'],
+                     'labels': ['固定点数', '百分比', 'ATR14'],
+                     'visible_cond': lambda c: c.get('batch_mode', {}).get('enabled', False)},
+                    {'key': 'batch_mode.ladder_min', 'label': '阶梯最近端', 'type': 'decimal',
+                     'min': 0.01, 'max': 100, 'step': 0.01, 'unit': '',
+                     'visible_cond': lambda c: c.get('batch_mode', {}).get('enabled', False)},
+                    {'key': 'batch_mode.ladder_max', 'label': '阶梯最远端', 'type': 'decimal',
+                     'min': 0.01, 'max': 200, 'step': 0.01, 'unit': '',
+                     'visible_cond': lambda c: c.get('batch_mode', {}).get('enabled', False)},
+                ]
+            },
             {'name': '备份管理', 'fields': []},
             {
                 'name': '系统设置',
@@ -93,6 +116,21 @@ class SettingsUI:
                     {'key': 'stats_period.timezone', 'label': '自然日时区', 'type': 'string',
                      'visible_cond': lambda c: c.get('stats_period', {}).get('mode') == 'calendar_day'},
                     {'key': 'privacy.enabled', 'label': '金额脱敏', 'type': 'bool'},
+                    # v1.10.0：代理配置
+                    {'key': 'proxy.enabled', 'label': '启用代理', 'type': 'bool'},
+                    {'key': 'proxy.host', 'label': '代理地址', 'type': 'string',
+                     'visible_cond': lambda c: c.get('proxy', {}).get('enabled', False)},
+                    {'key': 'proxy.port', 'label': '代理端口', 'type': 'int',
+                     'min': 1, 'max': 65535, 'step': 1,
+                     'visible_cond': lambda c: c.get('proxy', {}).get('enabled', False)},
+                    # v1.10.0：Web 服务配置
+                    {'key': 'web_ui.enabled', 'label': '启用 Web 服务', 'type': 'bool'},
+                    {'key': 'web_ui.port', 'label': 'Web 监听端口', 'type': 'int',
+                     'min': 1024, 'max': 65535, 'step': 1,
+                     'visible_cond': lambda c: c.get('web_ui', {}).get('enabled', False)},
+                    {'key': 'web_ui.token', 'label': 'Web Token', 'type': 'string',
+                     'placeholder': '留空自动生成',
+                     'visible_cond': lambda c: c.get('web_ui', {}).get('enabled', False)},
                 ]
             }
         ]
@@ -116,6 +154,8 @@ class SettingsUI:
             elif self.current_tab == 1:
                 lines.extend(self._render_smart_stop_tab_lines())
             elif self.current_tab == 2:
+                lines.extend(self._render_batch_tab_lines())
+            elif self.current_tab == 3:
                 lines.extend(self._render_backup_tab_lines())
             else:
                 lines.extend(self._render_system_tab_lines())
@@ -303,21 +343,31 @@ class SettingsUI:
         
         return lines
     
+    def _get_visible_smart_stop_fields(self) -> List[Tuple[int, dict]]:
+        """获取智能止损标签页可见字段列表"""
+        config = self.config_manager.get_config()
+        visible = []
+        for i, field in enumerate(self.tabs[1]['fields']):
+            if 'visible_cond' in field:
+                if not field['visible_cond'](config):
+                    continue
+            visible.append((i, field))
+        return visible
+
     def _render_smart_stop_tab_lines(self) -> list:
         """渲染智能止损标签页"""
         config = self.config_manager.get_config()
         lines = []
-        
-        # 获取智能止损的字段
-        smart_stop_fields = self.tabs[1]['fields']
-        
-        for i, field in enumerate(smart_stop_fields):
-            is_selected = (i == self.current_field)
+
+        visible_fields = self._get_visible_smart_stop_fields()
+
+        for visible_idx, (original_idx, field) in enumerate(visible_fields):
+            is_selected = (visible_idx == self.current_field)
             value = self._get_nested_value(config, field['key'])
-            
+
             if field['type'] == 'bool':
                 label = "✓ 是" if value else "○ 否"
-                
+
                 if is_selected:
                     if self.editing:
                         option_strs = [f"[green]●是[/green]" if value else "○是", "●否" if not value else "○否"]
@@ -326,15 +376,10 @@ class SettingsUI:
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][←→切换][/dim]")
                 else:
                     lines.append(f"  {field['label']}: {label}")
-            
+
             elif field['type'] in ['int', 'float']:
-                # 检查可见性条件
-                if 'visible_cond' in field:
-                    if not field['visible_cond'](config):
-                        continue
-                
                 unit = field.get('unit', '')
-                
+
                 if is_selected:
                     if self.editing:
                         lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{self.input_buffer}_[/green]  [dim][数字输入 Enter 确认][/dim]")
@@ -348,9 +393,95 @@ class SettingsUI:
         lines.append("─" * 50)
         lines.append("[dim]移动止损：开仓价到止盈价均分 N 格，第 1 格观察，第 2 格开始触发[/dim]")
         lines.append("[dim]浮亏保护：开仓后 N 分钟检测浮亏，自动下移止盈到开仓价[/dim]")
-        
+        # v1.9.0：分批模式下提示
+        if config.get('batch_mode', {}).get('enabled', False):
+            lines.append("")
+            lines.append("[yellow]⚠ 分批模式已启用，移动止损不适用[/yellow]")
+
         return lines
-    
+
+    def _render_batch_tab_lines(self) -> list:
+        """v1.9.0：渲染分批模式标签页"""
+        config = self.config_manager.get_config()
+        lines = []
+
+        batch_fields = self.tabs[2]['fields']
+
+        # 构建可见字段列表（含 visible_cond）
+        visible = []
+        for i, field in enumerate(batch_fields):
+            if 'visible_cond' in field:
+                if not field['visible_cond'](config):
+                    continue
+            visible.append((i, field))
+
+        for visible_idx, (original_idx, field) in enumerate(visible):
+            is_selected = (visible_idx == self.current_field)
+            value = self._get_nested_value(config, field['key'])
+
+            if field['type'] == 'bool':
+                label = "✓ 是" if value else "○ 否"
+                if is_selected:
+                    if self.editing:
+                        option_strs = [f"[green]●是[/green]" if value else "○是", "●否" if not value else "○否"]
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] {' '.join(option_strs)}  ←→切换  Enter 确认")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][←→切换][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {label}")
+
+            elif field['type'] == 'select':
+                options = field['options']
+                labels = field.get('labels', options)
+                current_idx = options.index(value) if value in options else 0
+                label = labels[current_idx]
+                if is_selected:
+                    if self.editing:
+                        option_strs = []
+                        for j, opt_label in enumerate(labels):
+                            if j == current_idx:
+                                option_strs.append(f"[green]●{opt_label}[/green]")
+                            else:
+                                option_strs.append(f"○{opt_label}")
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] {' '.join(option_strs)}  ←→切换  Enter 确认")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{label}[/green]  [dim][Enter 切换][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {label}")
+
+            elif field['type'] in ['decimal', 'int']:
+                # 动态单位
+                unit = ""
+                if field['key'] in ('batch_mode.ladder_min', 'batch_mode.ladder_max'):
+                    ladder_mode = config.get('batch_mode', {}).get('ladder_mode', 'fixed')
+                    if ladder_mode == 'fixed':
+                        unit = ' 点'
+                    elif ladder_mode == 'percentage':
+                        unit = ' %'
+                    elif ladder_mode == 'atr14':
+                        unit = ' xATR'
+
+                if is_selected:
+                    if self.editing:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{self.input_buffer}_[/green]  [dim][数字输入 Enter 确认][/dim]")
+                    else:
+                        lines.append(f"[bold yellow]→ {field['label']}:[/bold yellow] [green]{value}{unit}[/green]  [dim][←→调整 或 Enter 输入][/dim]")
+                else:
+                    lines.append(f"  {field['label']}: {value}{unit}")
+
+        # 底部说明
+        lines.append("")
+        lines.append("─" * 50)
+        dist = config.get('batch_mode', {}).get('distribution', 'equal')
+        if dist == 'random':
+            lines.append("[dim]随机分配：每笔在均分值的 ±5% 范围内随机浮动[/dim]")
+        if config.get('batch_mode', {}).get('enabled', False):
+            lines.append("[yellow]⚠ 启用后移动止损和订单超时将禁用[/yellow]")
+        else:
+            lines.append("[dim]启用后，方向键开仓自动走分批流程[/dim]")
+
+        return lines
+
     def _render_backup_tab_lines(self) -> list:
         """渲染备份管理标签页"""
         lines = []
@@ -373,13 +504,10 @@ class SettingsUI:
         config = self.config_manager.get_config()
         lines = []
 
-        for i, field in enumerate(self.tabs[3]['fields']):
-            # 检查可见性条件
-            if 'visible_cond' in field:
-                if not field['visible_cond'](config):
-                    continue
+        visible_fields = self._get_visible_system_fields()
+        for visible_idx, (original_idx, field) in enumerate(visible_fields):
 
-            is_selected = (i == self.current_field)
+            is_selected = (visible_idx == self.current_field)
             value = self._get_nested_value(config, field['key'])
 
             if field['type'] == 'bool':
@@ -439,9 +567,19 @@ class SettingsUI:
 
         lines.append("")
         lines.append("─" * 50)
+        # v1.10.0：如果 Web 服务已运行，显示访问地址和 token
+        if self.trader and getattr(self.trader, 'web_server', None):
+            ws = self.trader.web_server
+            ip = ws._get_local_ip()
+            port = ws.port
+            token = ws.token
+            lines.append(f"[bold green]Web 服务运行中[/bold green]")
+            lines.append(f"  地址: http://{ip}:{port}?token={token}")
         lines.append("[dim]音效：开仓成交、平仓等操作时播放提示音[/dim]")
         lines.append("[dim]统计周期：近24小时为滚动窗口，自然日为指定时区的当日0点-24点[/dim]")
         lines.append("[dim]金额脱敏：开启后 TUI 中金额显示为相对于启动时余额的百分比[/dim]")
+        lines.append("[dim]代理配置：修改后需重启生效（WebSocket 连接在启动时读取代理）[/dim]")
+        lines.append("[dim]Web 服务：启用后手机浏览器可访问 K 线看板和交易界面[/dim]")
 
         return lines
 
@@ -452,10 +590,12 @@ class SettingsUI:
         else:
             if self.current_tab == 0:
                 return "[green]S 保存退出[/green]  [yellow]D 重置默认[/yellow]  [blue]B 备份[/blue]  [dim]Esc 放弃修改[/dim]"
-            elif self.current_tab == 3:
+            elif self.current_tab == 4:
                 return "[green]S 保存退出[/green]  [dim]Esc 放弃修改[/dim]"
-            else:
+            elif self.current_tab == 3:
                 return "B 新建备份  R 恢复选中  X 删除  S 返回"
+            else:
+                return "[green]S 保存退出[/green]  [dim]Esc 放弃修改[/dim]"
     
     def _get_nested_value(self, config: dict, key: str) -> Any:
         """获取嵌套配置值"""
@@ -502,6 +642,8 @@ class SettingsUI:
         elif self.current_tab == 1:
             return self._handle_smart_stop_tab_key(key)
         elif self.current_tab == 2:
+            return self._handle_batch_tab_key(key)
+        elif self.current_tab == 3:
             return self._handle_backup_tab_key(key)
         else:
             return self._handle_system_tab_key(key)
@@ -664,15 +806,19 @@ class SettingsUI:
     def _handle_smart_stop_tab_key(self, key: str) -> str:
         """处理智能止损标签页的按键"""
         config = self.config_manager.get_config()
-        smart_stop_fields = self.tabs[1]['fields']
-        
-        max_field = len(smart_stop_fields) - 1
+        visible_fields = self._get_visible_smart_stop_fields()
+
+        if not visible_fields:
+            return 'continue'
+
+        max_field = len(visible_fields) - 1
         if self.current_field > max_field:
             self.current_field = max_field
         if self.current_field < 0:
             self.current_field = 0
-        
-        field = smart_stop_fields[self.current_field]
+
+        visible_idx = self.current_field
+        field_idx, field = visible_fields[visible_idx]
         
         if self.editing:
             if field['type'] == 'bool':
@@ -775,11 +921,169 @@ class SettingsUI:
         
         return 'continue'
 
+    def _get_visible_batch_fields(self) -> List[Tuple[int, dict]]:
+        """v1.9.0：获取分批模式标签页可见字段列表"""
+        config = self.config_manager.get_config()
+        visible = []
+        for i, field in enumerate(self.tabs[2]['fields']):
+            if 'visible_cond' in field:
+                if not field['visible_cond'](config):
+                    continue
+            visible.append((i, field))
+        return visible
+
+    def _handle_batch_tab_key(self, key: str) -> str:
+        """v1.9.0：处理分批模式标签页的按键"""
+        config = self.config_manager.get_config()
+        visible_fields = self._get_visible_batch_fields()
+
+        if not visible_fields:
+            return 'continue'
+
+        max_field = len(visible_fields) - 1
+        if self.current_field > max_field:
+            self.current_field = max_field
+        if self.current_field < 0:
+            self.current_field = 0
+
+        visible_idx = self.current_field
+        field_idx, field = visible_fields[visible_idx]
+
+        if self.editing:
+            if field['type'] == 'bool':
+                if key == 'left' or key == 'right':
+                    current = self._get_nested_value(config, field['key'])
+                    new_value = not (current or False)
+                    self._set_nested_value(config, field['key'], new_value)
+                    self.config_manager.config = config
+                    self.modified = True
+                elif key == 'enter':
+                    self.editing = False
+                    self.input_buffer = ""
+
+            elif field['type'] == 'select':
+                if key == 'left':
+                    options = field['options']
+                    current = self._get_nested_value(config, field['key'])
+                    current_idx = options.index(current) if current in options else 0
+                    new_idx = (current_idx - 1) % len(options)
+                    self._set_nested_value(config, field['key'], options[new_idx])
+                    self.config_manager.config = config
+                    self.modified = True
+                elif key == 'right':
+                    options = field['options']
+                    current = self._get_nested_value(config, field['key'])
+                    current_idx = options.index(current) if current in options else 0
+                    new_idx = (current_idx + 1) % len(options)
+                    self._set_nested_value(config, field['key'], options[new_idx])
+                    self.config_manager.config = config
+                    self.modified = True
+                elif key == 'enter':
+                    self.editing = False
+                    self.input_buffer = ""
+
+            elif field['type'] in ['decimal', 'int']:
+                if key == 'enter':
+                    if self.input_buffer:
+                        try:
+                            if field['type'] == 'int':
+                                new_value = int(self.input_buffer)
+                            else:
+                                new_value = float(self.input_buffer)
+                            new_value = max(field.get('min', 0), min(field.get('max', 999), new_value))
+                            self._set_nested_value(config, field['key'], new_value)
+                            self.config_manager.config = config
+                            self.modified = True
+                        except ValueError:
+                            pass
+                    self.editing = False
+                    self.input_buffer = ""
+                elif key.isdigit() or key == '.':
+                    self.input_buffer += key
+                elif key == '-' and len(self.input_buffer) == 0:
+                    self.input_buffer += key
+                elif key == 'backspace':
+                    if self.input_buffer:
+                        self.input_buffer = self.input_buffer[:-1]
+                elif key == 'left':
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 0.01)
+                        current -= step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
+                elif key == 'right':
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 0.01)
+                        current += step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self._set_nested_value(config, field['key'], current)
+                        self.config_manager.config = config
+                        self.modified = True
+        else:
+            if key == 'up':
+                self.current_field = max(0, self.current_field - 1)
+            elif key == 'down':
+                self.current_field = min(max_field, self.current_field + 1)
+            elif key == 'enter':
+                if field['type'] in ['decimal', 'int']:
+                    current = self._get_nested_value(config, field['key'])
+                    self.input_buffer = str(current) if current is not None else ""
+                else:
+                    self.input_buffer = ""
+                self.editing = True
+                return 'enter_edit'
+            elif key == 'left':
+                if field['type'] == 'bool':
+                    current = self._get_nested_value(config, field['key'])
+                    self._set_nested_value(config, field['key'], not (current or False))
+                    self.modified = True
+                elif field['type'] in ['decimal', 'int']:
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 0.01)
+                        current -= step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self._set_nested_value(config, field['key'], current)
+                        self.modified = True
+                elif field['type'] == 'select':
+                    options = field['options']
+                    current = self._get_nested_value(config, field['key'])
+                    current_idx = options.index(current) if current in options else 0
+                    new_idx = (current_idx - 1) % len(options)
+                    self._set_nested_value(config, field['key'], options[new_idx])
+                    self.modified = True
+            elif key == 'right':
+                if field['type'] == 'bool':
+                    current = self._get_nested_value(config, field['key'])
+                    self._set_nested_value(config, field['key'], not (current or False))
+                    self.modified = True
+                elif field['type'] in ['decimal', 'int']:
+                    current = self._get_nested_value(config, field['key'])
+                    if current is not None:
+                        step = field.get('step', 0.01)
+                        current += step
+                        current = max(field.get('min', 0), min(field.get('max', 999), current))
+                        self._set_nested_value(config, field['key'], current)
+                        self.modified = True
+                elif field['type'] == 'select':
+                    options = field['options']
+                    current = self._get_nested_value(config, field['key'])
+                    current_idx = options.index(current) if current in options else 0
+                    new_idx = (current_idx + 1) % len(options)
+                    self._set_nested_value(config, field['key'], options[new_idx])
+                    self.modified = True
+
+        return 'continue'
+
     def _get_visible_system_fields(self) -> List[Tuple[int, dict]]:
         """获取系统设置标签页可见字段列表"""
         config = self.config_manager.get_config()
         visible = []
-        for i, field in enumerate(self.tabs[3]['fields']):
+        for i, field in enumerate(self.tabs[4]['fields']):
             if 'visible_cond' in field:
                 if not field['visible_cond'](config):
                     continue

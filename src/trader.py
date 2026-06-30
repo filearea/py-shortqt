@@ -25,6 +25,7 @@ class TradeState:
         self.trades = []
         self.last_price = None
         self.last_price_change = None
+        self.last_trade_price = None  # 最新成交价（来自 @trade/@aggTrade）
         self.orderbook = {'bids': [], 'asks': []}
         self.action_log = []
         self.market_log_count = 0

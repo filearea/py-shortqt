@@ -14,17 +14,19 @@ from .liquidity import LiquidityAnalyzer
 from .scorer import ScalpingScorer
 from .tick_tracker import TickTracker
 from .price_range import PriceRangeTracker
+from .taker_ratio import TakerRatio
 
 
 class IndicatorsManager:
     """指标管理器"""
 
     def __init__(self):
-        self.volatility = VolatilityAnalyzer(max_klines=200)
+        self.volatility = VolatilityAnalyzer(max_klines=5760)
         self.liquidity = LiquidityAnalyzer(max_levels=50, price_step=0.5)
         self.tick_tracker = TickTracker(window_seconds=30.0)
         self.price_range = PriceRangeTracker(window_minutes=30.0)
         self.scorer = ScalpingScorer()
+        self.taker_ratio = TakerRatio(window_seconds=300)  # v1.10.0: 5分钟滚动窗口
 
         # 动态参数（由交易系统传入）
         self._tp_points: float = 0.99        # 止盈点数
@@ -60,6 +62,14 @@ class IndicatorsManager:
         ts = time.time()
         self.tick_tracker.add_tick(ts, float(price))
         self.price_range.add_tick(ts, float(price))
+
+    def update_agg_trade(self, trade: dict):
+        """v1.10.0: 更新主动成交比率"""
+        self.taker_ratio.add_trade(trade)
+
+    def get_taker_ratio(self) -> dict:
+        """v1.10.0: 获取主动成交比率"""
+        return self.taker_ratio.get_ratio()
 
     # ─── 动态参数设置 ──────────────────────────────────────────
 

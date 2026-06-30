@@ -6,6 +6,7 @@ v1.5.0 - 新增移动止损 + 浮亏保护
 
 import asyncio
 import time
+from collections import deque
 from pathlib import Path
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime
@@ -62,7 +63,7 @@ class LiveTrader:
         self.sl_order_backup: Optional[Dict] = None
 
         # 历史持仓
-        self.position_history: list = []
+        self.position_history = deque(maxlen=500)  # v1.10.0: 最多保留500条
 
         # BNB 价格缓存（用于手续费换算）
         self._bnb_prices: dict = {}       # {timestamp_sec: Decimal}
@@ -101,17 +102,46 @@ class LiveTrader:
         # v1.5.0 新增：移动止损和浮亏保护管理器
         self.trailing_stop_manager: Optional[TrailingStopManager] = None
         self.loss_protection_manager: Optional[LossProtectionManager] = None
-        
+
+        # v1.9.0 新增：分批建仓模式
+        self.batch_state: Optional[Dict] = None  # 分批状态（None = 非分批模式）
+        self._batch_order_map: Dict[int, int] = {}  # order_id → batch_index
+        self._batch_tp_map: Dict[int, int] = {}  # tp_order_id → batch_index
+
+        # v1.9.0 新增：WS 健康与 REST 兜底
+        self._ws_health = {
+            'user_stream_connected': False,
+            'user_stream_last_msg_ts': 0.0,
+            'user_stream_msg_count': 0,
+            'user_stream_restart_count': 0,
+            'fallback_active': False,
+        }
+        self._rest_fallback_task: Optional[asyncio.Task] = None
+        self._rest_fallback_interval: float = 3.0  # REST 轮询间隔（秒）
+        self._batch_tp_monitor_task: Optional[asyncio.Task] = None  # v1.10.0：全局 TP 批量监控
+
+        self._has_web_clients = False  # v1.10.0：由 Web 服务更新，控制 TUI 音效
         self.running = False
         self.connected = False
 
-    def play_ding(self, count: int = 1):
+    def play_ding(self, count: int = 1, throttle_key: str = None):
         """播放提示音（count 控制响几声）"""
         if not self._ding_path:
             return
-        # 检查音效开关
         if self.config_manager and not self.config_manager.is_sound_enabled():
             return
+        # v1.10.0：如果 Web UI 有客户端连接，TUI 端不播放音效（手机端已播）
+        if getattr(self, '_has_web_clients', False):
+            return
+        # v1.10.0：5秒节流，同类型音效不重复播放
+        if throttle_key:
+            now = time.time()
+            if not hasattr(self, '_sound_throttle'):
+                self._sound_throttle = {}
+            last = self._sound_throttle.get(throttle_key, 0)
+            if now - last < 5:
+                return
+            self._sound_throttle[throttle_key] = now
         try:
             import winsound
             for _ in range(count):
@@ -122,16 +152,16 @@ class LiveTrader:
     def _trigger_sound(self, action: str):
         """根据 action 名称自动触发对应音效"""
         if '开仓成交' in action or '开仓成交（部分）' in action:
-            self.play_ding(1)  # 开仓响一声
+            self.play_ding(1, throttle_key='open')  # 开仓响一声，5秒内不重复
         elif '持仓超时' in action:
-            self.play_ding(4)  # 持仓超时响四声
+            self.play_ding(4)  # 不节流（极少触发）
         elif any(kw in action for kw in [
             '止盈成交', '止损成交', '保底止损成交',
             '提前平仓成交', '移动止损成交',
             '手动平仓成交', '持仓同步成交',
             '浮亏保护成交',
         ]):
-            self.play_ding(3)  # 平仓响三声
+            self.play_ding(3, throttle_key='close')  # 平仓响三声，5秒内不重复
 
     def format_money(self, value: Decimal) -> str:
         """格式化金额用于 TUI 显示（自动应用隐私脱敏）
@@ -285,7 +315,7 @@ class LiveTrader:
                 self.listen_key,
                 api_client=self.api,
                 testnet=self.testnet,
-                log_func=lambda msg: self.log_manager.system.debug(msg) if self.log_manager else None
+                log_func=lambda msg: self.log_manager.system.info(msg) if self.log_manager else None
             )
             self.user_stream_ws.add_order_callback(self._on_order_update)
             self.user_stream_ws.add_account_callback(self._on_account_update)
@@ -452,11 +482,22 @@ class LiveTrader:
         order_status = order_data.get('X')
         order_id = order_data.get('i')
         order_type = order_data.get('ot')
-        
+
         # 记录详细订单信息
         self.log_manager.system.debug(f"[订单更新] 状态={order_status}, 类型={order_type}, ID={order_id}, 方向={order_data.get('S', '?')}") if self.log_manager else None
         self.log_manager.system.debug(f"  成交数量：{order_data.get('z', 0)}, 成交均价：{order_data.get('ap', 0)}") if self.log_manager else None
         self.log_manager.system.debug(f"  手续费：{order_data.get('fc', 0)} {order_data.get('fs', 'USDC')}") if self.log_manager else None
+
+        # v1.9.0：分批模式事件路由
+        if self.batch_state and self.batch_state.get('enabled') and not self.batch_state.get('round_closed'):
+            if order_status in ('FILLED', 'EXPIRED', 'CANCELED', 'REJECTED'):
+                self.log_manager.system.info(
+                    f"[分批路由] 状态={order_status} ID={order_id} "
+                    f"方向={order_data.get('S','?')} 成交价={order_data.get('ap','?')} "
+                    f"成交量={order_data.get('z','?')}"
+                ) if self.log_manager else None
+            self._route_batch_order_update(order_data, order_status, order_id)
+            return
 
         # 新版 TradingLogger — 记录订单生命周期
         if self.log_manager:
@@ -810,11 +851,54 @@ class LiveTrader:
         # 任何订单成交（全部或部分）→ 触发持仓同步
         if order_status in ['FILLED', 'PARTIALLY_FILLED']:
             asyncio.create_task(self._sync_position())
-    
+
+    def _route_batch_order_update(self, order_data: dict, order_status: str, order_id: int):
+        """v1.9.0：分批模式订单事件路由"""
+        if order_status == 'FILLED':
+            if order_id in self._batch_order_map:
+                self._on_batch_event('BATCH_FILLED', order_data, 'WS')
+            elif order_id in self._batch_tp_map:
+                self._on_batch_event('TP_FILLED', order_data, 'WS')
+            elif order_id == self.batch_state.get('sl_order_id'):
+                self._on_batch_event('SL_FILLED', order_data, 'WS')
+            elif order_id == self.batch_state.get('sm_order_id'):
+                self._on_batch_event('SM_FILLED', order_data, 'WS')
+            elif order_id == self.batch_state.get('early_close_order_id'):
+                self._handle_batch_early_close_fill(order_data)
+        elif order_status in ('EXPIRED', 'CANCELED', 'REJECTED'):
+            if order_id in self._batch_order_map:
+                self._on_batch_event('ORDER_EXPIRED', order_data, 'WS')
+            elif order_id in self._batch_tp_map:
+                # 止盈单被取消 → 从 map 中移除
+                self._batch_tp_map.pop(order_id, None)
+
+    def _handle_batch_early_close_fill(self, order_data: dict):
+        """v1.9.0：分批模式提前平仓单成交"""
+        bs = self.batch_state
+        if not bs or bs.get('round_closed'):
+            return
+        fill_price = Decimal(str(order_data.get('ap', '0')))
+        fill_qty = Decimal(str(order_data.get('z', '0')))
+        commission = Decimal(str(order_data.get('fc', '0')))
+        side = bs['side']
+        avg_entry = bs['weighted_avg_entry']
+
+        if side == 'LONG':
+            pnl = (fill_price - avg_entry) * fill_qty - commission
+        else:
+            pnl = (avg_entry - fill_price) * fill_qty - commission
+
+        self._add_action("提前平仓成交", f"{side} @ {fill_price} | PnL: {pnl:+.6f} USDT")
+        self.sync_account()
+        asyncio.create_task(self._cleanup_batch_state(reason="提前平仓"))
+
     async def _sync_position(self):
         """查询并同步实际持仓状态"""
+        # v1.9.0：分批模式下跳过，避免覆盖 batch_state
+        if self.batch_state and self.batch_state.get('enabled'):
+            return
         await asyncio.sleep(0.3)  # 等待 0.3 秒让币安更新
-        
+
         try:
             positions = self.api.get_position(self.symbol)
             
@@ -948,6 +1032,11 @@ class LiveTrader:
         self.action_log.append({'time': datetime.now(), 'action': action, 'details': details})
         if len(self.action_log) > 20:
             self.action_log = self.action_log[-20:]
+
+        # v1.10.0: 推送事件到 Web UI（Toast + 日志）
+        ws = getattr(self, 'web_server', None)
+        if ws:
+            ws.push_event(action, details)
         
         # 写入文件日志
         if self.logger:
@@ -1071,7 +1160,8 @@ class LiveTrader:
         try:
             await self.place_tp_sl_orders()
         except Exception as e:
-            self.log_manager.system.debug(f"\n[止盈止损异常] {e}") if self.log_manager else None
+            import traceback
+            self.log_manager.system.info(f"[止盈止损异常] {e}\n{traceback.format_exc()}") if self.log_manager else None
             self._add_action("止盈止损异常", str(e))
     
     async def place_tp_sl_orders(self):
@@ -1185,7 +1275,7 @@ class LiveTrader:
                 # QUEUE 模式下，保存实际挂单价格（从订单响应中获取）
                 actual_price = Decimal(tp_order.get('price', '0'))
                 self._add_action("止盈单已下", f"{tp_side} QUEUE @ {actual_price:.2f}")
-                self.log_manager.system.debug(f"✓ 止盈单已下：{tp_side} QUEUE @ {actual_price:.2f}（目标价 {tp_price} 会被吃）") if self.log_manager else None
+                self.log_manager.system.info(f"✓ 止盈单已下：{tp_side} QUEUE @ {actual_price:.2f}（目标价 {tp_price} 会被吃）") if self.log_manager else None
             else:
                 # 不会立即成交，用目标价
                 tp_order = self.api.place_order(
@@ -1198,7 +1288,7 @@ class LiveTrader:
                     positionSide=side
                 )
                 self._add_action("止盈单已下", f"{tp_side} @ {tp_price}")
-                self.log_manager.system.debug(f"✓ 止盈单已下：{tp_side} @ {tp_price}") if self.log_manager else None
+                self.log_manager.system.info(f"✓ 止盈单已下：{tp_side} @ {tp_price}") if self.log_manager else None
                 actual_price = tp_price
             
             self.tp_order = {
@@ -1221,7 +1311,7 @@ class LiveTrader:
                     sl_trigger_display = sl_algo_params.get('triggerPrice', sl_trigger)
                     self.log_manager.system.debug(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}") if self.log_manager else None
                 except Exception as e:
-                    self.log_manager.system.debug(f"  ✗ 止损单失败：{e}") if self.log_manager else None
+                    self.log_manager.system.info(f"  ✗ 止损单失败：{e}") if self.log_manager else None
                     sl_trigger_display = sl_trigger
                     actual_price = Decimal('0')
             else:
@@ -1249,10 +1339,10 @@ class LiveTrader:
                     sl_trigger_display = sl_trigger
                     self.log_manager.system.debug(f"  ✓ 止损单已下：algoId={sl_order.get('algoId')}") if self.log_manager else None
                 except Exception as e:
-                    self.log_manager.system.debug(f"  ✗ 止损单失败：{e}") if self.log_manager else None
+                    self.log_manager.system.info(f"  ✗ 止损单失败：{e}") if self.log_manager else None
                     sl_trigger_display = sl_trigger
                     actual_price = Decimal('0')
-            
+
             # 只有止损单成功才记录
             if sl_order:
                 # 确定止损单方向
@@ -1300,10 +1390,8 @@ class LiveTrader:
             # print(f"  保底止损参数：{sm_params}")
             
             try:
-                # print(f"  调用 place_algo_order...")
                 stop_order = self.api.place_algo_order(**sm_params)
-                # print(f"  API 返回：{stop_order}")
-                self.log_manager.system.debug(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}") if self.log_manager else None
+                self.log_manager.system.info(f"  ✓ 保底止损已下：algoId={stop_order.get('algoId')}, trigger={sm_price}") if self.log_manager else None
                 
                 self.stop_market_order = {
                     'algoId': stop_order['algoId'],
@@ -1317,7 +1405,7 @@ class LiveTrader:
                 self._add_action("保底止损已下", f"强平价={liq_display}, 触发={sm_price:.2f}")
                 self.log_manager.system.debug(f"✓ 保底止损已下：强平价={liq_display}, 触发={sm_price}, algoId={stop_order['algoId']}") if self.log_manager else None
             except Exception as e:
-                self.log_manager.system.debug(f"  ✗ 保底止损失败：{type(e).__name__}: {e}") if self.log_manager else None
+                self.log_manager.system.info(f"  ✗ 保底止损失败：{type(e).__name__}: {e}") if self.log_manager else None
             
             self.log_manager.system.debug("\n✓ 止盈止损单全部下达完成") if self.log_manager else None
 
@@ -1445,17 +1533,88 @@ class LiveTrader:
         self.log_manager.system.debug("✗ 止盈单重试失败") if self.log_manager else None
         self._add_action("止盈失败", "Post-Only 重试超过最大次数")
         return False
-    
+
+    async def _open_position_batch(self, side: str) -> bool:
+        """v1.9.0：分批模式开仓/补单入口"""
+        if self.last_price is None:
+            if self.log_manager:
+                self.log_manager.system.debug("✗ 暂无价格数据")
+            return False
+
+        # 已有持仓 → 补单
+        if self.batch_state and self.batch_state.get('enabled') and not self.batch_state.get('round_closed'):
+            # 检查方向
+            if self.batch_state['side'] != side:
+                if self.log_manager:
+                    self.log_manager.system.debug(f"✗ 方向不匹配：当前 {self.batch_state['side']}，拒绝 {side}")
+                return False
+            result = await self._supplement_batch_orders()
+            return result['success'] > 0
+
+        # 全新开仓
+        MIN_NOTIONAL = Decimal('20')
+        contract_value = self.available_balance * self.actual_leverage
+        total_size = (contract_value / self.last_price).quantize(Decimal('0.001'), rounding=ROUND_DOWN)
+        notional_value = total_size * self.last_price
+
+        if total_size <= 0 or notional_value < MIN_NOTIONAL:
+            if self.log_manager:
+                self.log_manager.system.debug(f"✗ 名义价值不足（最小 20 USDC，计算值 {notional_value:.2f} USDC）")
+            return False
+
+        self._init_batch_state(side)
+        bs = self.batch_state
+        bs['target_notional'] = notional_value
+
+        # 计算阶梯价格
+        base_price = self.last_price
+        prices = self._calculate_batch_prices(base_price)
+        sizes = self._calculate_batch_sizes(total_size)
+
+        # 逐笔检查最小名义价值（需求 2.5：每笔 ≥ 20 USDC）
+        for i in range(bs['total_count']):
+            per_notional = sizes[i] * base_price
+            if per_notional < MIN_NOTIONAL:
+                if self.log_manager:
+                    self.log_manager.system.debug(
+                        f"✗ 批次 {i+1} 名义价值不足（{per_notional:.2f} USDC < 20 USDC），"
+                        f"请提高杠杆或增加余额"
+                    )
+                return False
+
+        # 构建批次列表
+        for i in range(bs['total_count']):
+            bs['batches'].append({
+                'index': i,
+                'order_id': None,
+                'client_order_id': '',
+                'price': prices[i],
+                'size': sizes[i],
+                'status': 'pending',
+                'fill_time': None,
+                'tp_order_id': None,
+                'tp_price': None,
+                'gtx_rejected': False,
+            })
+
+        self._add_action("分批开仓", f"{side} {bs['total_count']} 笔，总量 {total_size} ETH")
+        result = await self._place_batch_orders()
+        return result['success'] > 0
+
     async def open_position(self, side: str) -> bool:
-        """开仓"""
+        """开仓（v1.9.0：分批模式分流）"""
+        # v1.9.0：分批模式
+        if self.config_manager and self.config_manager.is_batch_mode_enabled():
+            return await self._open_position_batch(side)
+
         if self.position is not None or self.pending_order is not None:
             self.log_manager.system.debug("✗ 已有持仓或挂单") if self.log_manager else None
             return False
-        
+
         if self.last_price is None:
             self.log_manager.system.debug("✗ 暂无价格数据") if self.log_manager else None
             return False
-        
+
         try:
             # 币安要求：最小名义价值 20 USDC
             MIN_NOTIONAL = Decimal('20')
@@ -1523,8 +1682,17 @@ class LiveTrader:
             self._add_action("开仓错误", str(e))
             return False
     
-    def cancel_open_order(self) -> bool:
-        """撤销开仓挂单"""
+    async def cancel_open_order(self) -> bool:
+        """撤销开仓挂单（v1.9.0：分批模式分流）"""
+        # v1.9.0：分批模式
+        if self.batch_state and self.batch_state.get('enabled') and not self.batch_state.get('round_closed'):
+            bs = self.batch_state
+            if bs.get('state') == 'early_close' and bs.get('early_close_order_id'):
+                return await self._cancel_batch_early_close()
+            # 否则撤销所有未成交批次
+            await self._cancel_all_pending_batches()
+            return True
+
         if not self.pending_order:
             return False
         try:
@@ -1539,11 +1707,15 @@ class LiveTrader:
             return False
     
     async def close_position_market(self) -> bool:
-        """市价全平仓位（Z 键）"""
+        """市价全平仓位（Z 键，v1.9.0：分批模式分流）"""
+        # v1.9.0：分批模式
+        if self.batch_state and self.batch_state.get('enabled') and not self.batch_state.get('round_closed'):
+            return await self._close_position_market_batch()
+
         if not self.position:
             self.log_manager.system.debug("✗ 无持仓，无法平仓") if self.log_manager else None
             return False
-        
+
         side = self.position['side']
         size = self.position['size']
         entry_price = self.position['entry_price']
@@ -1650,15 +1822,20 @@ class LiveTrader:
             return False
     
     async def close_position_early(self, retry_count: int = 0) -> bool:
-        """提前平仓（带重试）"""
+        """提前平仓（带重试，v1.9.0：分批模式分流）"""
+        # v1.9.0：分批模式
+        if self.batch_state and self.batch_state.get('enabled') and not self.batch_state.get('round_closed'):
+            await self._batch_early_close()
+            return True
+
         if not self.position:
             self.log_manager.system.debug("✗ 无持仓") if self.log_manager else None
             return False
-        
+
         if self.early_close_order:
             self.log_manager.system.debug("✗ 已有提前平仓挂单") if self.log_manager else None
             return False
-        
+
         try:
             self.tp_order_backup = self.tp_order
             self.sl_order_backup = self.sl_order
@@ -1729,7 +1906,11 @@ class LiveTrader:
             return False
     
     def cancel_early_close(self) -> bool:
-        """撤销提前平仓，恢复原止盈单"""
+        """撤销提前平仓，恢复原止盈单（v1.9.0：分批模式分流）"""
+        # v1.9.0：分批模式
+        if self.batch_state and self.batch_state.get('enabled'):
+            return self._cancel_batch_early_close()
+
         if not self.early_close_order:
             return False
         try:
@@ -1778,13 +1959,25 @@ class LiveTrader:
             return False
     
     def update_price(self, price: Decimal):
-        """更新最新价格"""
+        """更新最新价格（v1.9.0：含分批模式浮盈追踪）"""
         self.last_price = price
         # 持仓期间追踪最大浮盈/浮亏
-        if self.position and self.last_price:
+        entry = None
+        size = None
+        side = None
+
+        if self.batch_state and self.batch_state.get('enabled') and not self.batch_state.get('round_closed'):
+            bs = self.batch_state
+            entry = bs.get('weighted_avg_entry')
+            size = bs.get('total_filled_size')
+            side = bs.get('side')
+        elif self.position:
             entry = self.position['entry_price']
             size = self.position['size']
-            if self.position['side'] == 'LONG':
+            side = self.position['side']
+
+        if entry and size and side and self.last_price:
+            if side == 'LONG':
                 pnl = (price - entry) * size
             else:
                 pnl = (entry - price) * size
@@ -1804,8 +1997,57 @@ class LiveTrader:
 
 
     def _rebuild_key_prices(self):
-        """根据当前所有挂单重建关键价格表"""
+        """根据当前所有挂单重建关键价格表（v1.9.0：含分批模式）"""
         self._key_prices = []
+
+        # v1.9.0：分批模式
+        if self.batch_state and self.batch_state.get('enabled') and not self.batch_state.get('round_closed'):
+            bs = self.batch_state
+            side = bs['side']
+            for b in bs.get('batches', []):
+                if b['status'] == 'pending' and b.get('order_id'):
+                    self._key_prices.append({
+                        'type': 'BATCH_OPEN',
+                        'price': b['price'],
+                        'order_id': b['order_id'],
+                        'order_category': 'LIMIT',
+                    })
+                elif b['status'] == 'tp_placed' and b.get('tp_price') and b.get('tp_order_id'):
+                    self._key_prices.append({
+                        'type': 'BATCH_TP',
+                        'price': b['tp_price'],
+                        'order_id': b['tp_order_id'],
+                        'order_category': 'LIMIT',
+                    })
+            if bs.get('sl_order_id'):
+                sl_price = Decimal(str(bs.get('sl_price', 0)))
+                if sl_price > 0:
+                    self._key_prices.append({
+                        'type': 'BATCH_SL',
+                        'price': sl_price,
+                        'order_id': bs['sl_order_id'],
+                        'order_category': 'ALGO',
+                    })
+            if bs.get('sm_order_id'):
+                sm_price = Decimal(str(bs.get('sm_price', 0)))
+                if sm_price > 0:
+                    self._key_prices.append({
+                        'type': 'BATCH_SM',
+                        'price': sm_price,
+                        'order_id': bs['sm_order_id'],
+                        'order_category': 'ALGO',
+                    })
+            if bs.get('early_close_order_id'):
+                ec_price = Decimal(str(bs.get('early_close_price', 0)))
+                if ec_price > 0:
+                    self._key_prices.append({
+                        'type': 'BATCH_EARLY_CLOSE',
+                        'price': ec_price,
+                        'order_id': bs['early_close_order_id'],
+                        'order_category': 'LIMIT',
+                    })
+            return
+
         if not self.position:
             return
 
@@ -1888,8 +2130,10 @@ class LiveTrader:
                     })
 
     async def _check_key_prices(self):
-        """每帧调用：订单簿 vs 关键价格比对，穿透时 REST 确认平仓"""
-        if not self.position or not self._key_prices:
+        """每帧调用：订单簿 vs 关键价格比对，穿透时 REST 确认平仓（v1.9.0：含分批模式）"""
+        has_position = self.position is not None
+        has_batch = self.batch_state and self.batch_state.get('enabled') and not self.batch_state.get('round_closed')
+        if (not has_position and not has_batch) or not self._key_prices:
             return
 
         orderbook = self.orderbook
@@ -1898,7 +2142,7 @@ class LiveTrader:
 
         best_bid = orderbook['bids'][0][0]
         best_ask = orderbook['asks'][0][0]
-        side = self.position['side']
+        side = self.position['side'] if has_position else (self.batch_state['side'] if has_batch else '')
 
         for kp in self._key_prices:
             oid = kp['order_id']
@@ -1911,17 +2155,17 @@ class LiveTrader:
 
             # 根据持仓方向和订单类型判断是否穿透
             if side == 'LONG':
-                if kp_type in ('TP', 'EARLY_CLOSE'):
+                if kp_type in ('TP', 'EARLY_CLOSE', 'BATCH_TP', 'BATCH_EARLY_CLOSE', 'BATCH_OPEN'):
                     if best_bid >= price:
                         triggered = True
-                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION'):
+                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION', 'BATCH_SL', 'BATCH_SM'):
                     if best_bid <= price:
                         triggered = True
             else:  # SHORT
-                if kp_type in ('TP', 'EARLY_CLOSE'):
+                if kp_type in ('TP', 'EARLY_CLOSE', 'BATCH_TP', 'BATCH_EARLY_CLOSE', 'BATCH_OPEN'):
                     if best_ask <= price:
                         triggered = True
-                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION'):
+                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION', 'BATCH_SL', 'BATCH_SM'):
                     if best_ask >= price:
                         triggered = True
 
@@ -1962,16 +2206,27 @@ class LiveTrader:
                 self._key_price_triggered.discard(oid)
 
     async def _on_key_price_close(self, trigger_type: str):
-        """关键价格触发平仓后的处理：算 PnL、日志、清理挂单"""
-        entry_price = self.position['entry_price']
-        size = self.position['size']
-        side = self.position['side']
+        """关键价格触发平仓后的处理：算 PnL、日志、清理挂单（v1.9.0：含分批模式）"""
+        # v1.9.0：分批模式
+        if self.batch_state and self.batch_state.get('enabled'):
+            entry_price = self.batch_state.get('weighted_avg_entry', Decimal('0'))
+            size = self.batch_state.get('total_filled_size', Decimal('0'))
+            side = self.batch_state.get('side', '')
+            pos_time = None
+            for b in self.batch_state.get('batches', []):
+                if b.get('fill_time'):
+                    pos_time = b['fill_time']
+                    break
+        else:
+            entry_price = self.position['entry_price']
+            size = self.position['size']
+            side = self.position['side']
+            pos_time = self.position.get('time') if self.position else None
 
         # 查最近成交获取平仓价和手续费
         exit_price = Decimal('0')
         commission = Decimal('0')
         try:
-            pos_time = self.position.get('time')
             start_ms = int(pos_time.timestamp() * 1000) - 2000 if pos_time else None
             fills = self.api.get_fills(self.symbol, limit=5, startTime=start_ms)
             total_fill_qty = Decimal('0')
@@ -2023,6 +2278,11 @@ class LiveTrader:
             'EARLY_CLOSE': '提前平仓成交',
             'TRAILING_STOP': '移动止损成交',
             'LOSS_PROTECTION': '浮亏保护成交',
+            'BATCH_TP': '止盈成交',
+            'BATCH_SL': '止损成交',
+            'BATCH_SM': '保底止损成交',
+            'BATCH_EARLY_CLOSE': '提前平仓成交',
+            'BATCH_OPEN': '平仓成交',
         }.get(trigger_type, '平仓成交')
 
         self._add_action(action_name,
@@ -2039,6 +2299,8 @@ class LiveTrader:
             })
 
         # 清空所有状态
+        if self.batch_state:
+            asyncio.create_task(self._cleanup_batch_state(reason=f"关键价格_{trigger_type}"))
         self.position = None
         self.tp_order = None
         self.sl_order = None
@@ -2165,6 +2427,67 @@ class LiveTrader:
             self._add_action("成交检测失败", str(e))
             return False
 
+    async def check_batch_orders_filled(self) -> bool:
+        """v1.10.0：分批挂单穿透检测 — 订单簿价格穿越即 REST 确认成交
+
+        与 check_pending_order_filled 逻辑一致，每帧调用，零权重消耗 unless 穿透。
+        """
+        bs = self.batch_state
+        if not bs or not bs.get('enabled') or bs.get('round_closed'):
+            return False
+        if not self.orderbook or (not self.orderbook.get('bids') and not self.orderbook.get('asks')):
+            return False
+
+        if not hasattr(self, '_batch_fill_check_ts'):
+            self._batch_fill_check_ts = {}
+
+        side = bs.get('side', 'LONG')
+        best_ask = self.orderbook['asks'][0][0] if self.orderbook.get('asks') else None
+        best_bid = self.orderbook['bids'][0][0] if self.orderbook.get('bids') else None
+        now = time.time()
+        any_filled = False
+
+        for b in bs.get('batches', []):
+            if b.get('status') != 'pending':
+                continue
+            order_id = b.get('order_id')
+            if not order_id:
+                continue
+            order_price = b.get('price')
+
+            # 价格穿透检测
+            price_penetrated = False
+            if side == 'LONG':
+                # 多单挂买：卖一价 <= 挂单价 → 穿透
+                if best_ask is not None and best_ask <= order_price:
+                    price_penetrated = True
+            else:
+                # 空单挂卖：买一价 >= 挂单价 → 穿透
+                if best_bid is not None and best_bid >= order_price:
+                    price_penetrated = True
+
+            # 节流：同一订单穿透后至少等 1 秒再查
+            last_check = self._batch_fill_check_ts.get(order_id, 0)
+            if not price_penetrated or (now - last_check) < 1.0:
+                continue
+
+            self._batch_fill_check_ts[order_id] = now
+
+            try:
+                order_status = await asyncio.to_thread(
+                    self.api.get_order, self.symbol, order_id
+                )
+                status = order_status.get('status', '')
+                if status == 'FILLED':
+                    self._handle_batch_fill(order_status, source='PRICE')
+                    any_filled = True
+                elif status in ('CANCELED', 'EXPIRED', 'REJECTED'):
+                    self._on_batch_event('ORDER_EXPIRED', order_status, source='PRICE')
+            except Exception:
+                pass
+
+        return any_filled
+
     def _on_pending_filled(self, side: str, entry_price: Decimal,
                            filled_qty: Decimal, commission: Decimal,
                            commission_asset: str):
@@ -2244,10 +2567,23 @@ class LiveTrader:
             except Exception as e:
                 self.log_manager.system.debug(f"[BNB费率] 增量拉取失败：{e}") if self.log_manager else None
 
-    async def _refresh_history_delayed(self, delay: float = 5.0):
-        """延迟刷新历史持仓（等 Binance 同步 trade 记录）"""
+    async def _refresh_history_delayed(self, delay: float = 6.0):
+        """延迟刷新历史持仓（等 Binance 同步 trade 记录），失败时最多重试 5 次，总窗口约 30s"""
         await asyncio.sleep(delay)
-        await self.fetch_position_history()
+        success = await self.fetch_position_history()
+        retries = 0
+        while not success and retries < 5:
+            retries += 1
+            await asyncio.sleep(4.0)
+            success = await self.fetch_position_history()
+        if success:
+            if self.log_manager:
+                self.log_manager.system.debug(f'[历史刷新] 成功，重试 {retries} 次')
+            ws = getattr(self, 'web_server', None)
+            if ws:
+                ws.push_event('history_updated', 'position_history_refreshed')
+        elif self.log_manager:
+            self.log_manager.system.debug('[历史刷新] 失败，已达最大重试次数')
 
     async def fetch_position_history(self, days: int = 7):
         """从币安拉取成交记录，配对生成历史持仓（API 调用在线程池执行）"""
@@ -2274,7 +2610,7 @@ class LiveTrader:
                     break
 
             if not all_fills:
-                return
+                return False
 
             # 2. 拉取资费记录（线程池）
             funding = await asyncio.to_thread(
@@ -2301,13 +2637,20 @@ class LiveTrader:
                 STATUS_ORDER.get(x.get('status', '完全平仓'), 2),
                 -x.get('last_action_time_ms', 0),
             ))
-            self.position_history = history[:10]
+            self.position_history.clear()
+            self.position_history.extend(history[:500])  # v1.10.0: deque maxlen=500
 
             # 7. 更新 24h 交易统计（复用已拉取的 fills，避免重复 API 调用）
             self._update_trade_stats_24h(all_fills)
+            return True
 
         except Exception as e:
-            self.log_manager.system.debug(f"[持仓历史] 拉取失败：{e}") if self.log_manager else None
+            if self.log_manager:
+                self.log_manager.system.error(f"[持仓历史] 拉取失败：{e}", exc_info=True)
+            else:
+                import traceback
+                traceback.print_exc()
+            return False
 
     def _get_bnb_price_for_time(self, trade_time_ms: int) -> Decimal:
         """根据成交时间戳获取 BNB 价格（缓存K线优先，失败回退实时价）"""
@@ -2402,6 +2745,7 @@ class LiveTrader:
                         pos_funding = self._calc_funding(funding, current['open_time_ms'], current['close_time_ms'])
                         pnl = current['realized_pnl_sum'] - current['total_fee'] + pos_funding
 
+                        duration_sec = (current['close_time_ms'] - current['open_time_ms']) / 1000
                         positions.append({
                             'side': side,
                             'status': '完全平仓',
@@ -2415,6 +2759,7 @@ class LiveTrader:
                             'open_time': current['open_time'],
                             'close_time': current['close_time'],
                             'last_action_time_ms': current['close_time_ms'],
+                            'duration': duration_sec,
                         })
                         current = None
                     # 部分平仓：不在循环中生成记录，等遍历结束后统一生成
@@ -2440,6 +2785,8 @@ class LiveTrader:
                 close_avg = None
                 close_time = None
 
+            end_ms = current['close_time_ms'] if current['close_time_ms'] else now_ms
+            duration_sec = (end_ms - current['open_time_ms']) / 1000
             positions.append({
                 'side': side,
                 'status': status,
@@ -2453,6 +2800,7 @@ class LiveTrader:
                 'open_time': current['open_time'],
                 'close_time': close_time,
                 'last_action_time_ms': current['close_time_ms'] if current['close_time_ms'] else current['open_time_ms'],
+                'duration': duration_sec,
             })
 
         return positions
@@ -2503,8 +2851,8 @@ class LiveTrader:
             self.trade_stats_24h = {
                 'open_count': 0, 'close_count': 0, 'win_count': 0,
                 'win_rate': 0, 'total_volume': Decimal('0'),
-                'total_pnl': Decimal('0'), 'avg_pnl_ratio': 0,
-                'avg_hold_time': '--', 'expected_value': 0
+                'total_pnl': Decimal('0'), 'total_fee': Decimal('0'),
+                'avg_pnl_ratio': 0, 'avg_hold_time': '--', 'expected_value': 0
             }
             return
 
@@ -2518,6 +2866,7 @@ class LiveTrader:
         completed_rounds = 0
         total_volume = Decimal('0')
         total_pnl = Decimal('0')
+        total_fee = Decimal('0')
         win_count = 0
         loss_count = 0
         total_win_usd = Decimal('0')  # 累计盈利金额
@@ -2566,6 +2915,7 @@ class LiveTrader:
                                 completed_rounds += 1
                                 pnl = current_open['realized_pnl'] - current_open['total_fee']
                                 total_pnl += pnl
+                                total_fee += current_open['total_fee']
                                 total_volume += current_open['opened_qty']
                                 if pnl > 0:
                                     win_count += 1
@@ -2584,7 +2934,7 @@ class LiveTrader:
         if avg_loss > 0 and avg_win > 0:
             avg_pnl_ratio = float(avg_win / avg_loss)
         elif win_count > 0:
-            avg_pnl_ratio = float('inf')
+            avg_pnl_ratio = float('inf')  # 全胜无亏损 — 序列化层会转为 null，前端/TUI 显示 "∞"
         elif loss_count > 0:
             avg_pnl_ratio = 0
         else:
@@ -2618,16 +2968,1231 @@ class LiveTrader:
             'win_rate': win_rate,
             'total_volume': total_volume,
             'total_pnl': total_pnl,
+            'total_fee': total_fee,
             'avg_pnl_ratio': avg_pnl_ratio,
             'avg_hold_time': avg_hold_str,
             'expected_value': expected_value,
         }
 
+    # ==================== v1.9.0: WS 健康 + REST 兜底 ====================
+
+    def _update_ws_health(self):
+        """同步 WS 健康状态（每帧调用）"""
+        if self.user_stream_ws:
+            self._ws_health['user_stream_connected'] = self.user_stream_ws.connected
+            self._ws_health['user_stream_last_msg_ts'] = self.user_stream_ws.last_msg_ts
+            self._ws_health['user_stream_msg_count'] = self.user_stream_ws.msg_count
+            self._ws_health['user_stream_restart_count'] = self.user_stream_ws.restart_count
+
+        # 超过 60s 未收到消息 → 激活 REST 兜底
+        ref_ts = self._ws_health.get('user_stream_last_msg_ts', 0)
+        if ref_ts == 0 and self.user_stream_ws:
+            ref_ts = self.user_stream_ws.last_msg_or_connect_ts
+        if ref_ts > 0:
+            age = time.time() - ref_ts
+            if age > 60 and not self._ws_health['fallback_active']:
+                self._ws_health['fallback_active'] = True
+                self._add_action("WebSocket 异常，已切换 REST 轮询模式", "")
+                asyncio.create_task(self._start_rest_fallback())
+        elif self._ws_health['fallback_active']:
+            # WS 断开 + 兜底活跃 → 保持兜底运行
+            pass
+        # 只有真正收到消息才关闭兜底（msg_count 增长说明消息能通）
+        prev_fb_active = self._ws_health.get('_prev_fallback_active', False)
+        if prev_fb_active and self._ws_health['fallback_active']:
+            if self._ws_health.get('user_stream_msg_count', 0) > 0:
+                self._ws_health['fallback_active'] = False
+                if self._rest_fallback_task:
+                    self._rest_fallback_task.cancel()
+                self._add_action("WebSocket 已恢复", "")
+        self._ws_health['_prev_fallback_active'] = self._ws_health['fallback_active']
+
+    @property
+    def ws_status_indicator(self) -> str:
+        """TUI WS 状态指示灯"""
+        if not self._ws_health['user_stream_connected']:
+            return 'red'      # 🔴 WS 断开
+        age = time.time() - self._ws_health['user_stream_last_msg_ts']
+        if age > 120:
+            return 'red'      # 🔴 超时
+        elif age > 60:
+            return 'yellow'   # 🟡 空闲
+        return 'green'        # 🟢 正常
+
+    def _on_batch_event(self, event_type: str, payload: dict, source: str = 'WS'):
+        """v1.9.0：统一事件入口（幂等去重）
+
+        event_type: 'BATCH_FILLED' | 'TP_FILLED' | 'SL_FILLED' | 'SM_FILLED' |
+                    'ORDER_EXPIRED' | 'ORDER_CANCELED' | 'BALANCE_CHANGE'
+        source: 'WS' | 'REST_POLL'
+        """
+        if not self.batch_state or not self.batch_state.get('enabled'):
+            return
+
+        order_id = payload.get('order_id') or payload.get('orderId') or payload.get('i')
+        order_status = payload.get('status') or payload.get('X', '')
+
+        # 幂等去重：同一 orderId 的终态只处理一次
+        if order_id and event_type in ('BATCH_FILLED', 'TP_FILLED', 'SL_FILLED', 'SM_FILLED', 'ORDER_EXPIRED'):
+            for batch in self.batch_state.get('batches', []):
+                if batch.get('order_id') == order_id and batch.get('status') in ('tp_closed', 'closed', 'failed'):
+                    return  # 已处理过
+                if batch.get('tp_order_id') == order_id and batch.get('status') == 'tp_closed':
+                    return  # 止盈单已处理过
+
+        if event_type == 'BATCH_FILLED':
+            self._handle_batch_fill(payload, source)
+        elif event_type == 'TP_FILLED':
+            self._handle_batch_tp_fill(payload, source)
+        elif event_type == 'ORDER_EXPIRED':
+            self._handle_batch_order_expired(payload, source)
+        elif event_type in ('SL_FILLED', 'SM_FILLED'):
+            self._handle_batch_sl_sm_fill(payload, source)
+
+    async def _start_rest_fallback(self):
+        """启动 REST 兜底轮询"""
+        if self._rest_fallback_task and not self._rest_fallback_task.done():
+            return
+        self._rest_fallback_task = asyncio.create_task(self._rest_fallback_loop())
+
+    async def _rest_fallback_loop(self):
+        """REST 兜底轮询循环"""
+        self._add_action("REST 兜底轮询已启动", "")
+        last_trade_time = 0
+        while self.running and self._ws_health['fallback_active']:
+            try:
+                # 并行拉取（在线程池执行，不阻塞事件循环）
+                open_orders, account, trades = await asyncio.gather(
+                    asyncio.to_thread(self.api.get_open_orders, self.symbol),
+                    asyncio.to_thread(self.api.get_account),
+                    asyncio.to_thread(self.api.get_user_trades, self.symbol, limit=10),
+                )
+
+                # 检测新成交
+                new_fills = [t for t in trades if t.get('time', 0) > last_trade_time]
+                if new_fills:
+                    last_trade_time = max(t.get('time', 0) for t in new_fills)
+                    for trade in new_fills:
+                        trade_oid = trade.get('orderId')
+                        # v1.10.0：区分开仓成交 vs 止盈成交
+                        matched = False
+                        for batch in self.batch_state.get('batches', []):
+                            if trade_oid and batch.get('order_id') == trade_oid:
+                                self._on_batch_event('BATCH_FILLED', trade, source='REST_POLL')
+                                matched = True
+                                break
+                            if trade_oid and batch.get('tp_order_id') == trade_oid:
+                                self._on_batch_event('TP_FILLED', trade, source='REST_POLL')
+                                matched = True
+                                break
+                        if not matched:
+                            self._on_batch_event('BATCH_FILLED', trade, source='REST_POLL')
+
+                # 检测订单过期/取消
+                all_orders = open_orders or []
+                for batch in self.batch_state.get('batches', []):
+                    oid = batch.get('order_id')
+                    if oid and batch.get('status') == 'pending':
+                        if not any(o.get('orderId') == oid for o in all_orders):
+                            # 订单消失 → 检查是否是成交还是过期
+                            await asyncio.to_thread(
+                                self._check_disappeared_order, oid, batch
+                            )
+
+                # v1.10.0：检测 TP 订单成交（止盈订单消失 = 可能已成交）
+                for batch in self.batch_state.get('batches', []):
+                    tp_oid = batch.get('tp_order_id')
+                    if tp_oid and batch.get('status') == 'tp_placed':
+                        if not any(o.get('orderId') == tp_oid for o in all_orders):
+                            await asyncio.to_thread(
+                                self._check_disappeared_tp_order, tp_oid, batch
+                            )
+
+                # 同步账户余额
+                if account:
+                    for bal in account.get('assets', []):
+                        if bal.get('asset') == 'USDC':
+                            self.available_balance = Decimal(str(bal.get('availableBalance', '0')))
+                            break
+
+            except Exception:
+                pass
+
+            await asyncio.sleep(self._rest_fallback_interval)
+
+    def _check_disappeared_order(self, order_id: int, batch: dict):
+        """检查消失的订单是成交还是过期"""
+        try:
+            order = self.api.get_order(self.symbol, order_id)
+            status = order.get('status', '')
+            if status == 'FILLED':
+                self._on_batch_event('BATCH_FILLED', order, source='REST_POLL')
+            elif status in ('EXPIRED', 'CANCELED'):
+                self._on_batch_event('ORDER_EXPIRED', order, source='REST_POLL')
+        except Exception:
+            pass
+
+    def _check_disappeared_tp_order(self, tp_order_id: int, batch: dict):
+        """v1.10.0：检测消失的 TP 订单是否已成交"""
+        try:
+            order = self.api.get_order(self.symbol, tp_order_id)
+            status = order.get('status', '')
+            if status == 'FILLED':
+                self._on_batch_event('TP_FILLED', order, source='REST_POLL')
+            elif status in ('EXPIRED', 'CANCELED'):
+                self._log_batch_action(f"批次 {batch['index']+1} 止盈单已取消/过期，重新挂单")
+                batch['tp_order_id'] = None
+                # 异步重新挂 TP
+                asyncio.create_task(self._place_batch_tp(batch))
+        except Exception:
+            pass
+
+    def _start_batch_tp_monitor(self):
+        """启动全局 TP 批量监控（幂等：已有任务在跑则跳过）"""
+        if self._batch_tp_monitor_task and not self._batch_tp_monitor_task.done():
+            return
+        self._batch_tp_monitor_task = asyncio.create_task(self._batch_tp_monitor_loop())
+
+    def _stop_batch_tp_monitor(self):
+        """停止全局 TP 批量监控"""
+        if self._batch_tp_monitor_task and not self._batch_tp_monitor_task.done():
+            self._batch_tp_monitor_task.cancel()
+        self._batch_tp_monitor_task = None
+
+    async def _batch_tp_monitor_loop(self):
+        """v1.10.0：全局 TP 批量监控 — 用 get_open_orders 一次查所有 TP 单
+
+        每 5s 调一次 get_open_orders（权重 5），O(1) 而非 O(N)。
+        200 个 TP 单也只需 60 权重/min，避免 per-order 监控爆炸。
+        """
+        await asyncio.sleep(3)  # 启动后稍等
+
+        # 生命周期 = 浮亏保护超时时间，未配置则默认 10 分钟
+        lp_cfg = self.config_manager.get_loss_protection_config() if self.config_manager else {}
+        timeout_minutes = lp_cfg.get('trigger_minutes', 10) if lp_cfg else 10
+        deadline = time.time() + timeout_minutes * 60
+
+        while self.running and time.time() < deadline:
+            bs = self.batch_state
+            if not bs or bs.get('round_closed'):
+                return
+
+            # 收集当前所有 tp_placed 批次
+            tp_batches = [b for b in bs.get('batches', []) if b.get('status') == 'tp_placed' and b.get('tp_order_id')]
+            if not tp_batches:
+                return  # 没有需要监控的 TP 单，任务结束
+
+            try:
+                open_orders = await asyncio.to_thread(self.api.get_open_orders, self.symbol)
+                open_ids = {o.get('orderId') for o in (open_orders or [])}
+
+                for b in tp_batches:
+                    tp_oid = b.get('tp_order_id')
+                    if not tp_oid:
+                        continue
+                    if tp_oid in open_ids:
+                        continue  # 订单还在挂单簿中，未成交
+
+                    # 订单消失 → 单独确认状态
+                    try:
+                        order = await asyncio.to_thread(self.api.get_order, self.symbol, tp_oid)
+                        status = order.get('status', '')
+                        if status == 'FILLED':
+                            self._on_batch_event('TP_FILLED', order, source='REST_POLL')
+                        elif status in ('EXPIRED', 'CANCELED'):
+                            self._log_batch_action(f"批次 {b['index']+1} 止盈单已取消/过期，重新挂单")
+                            b['tp_order_id'] = None
+                            asyncio.create_task(self._place_batch_tp(b))
+                    except Exception:
+                        pass
+
+            except Exception:
+                pass
+
+            await asyncio.sleep(5)
+
+    # ==================== v1.9.0: 分批建仓引擎 ====================
+
+    # --- 初始化与状态管理 ---
+
+    def _init_batch_state(self, side: str):
+        """初始化分批建仓状态"""
+        config = self.config_manager.get_batch_config()
+        count = max(2, min(50, int(config.get('count', 5))))
+        distribution = config.get('distribution', 'equal')
+        ladder_mode = config.get('ladder_mode', 'fixed')
+        ladder_min = Decimal(str(config.get('ladder_min', 1.00)))
+        ladder_max = Decimal(str(config.get('ladder_max', 10.00)))
+
+        # 确保 ladder_max > ladder_min
+        if ladder_max <= ladder_min:
+            ladder_max = ladder_min + Decimal('1')
+
+        # 重置浮盈/浮亏追踪（防止上轮数据泄漏）
+        self._max_float_pnl = None
+        self._max_float_pnl_price = None
+        self._min_float_pnl = None
+        self._min_float_pnl_price = None
+
+        self.batch_state = {
+            'enabled': True,
+            'side': side,
+            'total_count': count,
+            'distribution': distribution,
+            'ladder_mode': ladder_mode,
+            'ladder_min': ladder_min,
+            'ladder_max': ladder_max,
+            'target_notional': Decimal('0'),
+            'batches': [],
+            'sl_order_id': None,
+            'sm_order_id': None,
+            'weighted_avg_entry': Decimal('0'),
+            'total_filled_size': Decimal('0'),
+            'tp_backup': [],
+            'early_close_order_id': None,
+            'early_close_price': 0.0,
+            'cancelled_batch_indices': [],
+            'last_sl_update_ts': 0.0,
+            'round_closed': False,
+            'supplement_blocked': False,
+            'max_position_size': Decimal('0'),
+            'state': 'pending_only',
+        }
+
+    # --- 价格与数量计算 ---
+
+    def _calculate_batch_prices(self, base_price: Decimal) -> list:
+        """计算阶梯价格（ladder_min 到 ladder_max 等距插值）"""
+        bs = self.batch_state
+        count = bs['total_count']
+        ladder_min = bs['ladder_min']
+        ladder_max = bs['ladder_max']
+        side = bs['side']
+        tick = Decimal('0.01')
+
+        if count == 1:
+            step = Decimal('0')
+        else:
+            step = (ladder_max - ladder_min) / (count - 1)
+
+        prices = []
+        for i in range(count):
+            offset = ladder_min + step * i  # 第 i 档偏离
+            if side == 'LONG':
+                price = base_price - offset
+            else:
+                price = base_price + offset
+            prices.append(price.quantize(tick, rounding=ROUND_DOWN))
+
+        # 最后一笔强制对齐到 ladder_max
+        if side == 'LONG':
+            last = (base_price - ladder_max).quantize(tick, rounding=ROUND_DOWN)
+        else:
+            last = (base_price + ladder_max).quantize(tick, rounding=ROUND_DOWN)
+        prices[-1] = last
+
+        return prices
+
+    def _calculate_batch_sizes(self, total_size: Decimal) -> list:
+        """计算数量分配"""
+        bs = self.batch_state
+        count = bs['total_count']
+        distribution = bs['distribution']
+        tick_qty = Decimal('0.001')
+
+        if distribution == 'equal':
+            base = (total_size / count).quantize(tick_qty, rounding=ROUND_DOWN)
+            sizes = [base] * count
+            # 尾差补到最后一批
+            remainder = total_size - sum(sizes)
+            sizes[-1] = (sizes[-1] + remainder).quantize(tick_qty, rounding=ROUND_DOWN)
+
+        elif distribution == 'increase':
+            # 递增：权重 1:2:3:...:N
+            weights = list(range(1, count + 1))
+            total_weight = sum(weights)
+            sizes = []
+            allocated = Decimal('0')
+            for i, w in enumerate(weights):
+                if i == count - 1:
+                    s = (total_size - allocated).quantize(tick_qty, rounding=ROUND_DOWN)
+                else:
+                    s = (total_size * w / total_weight).quantize(tick_qty, rounding=ROUND_DOWN)
+                sizes.append(s)
+                allocated += s
+
+        elif distribution == 'decrease':
+            # 递减：权重 N:N-1:...:1
+            weights = list(range(count, 0, -1))
+            total_weight = sum(weights)
+            sizes = []
+            allocated = Decimal('0')
+            for i, w in enumerate(weights):
+                if i == count - 1:
+                    s = (total_size - allocated).quantize(tick_qty, rounding=ROUND_DOWN)
+                else:
+                    s = (total_size * w / total_weight).quantize(tick_qty, rounding=ROUND_DOWN)
+                sizes.append(s)
+                allocated += s
+
+        else:  # random
+            import random as _random
+            base = (total_size / count).quantize(tick_qty, rounding=ROUND_DOWN)
+            sizes = []
+            allocated = Decimal('0')
+            for i in range(count - 1):
+                factor = Decimal(str(round(_random.uniform(0.95, 1.05), 4)))
+                s = (base * factor).quantize(tick_qty, rounding=ROUND_DOWN)
+                sizes.append(s)
+                allocated += s
+            sizes.append((total_size - allocated).quantize(tick_qty, rounding=ROUND_DOWN))
+
+        return sizes
+
+    # --- 批量下单 ---
+
+    async def _place_batch_orders(self) -> dict:
+        """通过 batchOrders 接口批量挂出分批订单（GTX 优先）
+        只提交 status=='pending' 且尚未分配 order_id 的批次
+        返回 {'success': N, 'failed': N, 'errors': [...]}"""
+        bs = self.batch_state
+        # v1.10.0：只提交新批次，避免重复提交已成交/已取消/已止盈的批次
+        new_batches = [b for b in bs['batches'] if b['status'] == 'pending' and not b.get('order_id')]
+        if not new_batches:
+            return {'success': 0, 'failed': 0, 'errors': []}
+
+        total = len(new_batches)
+        success = 0
+        failed = 0
+        error_details = []
+
+        # 每 5 笔一组提交
+        for chunk_start in range(0, total, 5):
+            chunk = new_batches[chunk_start:chunk_start + 5]
+            batch_orders = []
+            for b in chunk:
+                order = {
+                    'symbol': self.symbol,
+                    'side': 'BUY' if bs['side'] == 'LONG' else 'SELL',
+                    'type': 'LIMIT',
+                    'timeInForce': 'GTX',
+                    'quantity': str(b['size']),
+                    'price': str(b['price']),
+                    'positionSide': bs['side'],
+                    'newClientOrderId': f"batch_{bs['side']}_{b['index']}_{int(time.time()*1000)}",
+                }
+                batch_orders.append(order)
+
+            try:
+                results = await asyncio.to_thread(
+                    self.api.place_batch_orders,
+                    self.symbol, batch_orders
+                )
+                for j, result in enumerate(results):
+                    b = chunk[j]  # new_batches 中的引用即 bs['batches'] 中的同一对象
+                    if 'code' in result:
+                        code = result['code']
+                        msg = result.get('msg', 'Unknown error')
+                        err_desc = f"批次 {b['index']+1} @ {b['price']}: [{code}] {msg}"
+                        error_details.append(err_desc)
+                        failed += 1
+                        if code == -5022:
+                            b['gtx_rejected'] = True
+                        if self.log_manager:
+                            self.log_manager.system.warning(f"[分批下单] {err_desc}")
+                    elif 'orderId' in result:
+                        success += 1
+                        b['order_id'] = result['orderId']
+                        b['client_order_id'] = result.get('clientOrderId', '')
+                        self._batch_order_map[result['orderId']] = b['index']
+            except Exception as e:
+                # 整批调用失败（网络/Signature 等）
+                failed += len(chunk)
+                error_details.append(f"batchOrders 调用失败: {e}")
+                if self.log_manager:
+                    self.log_manager.system.warning(f"[分批下单] batchOrders 调用失败：{e}")
+
+        # v1.10.0：累计 max_position_size（补充 + 初始共用同一累加逻辑）
+        context = "分批开仓" if bs['state'] == 'pending_only' else "补单"
+        if success > 0:
+            bs['max_position_size'] += sum(
+                b['size'] for b in new_batches if b.get('order_id')
+            )
+            self._add_action(context, f"{success} 笔 GTX 挂单成功")
+        if failed > 0:
+            self._add_action(context + ("（部分失败）" if success > 0 else "失败"),
+                           f"{failed} 笔失败: {'; '.join(error_details)}")
+
+        # 如果没有成功挂出任何批次且是首次开仓 → 清空状态
+        if success == 0 and bs['state'] == 'pending_only' and not any(
+            b.get('status') in ('filled', 'tp_placed') for b in bs['batches']
+        ):
+            self._add_action("分批开仓失败", f"所有 {total} 笔订单被拒: {'; '.join(error_details)}")
+            await self._cleanup_batch_state(reason="开仓失败")
+
+        return {'success': success, 'failed': failed, 'errors': error_details}
+
+    # --- 成交处理 ---
+
+    def _handle_batch_fill(self, payload: dict, source: str = 'WS'):
+        """处理批次成交"""
+        if not self.batch_state or self.batch_state.get('round_closed'):
+            return
+
+        bs = self.batch_state
+        order_id = payload.get('order_id') or payload.get('orderId') or payload.get('i')
+        # REST get_order 用 avgPrice/executedQty，WS 用 L/l
+        fill_price = Decimal(str(payload.get('avgPrice') or payload.get('L') or payload.get('price') or '0'))
+        fill_qty = Decimal(str(payload.get('executedQty') or payload.get('l') or payload.get('z') or payload.get('size') or payload.get('qty') or '0'))
+
+        # 查找对应批次
+        batch = None
+        for b in bs['batches']:
+            if b.get('order_id') == order_id:
+                batch = b
+                break
+
+        if not batch:
+            return
+
+        if batch['status'] != 'pending':
+            return  # 已处理
+
+        # ① 标记已成交
+        batch['status'] = 'filled'
+        batch['fill_time'] = datetime.now()
+        self._log_batch_action(f"批次 {batch['index']+1} 成交 @ {fill_price}")
+
+        # ② 更新状态
+        bs['state'] = 'partial_filled' if bs['state'] == 'pending_only' else bs['state']
+
+        # ③ 异步挂独立止盈单
+        asyncio.create_task(self._place_batch_tp(batch))
+
+        # ④ 重算加权均价
+        self._recalc_weighted_avg()
+
+        # ⑤ 节流更新 SL/SM
+        self._schedule_sl_sm_update()
+
+        # v1.10.0：首笔成交时初始化浮亏保护计时（分批模式 LP manager 此前未 set_entry_info）
+        if self.loss_protection_manager and not self.loss_protection_manager.entry_time:
+            self.loss_protection_manager.set_entry_info(
+                entry_price=bs['weighted_avg_entry'],
+                side=bs['side'],
+            )
+
+        # ⑥ 检查是否全部成交
+        pending = [b for b in bs['batches'] if b['status'] == 'pending']
+        if not pending:
+            bs['state'] = 'all_filled'
+            self._add_action("全部成交", f"{bs['total_count']} 笔全部成交，进入持仓状态")
+
+    async def _place_batch_tp(self, batch: dict):
+        """为单个批次挂独立止盈单（对齐非分批：穿透检测 → QUEUE 或策略价 GTC）"""
+        bs = self.batch_state
+        entry_price = batch['price']
+        batch_size = batch['size']
+        side = bs['side']
+
+        # 计算止盈价（对齐非分批模式：传入 ATR 以支持 ATR14 策略）
+        atr = None
+        if self.indicators:
+            atr = self.indicators.volatility.get_atr(14)
+        tp_price = self.config_manager.get_take_profit_price(entry_price, side, atr)
+        tp_side = 'SELL' if side == 'LONG' else 'BUY'
+
+        # 检测是否会立即被吃（对齐非分批 place_tp_sl_orders 的 use_queue 逻辑）
+        use_queue = False
+        if tp_side == 'SELL':
+            if self.orderbook and self.orderbook.get('bids') and tp_price <= self.orderbook['bids'][0][0]:
+                use_queue = True
+        else:
+            if self.orderbook and self.orderbook.get('asks') and tp_price >= self.orderbook['asks'][0][0]:
+                use_queue = True
+
+        try:
+            if use_queue:
+                result = await asyncio.to_thread(
+                    self.api.place_order,
+                    symbol=self.symbol, side=tp_side, type='LIMIT',
+                    priceMatch='QUEUE',
+                    quantity=str(batch_size), timeInForce='GTC', positionSide=side,
+                )
+                actual_price = Decimal(result.get('price', '0'))
+                batch['tp_price'] = actual_price
+                msg = f"批次 {batch['index']+1} 止盈已下（QUEUE）@ {actual_price} orderId={result['orderId']}"
+            else:
+                result = await asyncio.to_thread(
+                    self.api.place_order,
+                    symbol=self.symbol, side=tp_side, type='LIMIT',
+                    price=str(tp_price), quantity=str(batch_size),
+                    timeInForce='GTC', positionSide=side,
+                )
+                batch['tp_price'] = tp_price
+                msg = f"批次 {batch['index']+1} 止盈已下（GTC）@ {tp_price} orderId={result['orderId']}"
+
+            if 'orderId' in result:
+                batch['tp_order_id'] = result['orderId']
+                batch['status'] = 'tp_placed'
+                self._batch_tp_map[result['orderId']] = batch['index']
+                self._log_batch_action(msg)
+                if self.log_manager: self.log_manager.system.info(f"  ✓ {msg}")
+                self._start_batch_tp_monitor()
+                self._rebuild_key_prices()
+            else:
+                self._log_batch_action(f"批次 {batch['index']+1} 止盈无 orderId：{result}")
+                self._add_action("止盈挂单失败", f"批次 {batch['index']+1} 返回异常")
+                if self.log_manager: self.log_manager.system.warning(f"  ✗ 批次 {batch['index']+1} 止盈无 orderId：{result}")
+        except Exception as e:
+            self._log_batch_action(f"批次 {batch['index']+1} 止盈失败：{e}")
+            self._add_action("止盈挂单失败", f"批次 {batch['index']+1}：{e}")
+            if self.log_manager: self.log_manager.system.warning(f"  ✗ 批次 {batch['index']+1} 止盈失败：{e}")
+
+    def _recalc_weighted_avg(self):
+        """重算已成交批次加权均价（仅基于 filled + tp_placed 状态的批次）"""
+        bs = self.batch_state
+        active = [b for b in bs['batches'] if b['status'] in ('filled', 'tp_placed')]
+        if not active:
+            return
+
+        total_value = sum(b['price'] * b['size'] for b in active)
+        total_size = sum(b['size'] for b in active)
+        if total_size > 0:
+            bs['weighted_avg_entry'] = (total_value / total_size).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+            bs['total_filled_size'] = total_size
+
+    def _schedule_sl_sm_update(self):
+        """节流更新 SL/SM（≥3 秒间隔）"""
+        bs = self.batch_state
+        now = time.time()
+        if now - bs['last_sl_update_ts'] < 3.0:
+            # 标记待更新，由回调处理
+            bs['_pending_sl_update'] = True
+            return
+
+        bs['last_sl_update_ts'] = now
+        bs['_pending_sl_update'] = False
+        asyncio.create_task(self._update_batch_sl_sm())
+
+    async def _update_batch_sl_sm(self):
+        """更新统一 SL/SM 算法订单"""
+        bs = self.batch_state
+        if bs['round_closed'] or bs['total_filled_size'] <= 0:
+            return
+
+        avg_entry = bs['weighted_avg_entry']
+        total_size = bs['total_filled_size']
+        side = bs['side']
+
+        # 对齐非分批模式：获取 ATR、总权益、强平价
+        atr = None
+        if self.indicators:
+            atr = self.indicators.volatility.get_atr(14)
+        api_leverage, _ = self.config_manager.get_leverage_config()
+        position_value = avg_entry * total_size
+        position_margin = position_value / Decimal(str(api_leverage))
+        total_equity = self.available_balance + position_margin
+        liquidation_price = Decimal('0')
+        try:
+            positions = await asyncio.to_thread(self.api.get_position, self.symbol)
+            for pos in positions:
+                if Decimal(pos.get('positionAmt', 0)) != 0:
+                    lp = pos.get('liquidationPrice')
+                    if lp:
+                        liquidation_price = Decimal(str(lp))
+                    break
+        except Exception:
+            pass
+
+        # 撤销旧 SL
+        if bs['sl_order_id']:
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_algo_order, self.symbol, bs['sl_order_id']
+                )
+            except Exception:
+                pass
+            bs['sl_order_id'] = None
+
+        # 撤销旧 SM
+        if bs['sm_order_id']:
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_algo_order, self.symbol, bs['sm_order_id']
+                )
+            except Exception:
+                pass
+            bs['sm_order_id'] = None
+
+        # 挂新 SL（STOP 限价止损）
+        sl_side = 'SELL' if side == 'LONG' else 'BUY'
+        sl_trigger, sl_params = self.config_manager.get_stop_loss_params(
+            self.symbol, avg_entry, side, total_size, atr
+        )
+        bs['sl_price'] = float(sl_trigger)
+        try:
+            sl_result = await asyncio.to_thread(
+                self.api.place_algo_order, **sl_params
+            )
+            if sl_result.get('algoId'):
+                bs['sl_order_id'] = sl_result['algoId']
+        except Exception as e:
+            self._add_action("SL 更新失败", str(e))
+
+        # 挂新 SM（STOP_MARKET 保底止损）
+        sm_price = self.config_manager.get_stop_market_price(
+            avg_entry, side, total_size,
+            total_equity,         # 使用总权益（对齐非分批）
+            liquidation_price,    # 使用实际强平价（对齐非分批）
+        )
+        bs['sm_price'] = float(sm_price)
+        sm_side = 'SELL' if side == 'LONG' else 'BUY'
+        try:
+            sm_result = await asyncio.to_thread(
+                self.api.place_algo_order,
+                symbol=self.symbol,
+                side=sm_side,
+                type='STOP_MARKET',
+                triggerPrice=str(sm_price),
+                quantity=str(total_size),
+                workingType='MARK_PRICE',
+                positionSide=side,
+            )
+            if sm_result.get('algoId'):
+                bs['sm_order_id'] = sm_result['algoId']
+                self.log_manager.system.info(f"  ✓ 保底止损已下（分批）：algoId={sm_result['algoId']}, trigger={sm_price}") if self.log_manager else None
+            else:
+                self.log_manager.system.info(f"  ✗ 保底止损返回无 algoId（分批）：{sm_result}") if self.log_manager else None
+        except Exception as e:
+            self.log_manager.system.info(f"  ✗ 保底止损失败（分批）：{type(e).__name__}: {e}") if self.log_manager else None
+            self._add_action("SM 更新失败", str(e))
+
+        self._add_action("止损已更新", f"SL {sl_trigger} / SM {sm_price}")
+        self._rebuild_key_prices()
+
+    # --- 止盈处理 ---
+
+    def _handle_batch_tp_fill(self, payload: dict, source: str = 'WS'):
+        """处理止盈成交"""
+        bs = self.batch_state
+        if not bs or bs.get('round_closed'):
+            return
+
+        tp_order_id = payload.get('order_id') or payload.get('orderId') or payload.get('i')
+        batch = None
+        for b in bs['batches']:
+            if b.get('tp_order_id') == tp_order_id:
+                batch = b
+                break
+
+        if not batch or batch['status'] != 'tp_placed':
+            return
+
+        batch['status'] = 'tp_closed'
+        self._log_batch_action(f"批次 {batch['index']+1} 止盈成交 @ {batch.get('tp_price')}")
+
+        # 检查是否所有止盈单都已成交
+        active_tp = [b for b in bs['batches'] if b['status'] == 'tp_placed']
+        if not active_tp:
+            # 轮次结束
+            self._add_action("轮次结束", "全部止盈成交")
+            asyncio.create_task(self._cleanup_batch_state(reason="全部止盈"))
+            return
+
+        # 更新 SL/SM（减少数量）
+        bs['state'] = 'partial_tp'
+        self._recalc_weighted_avg()
+        bs['last_sl_update_ts'] = 0  # 强制立即更新
+        self._schedule_sl_sm_update()
+
+    # --- 止损/保底处理 ---
+
+    def _handle_batch_sl_sm_fill(self, payload: dict, source: str = 'WS'):
+        """处理止损/保底成交（依赖币安条件单执行）"""
+        bs = self.batch_state
+        if not bs or bs.get('round_closed'):
+            return
+
+        algo_id = payload.get('order_id') or payload.get('orderId') or payload.get('i')
+        if algo_id not in (bs.get('sl_order_id'), bs.get('sm_order_id')):
+            return
+
+        is_sm = (algo_id == bs.get('sm_order_id'))
+        label = "保底止损" if is_sm else "止损"
+        self._add_action(f"{label}触发", "")
+
+        # 撤销剩余未成交开仓挂单
+        pending_batches = [b for b in bs['batches'] if b['status'] in ('pending',)]
+        if pending_batches:
+            asyncio.create_task(self._cancel_pending_batches(pending_batches))
+
+        # 保底止损 SM 不撤（is_sm 时跳过）
+        # 已挂止盈单由币安自动取消
+
+        asyncio.create_task(self._cleanup_batch_state(reason=label))
+
+    # --- 补单 ---
+
+    async def _supplement_batch_orders(self) -> dict:
+        """补单：max_position_size - 未止盈仓位 - 挂单中仓位
+        返回 {'success': N, 'failed': N, 'errors': [...]}"""
+        bs = self.batch_state
+        if not bs or bs.get('round_closed') or bs.get('supplement_blocked'):
+            return {'success': 0, 'failed': 0, 'errors': ['禁止补单']}
+
+        max_size = bs['max_position_size']
+        unfilled = sum(
+            b['size'] for b in bs['batches']
+            if b['status'] in ('filled', 'tp_placed')
+        )
+        pending = sum(
+            b['size'] for b in bs['batches']
+            if b['status'] == 'pending'
+        )
+        supplement_size = max_size - unfilled - pending
+
+        if supplement_size <= Decimal('0.001'):
+            self._add_action("补单", "仓位已满，无需补单")
+            return {'success': 0, 'failed': 0, 'errors': ['仓位已满']}
+
+        # 基于当前行情重新计算阶梯
+        base_price = self.last_price
+        if not base_price:
+            self._add_action("补单失败", "无行情数据")
+            return {'success': 0, 'failed': 0, 'errors': ['无行情数据']}
+
+        # 计算新批次数量（基于当前成功挂出的批次数推算平均大小）
+        active_count = len([b for b in bs['batches'] if b.get('order_id')])
+        if active_count == 0:
+            active_count = bs['total_count']  # 首次开仓全失败，回退配置值
+        avg_size = max_size / active_count if active_count > 0 else supplement_size
+        new_count = max(1, int(supplement_size / avg_size))
+        new_count = min(new_count, 50 - len(bs['batches']))
+
+        if new_count <= 0:
+            self._add_action("补单", "已达最大批次上限")
+            return {'success': 0, 'failed': 0, 'errors': ['已达最大批次上限']}
+
+        new_batches = []
+        prices = self._calculate_batch_prices(base_price)[:new_count]
+        sizes = self._calculate_batch_sizes(supplement_size)[:new_count]
+
+        for i in range(new_count):
+            new_batches.append({
+                'index': len(bs['batches']) + i,
+                'order_id': None,
+                'client_order_id': '',
+                'price': prices[i] if i < len(prices) else base_price,
+                'size': sizes[i] if i < len(sizes) else avg_size,
+                'status': 'pending',
+                'fill_time': None,
+                'tp_order_id': None,
+                'tp_price': None,
+                'gtx_rejected': False,
+            })
+
+        bs['batches'].extend(new_batches)
+
+        # 批量下单（_place_batch_orders 只提交 status=='pending' 且无 order_id 的新批次）
+        result = await self._place_batch_orders()
+        if result['success'] > 0:
+            self._add_action("补单", f"已挂出 {result['success']} 笔新批次")
+        else:
+            self._add_action("补单失败", f"新批次全部失败: {'; '.join(result['errors'])}")
+
+        return result
+
+    # --- 撤销 ---
+
+    async def _cancel_pending_batches(self, batches: list):
+        """批量撤销未成交批次"""
+        bs = self.batch_state
+        for chunk_start in range(0, len(batches), 5):
+            chunk = batches[chunk_start:chunk_start + 5]
+            order_ids = [b['order_id'] for b in chunk if b.get('order_id')]
+            if not order_ids:
+                continue
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_batch_orders,
+                    self.symbol, order_ids
+                )
+                for b in chunk:
+                    if b.get('order_id') in order_ids:
+                        self._batch_order_map.pop(b['order_id'], None)
+                        b['status'] = 'cancelled'
+                        bs['cancelled_batch_indices'].append(b['index'])
+            except Exception:
+                # 逐笔撤销兜底
+                for b in chunk:
+                    if b.get('order_id'):
+                        try:
+                            await asyncio.to_thread(
+                                self.api.cancel_order, self.symbol, order_id=b['order_id']
+                            )
+                            self._batch_order_map.pop(b['order_id'], None)
+                            b['status'] = 'cancelled'
+                            bs['cancelled_batch_indices'].append(b['index'])
+                        except Exception:
+                            pass
+
+    async def _cancel_all_pending_batches(self):
+        """撤销所有未成交批次"""
+        if not self.batch_state:
+            return
+        pending = [b for b in self.batch_state['batches'] if b['status'] == 'pending']
+        if pending:
+            await self._cancel_pending_batches(pending)
+            self._add_action("撤单", f"已撤销 {len(pending)} 笔未成交挂单")
+        # 如果没有任何已成交批次，清理整个分批状态回到 IDLE
+        active = [b for b in self.batch_state['batches'] if b['status'] in ('filled', 'tp_placed')]
+        if not active:
+            await self._cleanup_batch_state(reason="全部撤单")
+
+    # --- 订单过期处理 ---
+
+    def _handle_batch_order_expired(self, payload: dict, source: str = 'WS'):
+        """处理订单过期（保证金不足等原因）"""
+        bs = self.batch_state
+        if not bs or bs.get('round_closed'):
+            return
+
+        order_id = payload.get('order_id') or payload.get('orderId') or payload.get('i')
+        gtd = payload.get('gtd', 0)
+
+        for b in bs['batches']:
+            if b.get('order_id') == order_id and b['status'] == 'pending':
+                b['status'] = 'failed'
+                self._add_action("订单过期", f"批次 {b['index']+1} @ {b['price']}（原因码 {gtd}）")
+                return
+
+    # --- 早期平仓 ---
+
+    async def _batch_early_close(self):
+        """分批模式提前平仓（→ 键，QUEUE 保证 Maker，对齐非分批）"""
+        bs = self.batch_state
+        if not bs or bs.get('round_closed'):
+            return
+
+        total_size = bs['total_filled_size']
+        if total_size <= 0:
+            return
+
+        side = bs['side']
+        close_side = 'SELL' if side == 'LONG' else 'BUY'
+
+        # 备份止盈单
+        bs['tp_backup'] = [
+            {'index': b['index'], 'tp_order_id': b['tp_order_id'], 'tp_price': b['tp_price']}
+            for b in bs['batches'] if b['status'] == 'tp_placed'
+        ]
+
+        # 撤销止盈单
+        for b in bs['batches']:
+            if b['status'] == 'tp_placed' and b.get('tp_order_id'):
+                try:
+                    await asyncio.to_thread(
+                        self.api.cancel_order, self.symbol, order_id=b['tp_order_id']
+                    )
+                except Exception:
+                    pass
+                b['status'] = 'filled'
+
+        # 挂提前平仓单（QUEUE，对齐非分批 close_position_early）
+        try:
+            result = await asyncio.to_thread(
+                self.api.place_order,
+                symbol=self.symbol, side=close_side, type='LIMIT',
+                priceMatch='QUEUE',
+                quantity=str(total_size), timeInForce='GTC', positionSide=side,
+            )
+            if result.get('orderId'):
+                actual_price = Decimal(result.get('price', '0'))
+                bs['early_close_order_id'] = result['orderId']
+                bs['early_close_price'] = float(actual_price)
+                bs['state'] = 'early_close'
+                self._add_action("提前平仓", f"QUEUE @ {actual_price} x {total_size} ETH")
+                self._rebuild_key_prices()
+        except Exception as e:
+            self._add_action("提前平仓失败", str(e))
+
+    async def _cancel_batch_early_close(self) -> bool:
+        """分批模式：撤销提前平仓，恢复止盈单"""
+        bs = self.batch_state
+        if not bs or bs.get('state') != 'early_close':
+            return False
+        if not bs.get('early_close_order_id'):
+            return False
+
+        try:
+            await asyncio.to_thread(
+                self.api.cancel_order, self.symbol, order_id=bs['early_close_order_id']
+            )
+            bs['early_close_order_id'] = None
+            bs['early_close_price'] = 0.0
+        except Exception:
+            pass
+
+        # 恢复止盈单
+        for backup in bs.get('tp_backup', []):
+            batch = next((b for b in bs['batches'] if b['index'] == backup['index']), None)
+            if not batch or batch['status'] != 'filled':
+                continue
+            try:
+                tp_side = 'SELL' if bs['side'] == 'LONG' else 'BUY'
+                result = await asyncio.to_thread(
+                    self.api.place_order,
+                    symbol=self.symbol,
+                    side=tp_side,
+                    type='LIMIT',
+                    timeInForce='GTC',
+                    quantity=str(batch['size']),
+                    price=str(backup['tp_price']),
+                    positionSide=bs['side'],
+                )
+                if result.get('orderId'):
+                    batch['tp_order_id'] = result['orderId']
+                    batch['tp_price'] = backup['tp_price']
+                    batch['status'] = 'tp_placed'
+                    self._batch_tp_map[result['orderId']] = batch['index']
+            except Exception:
+                pass
+
+        bs['tp_backup'] = []
+        bs['state'] = 'partial_filled'
+        self._add_action("恢复止盈单", f"已撤销提前平仓")
+        return True
+
+    async def _close_position_market_batch(self) -> bool:
+        """分批模式：市价全平所有已成交仓位（Z 键）"""
+        bs = self.batch_state
+        if not bs or bs.get('round_closed'):
+            return False
+
+        total_size = bs['total_filled_size']
+        if total_size <= 0:
+            if self.log_manager:
+                self.log_manager.system.debug("✗ 无已成交仓位")
+            return False
+
+        side = bs['side']
+        close_side = 'SELL' if side == 'LONG' else 'BUY'
+        self._add_action("Z 键平仓", f"市价全平 {side} {total_size} ETH")
+
+        try:
+            # 先清理所有挂单
+            await self._cleanup_batch_state(reason="Z 键平仓")
+
+            # 市价平仓
+            result = await asyncio.to_thread(
+                self.api.place_order,
+                symbol=self.symbol,
+                side=close_side,
+                type='MARKET',
+                quantity=str(total_size),
+                positionSide=side,
+            )
+            close_price = Decimal(str(result.get('avgPrice', '0')))
+            commission = Decimal(str(result.get('commission', '0')))
+
+            avg_entry = bs['weighted_avg_entry']
+            if side == 'LONG':
+                pnl = (close_price - avg_entry) * total_size - commission
+            else:
+                pnl = (avg_entry - close_price) * total_size - commission
+
+            self.sync_account()
+            self._add_action("手动平仓成交", f"{close_side} {total_size} @ {close_price} | PnL: {pnl:+.6f} USDT")
+            return True
+        except Exception as e:
+            self._add_action("市价全平失败", str(e))
+            return False
+
+    # --- 状态清理 ---
+
+    async def _cleanup_batch_state(self, reason: str = ""):
+        """清理分批状态，撤销所有相关订单"""
+        bs = self.batch_state
+        if not bs:
+            return
+
+        bs['round_closed'] = True
+        self._stop_batch_tp_monitor()
+
+        # 撤销所有未成交批次
+        pending = [b for b in bs['batches'] if b['status'] == 'pending']
+        if pending:
+            await self._cancel_pending_batches(pending)
+
+        # 撤销止盈单
+        for b in bs['batches']:
+            if b['status'] == 'tp_placed' and b.get('tp_order_id'):
+                try:
+                    await asyncio.to_thread(
+                        self.api.cancel_order, self.symbol, order_id=b['tp_order_id']
+                    )
+                except Exception:
+                    pass
+
+        # 撤销 SL
+        if bs.get('sl_order_id'):
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_algo_order, self.symbol, bs['sl_order_id']
+                )
+            except Exception:
+                pass
+
+        # 撤销 SM（除非是保底止损触发的清理）
+        if bs.get('sm_order_id') and reason not in ('保底止损',):
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_algo_order, self.symbol, bs['sm_order_id']
+                )
+            except Exception:
+                pass
+
+        # 撤销提前平仓单
+        if bs.get('early_close_order_id'):
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_order, self.symbol, order_id=bs['early_close_order_id']
+                )
+            except Exception:
+                pass
+
+        # 清理映射表
+        self._batch_order_map.clear()
+        self._batch_tp_map.clear()
+
+        # 重置浮盈/浮亏追踪
+        self._max_float_pnl = None
+        self._max_float_pnl_price = None
+        self._min_float_pnl = None
+        self._min_float_pnl_price = None
+
+        self.batch_state = None
+        self._key_prices = []
+        self._key_price_triggered.clear()
+
+        if reason:
+            self._add_action("轮次结束", reason)
+
+    # --- 浮亏保护 ---
+
+    def _check_batch_loss_protection(self):
+        """分批模式浮亏保护检测（由 loss_protection_manager 调用入口替换）"""
+        bs = self.batch_state
+        if not bs or bs.get('round_closed') or bs.get('supplement_blocked'):
+            return
+
+        trigger_minutes = self.config_manager.get_loss_protection_config().get('trigger_minutes', 5)
+        # 首笔成交时间
+        first_fill = None
+        for b in bs['batches']:
+            if b.get('fill_time'):
+                first_fill = b['fill_time']
+                break
+
+        if not first_fill:
+            return
+
+        elapsed = (datetime.now() - first_fill).total_seconds() / 60.0
+        if elapsed < trigger_minutes:
+            return
+
+        # 触发
+        bs['supplement_blocked'] = True
+        avg_entry = bs['weighted_avg_entry']
+        current_price = self.last_price
+        side = bs['side']
+
+        self._add_action("浮亏保护触发", f"当前价 {current_price} vs 均价 {avg_entry}")
+
+        # 撤销未成交挂单
+        pending = [b for b in bs['batches'] if b['status'] == 'pending']
+        if pending:
+            asyncio.create_task(self._cancel_pending_batches(pending))
+
+        total_size = bs['total_filled_size']
+        if side == 'LONG':
+            price_above = current_price and current_price > avg_entry
+        else:
+            price_above = current_price and current_price < avg_entry
+
+        if price_above:
+            # 当前价在均价上方 → 挂 STOP 条件限价止损
+            stop_side = 'SELL' if side == 'LONG' else 'BUY'
+            asyncio.create_task(self._place_loss_protection_stop(avg_entry, stop_side, total_size))
+        else:
+            # 当前价在均价下方 → 挂均价限价平仓单
+            close_side = 'SELL' if side == 'LONG' else 'BUY'
+            asyncio.create_task(self._place_loss_protection_limit(avg_entry, close_side, total_size))
+
+    async def _place_loss_protection_stop(self, price: Decimal, side: str, size: Decimal):
+        """浮亏保护：挂 STOP 条件限价止损（Algo Order API 通过 positionSide 限定方向）"""
+        try:
+            result = await asyncio.to_thread(
+                self.api.place_algo_order,
+                symbol=self.symbol,
+                side=side,
+                type='STOP',
+                triggerPrice=str(price),
+                quantity=str(size),
+                price=str(price),
+                workingType='CONTRACT_PRICE',
+                positionSide=self.batch_state['side'],
+            )
+            if result.get('algoId'):
+                self._add_action("浮亏保护", f"STOP 止损已挂 @ {price}")
+        except Exception as e:
+            self._add_action("浮亏保护失败", str(e))
+
+    async def _place_loss_protection_limit(self, price: Decimal, side: str, size: Decimal):
+        """浮亏保护：挂均价限价平仓单"""
+        try:
+            result = await asyncio.to_thread(
+                self.api.place_order,
+                symbol=self.symbol,
+                side=side,
+                type='LIMIT',
+                timeInForce='GTC',
+                quantity=str(size),
+                price=str(price),
+                positionSide=self.batch_state['side'],
+            )
+            if result.get('orderId'):
+                self._add_action("浮亏保护", f"限价平仓单已挂 @ {price}")
+        except Exception as e:
+            self._add_action("浮亏保护失败", str(e))
+
+    # --- 辅助 ---
+
+    def _log_batch_action(self, msg: str):
+        """记录分批操作日志"""
+        if self.log_manager:
+            self.log_manager.trading.info(msg)
+
+    # ==================== v1.9.0 结束 ====================
+
     async def cleanup(self):
         """清理资源"""
         self.log_manager.system.debug("\n清理交易器资源...") if self.log_manager else None
         self.running = False
-        
+
+        # 清理分批状态
+        if self.batch_state:
+            await self._cleanup_batch_state(reason="程序退出")
+
+        # 取消 REST 兜底任务
+        if self._rest_fallback_task and not self._rest_fallback_task.done():
+            self._rest_fallback_task.cancel()
+            try:
+                await self._rest_fallback_task
+            except asyncio.CancelledError:
+                pass
+
         # 1. 关闭用户数据流 WebSocket
         if self.user_stream_ws:
             try:

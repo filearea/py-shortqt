@@ -1,1 +1,0 @@
-# py-shortqt - Documentation
