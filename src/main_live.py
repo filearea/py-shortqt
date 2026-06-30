@@ -234,6 +234,50 @@ class LiveTradingBot:
             local_count = len(local_raw)
             # 预期应有 kline 数（00:00 到上一个完整分钟）
             expected = max(0, (current_minute_ms - start_ms) // 60000)
+
+            # ── v1.10.0：本地数据完整性校验 ──
+            file_corrupted = False
+            if local_raw:
+                # 1) 检测时间缺口（>1 分钟的间隔视为缺口）
+                local_sorted = sorted(local_raw, key=lambda d: d['timestamp'])
+                prev_ts = local_sorted[0]['timestamp']
+                for i in range(1, len(local_sorted)):
+                    ts = local_sorted[i]['timestamp']
+                    if ts - prev_ts > 60000:
+                        file_corrupted = True
+                        break
+                    prev_ts = ts
+
+                # 2) 检测脏数据（已闭合 K 线 volume>0 但 buy_turnover=0）
+                if not file_corrupted:
+                    for d in local_raw:
+                        vol = d.get('volume', 0)
+                        bt = d.get('buy_turnover', 0)
+                        ts = d['timestamp']
+                        if vol > 0 and bt <= 0 and (now_ms - (ts + 60000)) > 10000:
+                            file_corrupted = True
+                            break
+
+                # 3) 检测尾部缺数据（最后闭合 K 线距今 >1 分钟）
+                if not file_corrupted and local_sorted:
+                    last_ts = local_sorted[-1]['timestamp']
+                    if current_minute_ms - last_ts > 120000:  # 缺 ≥2 根
+                        file_corrupted = True
+                # 4) 数量严重不足（缺 ≥2 根）
+                if not file_corrupted and len(local_sorted) < expected - 1:
+                    file_corrupted = True
+
+            if file_corrupted:
+                self.log_manager.system.info(
+                    f'本地K线校验失败（{local_count}根），删除文件并从 API 重建...'
+                )
+                try:
+                    kline_file.unlink()
+                except Exception:
+                    pass
+                local_raw = []
+                local_count = 0
+
             need_api = (
                 not kline_file.exists() or
                 local_count == 0 or

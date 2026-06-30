@@ -62,6 +62,7 @@ secrets/
 config.local.py
 config/accounts.json
 config/runtime.json
+config/runtime.json.auto
 *.json
 !config/accounts.example.json
 !config/accounts.json.example

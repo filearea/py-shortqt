@@ -345,14 +345,22 @@ class LossProtectionManager:
         seconds = int(remaining_seconds % 60)
         time_str = f"{minutes:02d}:{seconds:02d}"
         
-        # 检查当前盈亏状态
+        # 检查当前盈亏状态（含分批模式）
         position = self.trader.position
+        bs = self.trader.batch_state
         if position and self.trader.last_price:
-            # 计算未实现盈亏
             if position['side'] == 'LONG':
                 pnl = (self.trader.last_price - position['entry_price']) * position['size']
             else:
                 pnl = (position['entry_price'] - self.trader.last_price) * position['size']
+            pnl_status = '浮亏' if pnl < 0 else '浮盈'
+        elif bs and bs.get('enabled') and not bs.get('round_closed') and bs.get('total_filled_size', 0) > 0 and self.trader.last_price:
+            entry = bs.get('weighted_avg_entry', 0)
+            size = bs['total_filled_size']
+            if bs['side'] == 'LONG':
+                pnl = (self.trader.last_price - entry) * size
+            else:
+                pnl = (entry - self.trader.last_price) * size
             pnl_status = '浮亏' if pnl < 0 else '浮盈'
         else:
             pnl_status = '无持仓'

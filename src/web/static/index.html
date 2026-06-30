@@ -690,7 +690,7 @@ html, body {
         <button class="btn btn-sm" id="ac-btn-7d" onclick="switchAssetCurve('7d')" style="padding:1px 8px;font-size:10px;line-height:1.5;min-width:0;border:1px solid transparent;border-radius:4px">7D</button>
       </div>
       <div class="card-body">
-        <canvas id="asset-curve-canvas" width="600" height="180" style="width:100%;height:auto;display:none;margin-bottom:8px;border-radius:6px;background:var(--bg-card);cursor:crosshair"></canvas>
+        <canvas id="asset-curve-canvas" width="600" height="180" style="width:100%;height:auto;display:none;margin-bottom:8px;border-radius:6px;background:var(--bg-card);cursor:crosshair;touch-action:none"></canvas>
         <div class="stat-grid" id="stat-grid"></div>
       </div>
     </div>
@@ -2483,8 +2483,7 @@ function drawAssetCurve(){
   var tipText=isDark?'#eaecef':'#1e2329';
 
   var dpr=Math.min(window.devicePixelRatio||1,2);
-  var rect=canvas.parentElement.getBoundingClientRect();
-  var W=rect.width-32; if(W<200) W=340;
+  var W=canvas.parentElement.clientWidth; if(W<200) W=340;
   var H=180;
   canvas.width=W*dpr; canvas.height=H*dpr;
   canvas.style.width=W+'px'; canvas.style.height=H+'px';
@@ -2627,6 +2626,7 @@ function drawAssetCurve(){
   };
   canvas.onmouseleave=function(){acHoverIdx=-1;drawAssetCurve();};
   canvas.ontouchstart=function(e){
+    e.preventDefault();
     var meta=canvas._acMeta; if(!meta) return;
     var r=canvas.getBoundingClientRect();
     var tx=(e.touches[0].clientX-r.left)*(canvas.width/dpr/r.width);
