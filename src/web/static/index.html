@@ -2492,7 +2492,7 @@ function drawAssetCurve(){
 
   var minVal=Math.min.apply(null,displayValues), maxVal=Math.max.apply(null,displayValues);
   var range=maxVal-minVal||1;
-  var pad=range*0.12;
+  var pad=range*0.25;
   minVal-=pad; maxVal+=pad;
 
   var margin={top:16,right:4,bottom:24,left:38};
