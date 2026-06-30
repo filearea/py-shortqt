@@ -499,9 +499,9 @@ html, body {
 .settings-preview .pv-lbl { color: var(--text-tertiary); }
 
 /* History stats */
-.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; } @media (min-width: 420px) { .stat-grid { grid-template-columns: 1fr 1fr 1fr 1fr; } }
-.stat-grid .lbl { font-size: 10px; color: var(--text-tertiary); }
-.stat-grid .val { font-size: 14px; font-weight: 600; }
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 2px 4px; }
+.stat-grid .lbl { font-size: 9px; color: var(--text-tertiary); }
+.stat-grid .val { font-size: 12px; font-weight: 600; }
 .history-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-xs); }
 .history-card .hc-row { display: flex; align-items: center; gap: var(--space-sm); }
 .history-card .hc-row+.hc-row { margin-top: 3px; }
@@ -2411,15 +2411,26 @@ historyScrollEl.addEventListener('touchend',function(){
 function render24hStats(){
   updateAssetCurveTitle();
   var s=state.stats_24h||{};
+  _renderStatsGrid(s);
+}
+
+// Render period stats (from asset-curve API)
+function renderPeriodStats(s, period){
+  var titleEl=document.getElementById('history-stats-title');
+  if(titleEl) titleEl.textContent=period==='7d'?'7天数据统计':'24h 数据';
+  _renderStatsGrid(s);
+}
+
+function _renderStatsGrid(s){
   var winRate=s.win_rate||0;
   var totalPnl=s.total_pnl||0;
   var grid=document.getElementById('stat-grid');
   grid.innerHTML=
     '<div><div class="lbl">总仓位/胜</div><div class="val">'+(s.round_count||0)+' / '+(s.win_count||0)+' 次</div></div>'+
-    '<div><div class="lbl">胜率</div><div class="val" style="color:var(--color-up)">'+winRate.toFixed(1)+'%</div></div>'+
+    '<div><div class="lbl">胜率</div><div class="val" style="color:var(--color-up)">'+Number(winRate||0).toFixed(1)+'%</div></div>'+
     '<div><div class="lbl">累计盈亏</div><div class="val" style="color:'+(totalPnl>=0?'var(--color-up)':'var(--color-down)')+'">'+fmtMoney(totalPnl)+'</div></div>'+
-    '<div><div class="lbl">盈亏比</div><div class="val">'+(s.avg_pnl_ratio==null?'∞':s.avg_pnl_ratio.toFixed(2)+':1')+'</div></div>'+
-    '<div><div class="lbl">交易量</div><div class="val">'+(s.total_volume||0).toFixed(2)+' ETH</div></div>'+
+    '<div><div class="lbl">盈亏比</div><div class="val">'+(s.avg_pnl_ratio==null?'∞':Number(s.avg_pnl_ratio||0).toFixed(2)+':1')+'</div></div>'+
+    '<div><div class="lbl">交易量</div><div class="val">'+Number(s.total_volume||0).toFixed(2)+' ETH</div></div>'+
     '<div><div class="lbl">手续费</div><div class="val" style="color:var(--color-down)">'+fmtMoney(s.total_fee||0,{sign:false})+'</div></div>'+
     '<div><div class="lbl">期望值</div><div class="val" style="color:'+((s.expected_value||0)>=0?'var(--color-up)':'var(--color-down)')+'">'+fmtMoney(s.expected_value||0)+'</div></div>'+
     '<div><div class="lbl">平均持仓</div><div class="val">'+(s.avg_hold_time||'--')+'</div></div>';
@@ -2450,6 +2461,7 @@ function fetchAssetCurve(){
       assetCurveLoading=false;
       if(data.error){console.error('Asset curve error:',data.error);return;}
       assetCurveData=data;
+      if(data.stats) renderPeriodStats(data.stats, data.period);
       drawAssetCurve();
     })
     .catch(function(e){

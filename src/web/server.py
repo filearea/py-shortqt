@@ -1082,13 +1082,71 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                 if ct and isinstance(ct, datetime):
                     ct_ts = ct.timestamp()
                     if start_time <= ct_ts <= now:
+                        pnl = float(h.get('pnl', 0) or 0)
+                        fee = float(h.get('total_fee', 0) or 0)
+                        vol = float(h.get('max_size', 0) or 0)
+                        dur = h.get('duration', 0) or 0
                         closed_positions.append({
                             'close_ts': ct_ts,
-                            'net_pnl': float(h.get('net_pnl', h.get('pnl', 0)))
+                            'net_pnl': pnl,
+                            'fee': fee,
+                            'volume': vol,
+                            'duration': dur,
                         })
 
             # 按 close_time 降序排列
             closed_positions.sort(key=lambda p: p['close_ts'], reverse=True)
+
+            # 计算时间段内交易统计
+            stats = {}
+            if closed_positions:
+                round_count = len(closed_positions)
+                win_pos = [p for p in closed_positions if p['net_pnl'] > 0]
+                loss_pos = [p for p in closed_positions if p['net_pnl'] < 0]
+                win_count = len(win_pos)
+                loss_count = len(loss_pos)
+                win_rate = round(win_count / round_count * 100, 1) if round_count > 0 else 0
+                total_volume = round(sum(p['volume'] for p in closed_positions), 2)
+                total_pnl = round(sum(p['net_pnl'] for p in closed_positions), 8)
+                total_fee = round(sum(p['fee'] for p in closed_positions), 8)
+                if win_count > 0 and loss_count > 0:
+                    avg_win = sum(p['net_pnl'] for p in win_pos) / win_count
+                    avg_loss = abs(sum(p['net_pnl'] for p in loss_pos)) / loss_count
+                    avg_pnl_ratio = round(avg_win / avg_loss, 2) if avg_loss > 0 else 0
+                    ev = round(win_count / round_count * avg_win - loss_count / round_count * avg_loss, 8)
+                elif win_count > 0:
+                    avg_pnl_ratio = float('inf')
+                    ev = round(sum(p['net_pnl'] for p in win_pos) / win_count, 8)
+                elif loss_count > 0:
+                    avg_pnl_ratio = 0
+                    ev = round(-sum(p['net_pnl'] for p in loss_pos) / loss_count, 8)
+                else:
+                    avg_pnl_ratio = 0
+                    ev = 0
+                dur_list = [p['duration'] for p in closed_positions if p['duration'] > 0]
+                if dur_list:
+                    avg_dur_s = int(sum(dur_list) / len(dur_list))
+                    hh = avg_dur_s // 3600; mm = (avg_dur_s % 3600) // 60; ss = avg_dur_s % 60
+                    avg_hold_time = f"{hh:02d}:{mm:02d}:{ss:02d}"
+                else:
+                    avg_hold_time = '--'
+                stats = {
+                    'round_count': round_count,
+                    'win_count': win_count,
+                    'win_rate': win_rate,
+                    'total_volume': total_volume,
+                    'total_pnl': total_pnl,
+                    'total_fee': total_fee,
+                    'avg_pnl_ratio': None if avg_pnl_ratio == float('inf') else avg_pnl_ratio,
+                    'avg_hold_time': avg_hold_time,
+                    'expected_value': ev,
+                }
+            else:
+                stats = {
+                    'round_count': 0, 'win_count': 0, 'win_rate': 0,
+                    'total_volume': 0, 'total_pnl': 0, 'total_fee': 0,
+                    'avg_pnl_ratio': 0, 'avg_hold_time': '--', 'expected_value': 0,
+                }
 
             # 从 now 倒退生成采样点
             num_samples = max(2, int(period_hours / sample_interval_hours) + 1)
@@ -1108,7 +1166,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                 })
 
             samples.reverse()  # 时间升序
-            return web.json_response({'period': period, 'samples': samples, 'current_assets': round(current_assets, 8)})
+            return web.json_response({'period': period, 'samples': samples, 'stats': stats, 'current_assets': round(current_assets, 8)})
         except Exception as e:
             if self.log:
                 self.log.error(f'[Web] /api/history/asset-curve 异常: {e}', exc_info=True)
