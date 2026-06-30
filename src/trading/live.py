@@ -3402,14 +3402,15 @@ class LiveTrader:
                     self.log_manager.system.warning(f"[分批下单] batchOrders 调用失败：{e}")
 
         # v1.10.0：累计 max_position_size（补充 + 初始共用同一累加逻辑）
+        context = "分批开仓" if bs['state'] == 'pending_only' else "补单"
         if success > 0:
             bs['max_position_size'] += sum(
                 b['size'] for b in new_batches if b.get('order_id')
             )
-            context = "分批开仓" if bs['state'] == 'pending_only' else "补单"
             self._add_action(context, f"{success} 笔 GTX 挂单成功")
         if failed > 0:
-            self._add_action("分批开仓", f"{failed} 笔失败: {'; '.join(error_details)}")
+            self._add_action(context + ("（部分失败）" if success > 0 else "失败"),
+                           f"{failed} 笔失败: {'; '.join(error_details)}")
 
         # 如果没有成功挂出任何批次且是首次开仓 → 清空状态
         if success == 0 and bs['state'] == 'pending_only' and not any(
@@ -3507,11 +3508,15 @@ class LiveTrader:
                 batch['tp_price'] = tp_price
                 batch['status'] = 'tp_placed'
                 self._batch_tp_map[result['orderId']] = batch['index']
+                msg = f"批次 {batch['index']+1} 止盈已下（GTX）@ {tp_price} orderId={result['orderId']}"
+                self._log_batch_action(msg)
+                if self.log_manager: self.log_manager.system.info(f"  ✓ {msg}")
                 self._start_batch_tp_monitor()
                 self._rebuild_key_prices()
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            self._log_batch_action(f"批次 {batch['index']+1} 止盈 GTX 失败：{e}，降级 GTC")
+            if self.log_manager: self.log_manager.system.info(f"  ⚠ 批次 {batch['index']+1} 止盈 GTX 失败：{e}，降级 GTC")
 
         # GTX 失败 → 降级 GTC BBO
         try:
@@ -3531,10 +3536,19 @@ class LiveTrader:
                 batch['tp_price'] = tp_price
                 batch['status'] = 'tp_placed'
                 self._batch_tp_map[result['orderId']] = batch['index']
+                msg = f"批次 {batch['index']+1} 止盈已下（GTC）@ {tp_price} orderId={result['orderId']}"
+                self._log_batch_action(msg)
+                if self.log_manager: self.log_manager.system.info(f"  ✓ {msg}")
                 self._start_batch_tp_monitor()
                 self._rebuild_key_prices()
+            else:
+                self._log_batch_action(f"批次 {batch['index']+1} 止盈 GTC 无 orderId：{result}")
+                self._add_action("止盈挂单失败", f"批次 {batch['index']+1} GTC 返回异常")
+                if self.log_manager: self.log_manager.system.warning(f"  ✗ 批次 {batch['index']+1} 止盈 GTC 无 orderId：{result}")
         except Exception as e:
+            self._log_batch_action(f"批次 {batch['index']+1} 止盈 GTC 失败：{e}")
             self._add_action("止盈挂单失败", f"批次 {batch['index']+1}：{e}")
+            if self.log_manager: self.log_manager.system.warning(f"  ✗ 批次 {batch['index']+1} 止盈 GTC 失败：{e}")
 
     def _recalc_weighted_avg(self):
         """重算已成交批次加权均价（仅基于 filled + tp_placed 状态的批次）"""
@@ -3767,7 +3781,7 @@ class LiveTrader:
 
         for i in range(new_count):
             new_batches.append({
-                'index': len(bs['batches']),
+                'index': len(bs['batches']) + i,
                 'order_id': None,
                 'client_order_id': '',
                 'price': prices[i] if i < len(prices) else base_price,
