@@ -3108,11 +3108,14 @@ function init(){
   wsConnect();
   document.addEventListener('touchstart',function(){_getAudioCtx();},{once:true});
   document.addEventListener('click',function(){_getAudioCtx();},{once:true});
-  // Override updateUI to also render 24h stats when history overlay is visible
+  // Override updateUI to also render stats when history overlay is visible
   var origUpdateUI=updateUI;
   updateUI=function(){
     origUpdateUI();
-    render24hStats();
+    // 1D模式用WebSocket推送的24h数据；7D模式由fetchAssetCurve独立管理
+    if(assetCurvePeriod==='1d'){
+      render24hStats();
+    }
   };
   // Init asset curve 1D button active
   switchAssetCurve('1d');
