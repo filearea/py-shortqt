@@ -75,7 +75,7 @@ TradeState (每秒更新)
 | 实时推送 | **aiohttp WebSocket** | 同一框架，无需额外依赖 |
 | 前端 | 纯 HTML + CSS + JS（单文件），ApeBot 设计系统原子组件 | 零构建工具，零 npm，UI 风格与团队其他项目统一 |
 | 图表 | TradingView Lightweight Charts (CDN) | ~50KB gzip，原生支持触摸交互 |
-| 认证 | 启动时生成随机 token，打印在 TUI 日志中 | 足够安全，零配置 |
+| 认证 | 配置为空时启动自动生成随机 token，有值时固定使用配置值持久复用 | 足够安全，零配置；自定义 token 时需自行保证安全性 |
 
 ### 2.2 依赖变更
 
@@ -89,9 +89,9 @@ requirements.txt 新增:
 ```
 src/web/
   __init__.py          # 模块入口
-  server.py            # HTTP + WebSocket 服务 (~1400 行)
+  server.py            # HTTP + WebSocket 服务 (~1650 行)
   static/
-    index.html          # 移动端 SPA (~2600 行，纯 HTML+CSS+JS)
+    index.html          # 移动端 SPA (~3000 行，纯 HTML+CSS+JS)
     tv-charts.umd.js    # TradingView Lightweight Charts 本地托管
 ```
 
@@ -315,10 +315,11 @@ TUI 盘面指标区的 ATR(14) 行增加 24h 滚动百分位评价（与 WebUI 3
 
 ### 2.12 安全模型
 
-- 启动时生成 32 位随机 hex token，打印在终端日志中
+- `web_ui.token` 配置为空时，启动自动生成 32 位随机 hex token；有值时固定使用配置值（持久化，重启不变）
 - 所有 API 和 WebSocket 连接必须携带有效 token
 - 仅监听内网 IP（`0.0.0.0` 不对外暴露，除非用户做了端口转发）
 - 没有 token 的请求返回 403
+- **安全警告**：使用固定 token 时用户自行负责安全性。不建议开放外网端口转发，远程访问应使用 VPN 或 SSH 隧道
 
 ---
 
@@ -979,8 +980,8 @@ TUI 盘面指标区的 ATR(14) 行增加 24h 滚动百分位评价（与 WebUI 3
 | `src/indicators/volatility.py` | 修改 | 新增 `get_atr14_percentile()` 方法（约 30 行） |
 | `src/config/manager.py` | 修改 | DEFAULT_CONFIG 新增 `proxy` 和 `web_ui` 配置节（约 15 行） |
 | `src/web/__init__.py` | 新增 | 模块入口 |
-| `src/web/server.py` | 新增 | HTTP + WebSocket 服务（约 200 行） |
-| `src/web/static/index.html` | 新增 | 移动端 SPA（约 700 行，含 K 线图表） |
+| `src/web/server.py` | 新增 | HTTP + WebSocket 服务（约 1650 行） |
+| `src/web/static/index.html` | 新增 | 移动端 SPA（约 3000 行，含 K 线图表 + 资产曲线 Canvas） |
 | `src/web/static/tv-charts.umd.js` | 新增 | TradingView Lightweight Charts（本地托管，断网仍可用） |
 | `config/runtime.json.auto` | 新增字段 | `web_ui` 配置节 |
 
@@ -1053,7 +1054,7 @@ v1.9.0 原计划 TUI 零改动，但技术评审确认以下 TUI 改动是必要
 | 限制 | 影响 | 缓解措施 |
 |------|------|---------|
 | 设置可修改 | 移动端修改的参数影响 PC TUI 行为 | 所有参数修改即时生效（与 TUI S 键保存等价） |
-| 无历史回看 | 仅显示近期历史持仓列表 | 需要完整复盘时回 PC |
+| 无历史回看 | 仅显示近期历史持仓列表和资产曲线简图 | 需要完整复盘时回 PC，Web 端已有 1D/7D 资产曲线 |
 | 仅一个并发移动端 | 多人同时连接会看到相同数据但操作冲突 | 设计上仅支持单人使用（个人交易工具） |
 | 无推送通知 | 手机关屏后不会收到成交提醒 | 建议不锁屏或将浏览器保持前台 |
 
@@ -1538,7 +1539,34 @@ v1.9.0 原计划 TUI 零改动，但技术评审确认以下 TUI 改动是必要
 | `src/data_collector.py` | 文件读取容错 + 数据格式防御 |
 | `src/main_live.py` | 修复 `save_interval` KeyError |
 
+### 14.16 资产曲线图（Canvas 实现）
+
+**功能**：历史统计 Tab 新增资产曲线折线图，支持 1D/7D 切换。
+
+**后端**：`/api/history/asset-curve?period=1d|7d`
+- 反向行走算法：从当前资产出发，向前回溯减去已平仓盈亏，得到历史各时间点的资产值
+- 采样时间点包含固定间隔 + 每笔平仓时间（确保盈亏拐点可触摸查看）
+- 自然日模式：从当天 00:00 起整点采样，填满到 24:00
+- 返回统计数据：胜率、总盈亏、总手续费、总交易量、平均持仓时间、期望值
+
+**前端**：Canvas 2D 绘制
+- 品牌色（#fcd535）折线 + 半透明渐变填充
+- Y 轴自适应范围（25% padding），标注最高/最低/当前点
+- 触摸交互：左右滑动切换时间点，显示时间和资产值 tooltip
+- 1D/7D 切换按钮，切换后自动更新下方统计指标
+- `touch-action: none` 防止浏览器下拉刷新干扰
+
+**涉及文件**：`src/web/server.py`（`_handle_asset_curve`）+ `src/web/static/index.html`（Canvas 绘制 + 触摸交互）
+
+### 14.17 涉及文件（补充 v3）
+
+| 文件 | 改动 |
+|------|------|
+| `src/web/server.py` | `/api/history/asset-curve` 接口 + 反向行走算法 + 统计数据计算 |
+| `src/web/static/index.html` | Canvas 资产曲线图 + 1D/7D 切换 + 触摸交互 + 统计指标渲染 |
+
 ---
-**更新于**: 2026-06-28
+
+**更新于**: 2026-06-30
 **目标版本**: v1.10.0
-**最后修订**: 2026-06-28 — 发布后修复：K线数据质量防护 / WS双流 / H/L数据源修正 / 14天回填 / Web下单复用TUI逻辑
+**最后修订**: 2026-06-30 — 补充：资产曲线图 / Canvas 触摸交互 / 开发手册
