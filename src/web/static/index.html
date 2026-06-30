@@ -684,8 +684,15 @@ html, body {
   <div class="page-scroll" id="history-scroll">
     <div id="history-pull-indicator" class="pull-indicator"></div>
     <div class="card" style="margin-bottom:var(--space-sm)">
-      <div class="card-header"><span class="card-title" id="history-stats-title">24h 数据</span></div>
-      <div class="card-body"><div class="stat-grid" id="stat-grid"></div></div>
+      <div class="card-header" style="display:flex;align-items:center;gap:8px">
+        <span class="card-title" id="history-stats-title">24h 数据</span>
+        <button class="btn btn-sm" id="ac-btn-1d" onclick="switchAssetCurve('1d')" style="margin-left:auto;padding:1px 8px;font-size:10px;line-height:1.5;min-width:0">1D</button>
+        <button class="btn btn-sm" id="ac-btn-7d" onclick="switchAssetCurve('7d')" style="padding:1px 8px;font-size:10px;line-height:1.5;min-width:0">7D</button>
+      </div>
+      <div class="card-body">
+        <canvas id="asset-curve-canvas" width="600" height="160" style="width:100%;height:auto;display:none;margin-bottom:8px;border-radius:6px;background:var(--bg-page);cursor:crosshair"></canvas>
+        <div class="stat-grid" id="stat-grid"></div>
+      </div>
     </div>
     <div class="card">
       <div class="card-header"><span class="card-title">历史持仓</span><button class="btn btn-sm" id="history-refresh-btn" style="margin-left:auto;padding:2px 10px;font-size:11px;line-height:1.5" onclick="refreshHistory()">刷新</button></div>
@@ -773,7 +780,7 @@ let modalTimer=null, modalCountdown=0;
 let lastPrice=0, lastObPrice=0;
 let logEntries=[];
 let _soundThrottle={};
-let posOpenTime=null, lpRemainingSec=0, posTimerId=null;
+let posOpenTime=null, lpDeadline=null, posTimerId=null;
 
 // ====== WebSocket ======
 function wsConnect(){
@@ -922,11 +929,12 @@ function handleMsg(msg){
       if(/成交|超时|挂单|保护|止损|止盈|API错误/.test(msg.event)) toastTrade(msg.event, msg.detail);
       // 音效 — 对齐 TUI _trigger_sound: 仅成交/平仓/超时有声
       var evt=msg.event;
-      if(/开仓成交/.test(evt)) playBeep('open', 1);
+      if(/开仓成交|全部成交/.test(evt)) playBeep('open', 1);
+      else if(/分批开仓/.test(evt)) playBeep('open', 1);
       else if(/持仓超时/.test(evt)) playBeep(null, 4);
-      else if(/止盈成交|止损成交|保底止损成交|提前平仓成交|移动止损成交|手动平仓成交|持仓同步成交|浮亏保护成交/.test(evt)) playBeep('close', 3);
+      else if(/止盈成交|止损成交|保底止损成交|提前平仓成交|移动止损成交|手动平仓成交|持仓同步成交|浮亏保护成交|平仓成交/.test(evt)) playBeep('close', 3);
       // 平仓事件 → 标记脏 + 延迟拉取 state 更新上一笔持仓（后端需等Binance同步，5~14s）
-      if(/持仓同步成交|止盈成交|止损成交|保底止损成交|提前平仓成交|移动止损成交|手动平仓成交|浮亏保护成交/.test(evt)){
+      if(/持仓同步成交|止盈成交|止损成交|保底止损成交|提前平仓成交|移动止损成交|手动平仓成交|浮亏保护成交|平仓成交/.test(evt)){
         historyStale=true;
         // 对齐后端 _refresh_history_delayed: 6s延迟 + 5次重试x4s = 26s窗口
         setTimeout(function(){ fetchState(); }, 8000);
@@ -1630,7 +1638,7 @@ function updatePosCard(){
     if(!posTimerId) posTimerId=setInterval(updatePosTimers,1000);
   }else{
     if(posTimerId){clearInterval(posTimerId);posTimerId=null;}
-    posOpenTime=null;lpRemainingSec=0;
+    posOpenTime=null;lpDeadline=null;
   }
 
   // Section title
@@ -1664,8 +1672,10 @@ function updatePosCard(){
   var lp=state.risk.loss_protection;
   if(lp&&lp.status==='检测中'&&lp.remaining_time){
     var parts=lp.remaining_time.split(':');
-    lpRemainingSec=parseInt(parts[0])*60+parseInt(parts[1]);
-  }else{lpRemainingSec=0;}
+    var secs=parseInt(parts[0])*60+parseInt(parts[1]);
+    var dl=Date.now()+secs*1000;
+    if(!lpDeadline||dl>lpDeadline||Math.abs(dl-lpDeadline)>5000) lpDeadline=dl;
+  }else{lpDeadline=null;}
 
   // Update collapsed
   if(!posExpanded){
@@ -1841,11 +1851,11 @@ function updatePosTimers(){
   var durIn=document.getElementById('pos-duration-inline');
   if(durIn) durIn.textContent=durStr;
 
-  // LP countdown
+  // LP countdown (deadline-based, immune to WS state resets)
   var lpCount=document.getElementById('lp-countdown-text');
-  if(lpCount&&lpRemainingSec>0){
-    lpRemainingSec=Math.max(0,lpRemainingSec-1);
-    var rm=Math.floor(lpRemainingSec/60),rs=lpRemainingSec%60;
+  if(lpCount&&lpDeadline){
+    var remaining=Math.max(0,Math.ceil((lpDeadline-Date.now())/1000));
+    var rm=Math.floor(remaining/60),rs=remaining%60;
     lpCount.textContent='('+String(rm).padStart(2,'0')+':'+String(rs).padStart(2,'0')+')';
   }
 }
@@ -2242,6 +2252,7 @@ document.querySelectorAll('.bottom-tab').forEach(function(btn){
       document.getElementById('history-overlay').classList.add('show');
       loadHistory(historyStale);
       historyStale=false;
+      if(!assetCurveData) fetchAssetCurve();
     }else if(tab==='settings'){
       // 持仓/挂单/分批状态下锁定设置，不可进入
       if(this.classList.contains('locked')){
@@ -2398,12 +2409,7 @@ historyScrollEl.addEventListener('touchend',function(){
 
 // Render 24h stats
 function render24hStats(){
-  var sp=state.stats_period||{mode:'24h',timezone:'+8'};
-  var titleEl=document.getElementById('history-stats-title');
-  if(titleEl){
-    if(sp.mode==='calendar_day') titleEl.textContent='数据统计（自然日 UTC'+sp.timezone+'）';
-    else titleEl.textContent='数据统计（近24小时）';
-  }
+  updateAssetCurveTitle();
   var s=state.stats_24h||{};
   var winRate=s.win_rate||0;
   var totalPnl=s.total_pnl||0;
@@ -2418,6 +2424,232 @@ function render24hStats(){
     '<div><div class="lbl">期望值</div><div class="val" style="color:'+((s.expected_value||0)>=0?'var(--color-up)':'var(--color-down)')+'">'+fmtMoney(s.expected_value||0)+'</div></div>'+
     '<div><div class="lbl">平均持仓</div><div class="val">'+(s.avg_hold_time||'--')+'</div></div>';
 }
+// ====== Asset Curve Chart ======
+var assetCurvePeriod='1d', assetCurveData=null, assetCurveLoading=false;
+var acHoverIdx=-1;
+
+function switchAssetCurve(period){
+  assetCurvePeriod=period;
+  var b1=document.getElementById('ac-btn-1d'), b7=document.getElementById('ac-btn-7d');
+  if(b1) b1.style.background=period==='1d'?'var(--color-primary)':'';
+  if(b7) b7.style.background=period==='7d'?'var(--color-primary)':'';
+  fetchAssetCurve();
+}
+
+function fetchAssetCurve(){
+  if(assetCurveLoading) return;
+  assetCurveLoading=true;
+  fetch('/api/history/asset-curve?period='+assetCurvePeriod,{headers:{'X-Token':getToken()}})
+    .then(function(r){return r.json();})
+    .then(function(data){
+      assetCurveLoading=false;
+      if(data.error){console.error('Asset curve error:',data.error);return;}
+      assetCurveData=data;
+      drawAssetCurve();
+    })
+    .catch(function(e){
+      assetCurveLoading=false;
+      console.error('Asset curve fetch failed:',e);
+    });
+}
+
+function drawAssetCurve(){
+  var canvas=document.getElementById('asset-curve-canvas');
+  if(!canvas||!assetCurveData||!assetCurveData.samples||assetCurveData.samples.length<2) return;
+  canvas.style.display='block';
+  var samples=assetCurveData.samples;
+  var isPrivacy=isPrivacyOn();
+  var dpr=Math.min(window.devicePixelRatio||1,2);
+  var rect=canvas.parentElement.getBoundingClientRect();
+  var W=rect.width-32; if(W<200) W=340;
+  var H=160;
+  canvas.width=W*dpr; canvas.height=H*dpr;
+  canvas.style.width=W+'px'; canvas.style.height=H+'px';
+  var ctx=canvas.getContext('2d');
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.scale(dpr,dpr);
+
+  var rawValues=samples.map(function(s){return s.v;});
+  var baseline=rawValues[0];
+  var displayValues;
+  if(isPrivacy&&baseline>0){
+    displayValues=rawValues.map(function(v){return (v/baseline)*100;});
+  }else{
+    displayValues=rawValues.slice();
+  }
+
+  var minVal=Math.min.apply(null,displayValues), maxVal=Math.max.apply(null,displayValues);
+  var range=maxVal-minVal||1;
+  var pad=range*0.1;
+  minVal-=pad; maxVal+=pad;
+  var margin={top:12,right:36,bottom:20,left:0};
+  var pw=W-margin.left-margin.right, ph=H-margin.top-margin.bottom;
+  function xOf(i){return margin.left+(i/(samples.length-1))*pw;}
+  function yOf(v){return margin.top+ph-((v-minVal)/(maxVal-minVal))*ph;}
+
+  ctx.clearRect(0,0,W,H);
+
+  // Grid lines
+  ctx.strokeStyle='rgba(128,128,128,0.12)'; ctx.lineWidth=1;
+  var gridLines=4;
+  for(var g=0;g<=gridLines;g++){
+    var gy=margin.top+(g/gridLines)*ph;
+    ctx.beginPath(); ctx.moveTo(margin.left,gy); ctx.lineTo(W-margin.right,gy); ctx.stroke();
+    if(isPrivacy){
+      var gv=minVal+(g/gridLines)*(maxVal-minVal);
+      ctx.fillStyle='var(--text-tertiary)'; ctx.font='9px sans-serif';
+      ctx.textAlign='right'; ctx.fillText(gv.toFixed(1)+'%',W-margin.right+2,gy+3);
+    }
+  }
+
+  // X axis labels
+  ctx.fillStyle='var(--text-tertiary)'; ctx.font='9px sans-serif'; ctx.textAlign='center';
+  var n=samples.length;
+  var xStep=Math.max(1,Math.floor(n/5));
+  for(var i=0;i<n;i+=xStep){
+    var d=new Date(samples[i].t);
+    var h=String(d.getHours()).padStart(2,'0');
+    var m=String(d.getMinutes()).padStart(2,'0');
+    var label=(assetCurvePeriod=='7d')?(String(d.getMonth()+1)+'/'+String(d.getDate())):(h+':'+m);
+    ctx.fillText(label,xOf(i),H-margin.bottom+13);
+  }
+  if((n-1)%xStep!==0){
+    var lastD=new Date(samples[n-1].t);
+    var lh=String(lastD.getHours()).padStart(2,'0'), lm=String(lastD.getMinutes()).padStart(2,'0');
+    var lastLabel=(assetCurvePeriod=='7d')?(String(lastD.getMonth()+1)+'/'+String(lastD.getDate())):(lh+':'+lm);
+    ctx.fillText(lastLabel,xOf(n-1),H-margin.bottom+13);
+  }
+
+  // ---- LINE (smooth via cubic bezier) ----
+  var pts=[];
+  for(var i=0;i<samples.length;i++) pts.push({x:xOf(i),y:yOf(displayValues[i])});
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x,pts[0].y);
+  for(var i=0;i<pts.length-1;i++){
+    var p0=pts[Math.max(0,i-1)], p1=pts[i], p2=pts[i+1], p3=pts[Math.min(pts.length-1,i+2)];
+    var t=0.33;
+    var cp1x=p1.x+(p2.x-p0.x)*t, cp1y=p1.y+(p2.y-p0.y)*t;
+    var cp2x=p2.x-(p3.x-p1.x)*t, cp2y=p2.y-(p3.y-p1.y)*t;
+    ctx.bezierCurveTo(cp1x,cp1y,cp2x,cp2y,p2.x,p2.y);
+  }
+  ctx.strokeStyle='var(--color-primary)'; ctx.lineWidth=1.5;
+  ctx.stroke();
+
+  // Fill area
+  ctx.lineTo(pts[pts.length-1].x, margin.top+ph);
+  ctx.lineTo(pts[0].x, margin.top+ph);
+  ctx.closePath();
+  var grad=ctx.createLinearGradient(0,margin.top,0,margin.top+ph);
+  grad.addColorStop(0,'rgba(56,139,253,0.15)');
+  grad.addColorStop(1,'rgba(56,139,253,0.01)');
+  ctx.fillStyle=grad; ctx.fill();
+
+  // ---- ANNOTATIONS ----
+  var firstIdx=0, lastIdx=samples.length-1;
+  var hiIdx=0, loIdx=0;
+  for(var i=1;i<displayValues.length;i++){
+    if(displayValues[i]>displayValues[hiIdx]) hiIdx=i;
+    if(displayValues[i]<displayValues[loIdx]) loIdx=i;
+  }
+  var markers=[];
+  markers.push({idx:firstIdx,color:'#22c55e',shape:'circle'});
+  if(hiIdx!==firstIdx&&hiIdx!==lastIdx) markers.push({idx:hiIdx,color:'#f87171',shape:'tri-up'});
+  if(loIdx!==firstIdx&&loIdx!==lastIdx) markers.push({idx:loIdx,color:'#f87171',shape:'tri-down'});
+  markers.push({idx:lastIdx,color:'#3b82f6',shape:'circle'});
+
+  for(var mi=0;mi<markers.length;mi++){
+    var m=markers[mi], mx=xOf(m.idx), my=yOf(displayValues[m.idx]);
+    ctx.fillStyle=m.color; ctx.strokeStyle=m.color;
+    if(m.shape=='tri-up'){
+      ctx.beginPath(); ctx.moveTo(mx,my-7); ctx.lineTo(mx-5,my+2); ctx.lineTo(mx+5,my+2); ctx.closePath(); ctx.fill();
+    }else if(m.shape=='tri-down'){
+      ctx.beginPath(); ctx.moveTo(mx,my+7); ctx.lineTo(mx-5,my-2); ctx.lineTo(mx+5,my-2); ctx.closePath(); ctx.fill();
+    }else{
+      ctx.beginPath(); ctx.arc(mx,my,3.5,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  // ---- HOVER/TOUCH ----
+  canvas._acMeta={samples:samples,displayValues:displayValues,xOf:xOf,yOf:yOf,margin:margin,W:W,H:H,isPrivacy:isPrivacy,baseline:baseline};
+  canvas.onmousemove=function(e){
+    var meta=canvas._acMeta; if(!meta) return;
+    var r=canvas.getBoundingClientRect();
+    var mx=(e.clientX-r.left)*(canvas.width/dpr/r.width);
+    var best=-1, bestDist=Infinity;
+    for(var i=0;i<meta.samples.length;i++){
+      var sx=meta.xOf(i), dist=Math.abs(mx-sx);
+      if(dist<bestDist){bestDist=dist;best=i;}
+    }
+    acHoverIdx=(bestDist<30)?best:-1;
+    drawAssetCurve();
+  };
+  canvas.onmouseleave=function(){acHoverIdx=-1;drawAssetCurve();};
+  canvas.ontouchstart=function(e){
+    var meta=canvas._acMeta; if(!meta) return;
+    var r=canvas.getBoundingClientRect();
+    var tx=(e.touches[0].clientX-r.left)*(canvas.width/dpr/r.width);
+    var best=-1, bestDist=Infinity;
+    for(var i=0;i<meta.samples.length;i++){
+      var sx=meta.xOf(i), dist=Math.abs(tx-sx);
+      if(dist<bestDist){bestDist=dist;best=i;}
+    }
+    acHoverIdx=(bestDist<30)?best:-1;
+    drawAssetCurve();
+  };
+  canvas.ontouchend=function(){acHoverIdx=-1;drawAssetCurve();};
+  canvas.ontouchcancel=function(){acHoverIdx=-1;drawAssetCurve();};
+
+  // ---- Tooltip ----
+  if(acHoverIdx>=0&&acHoverIdx<samples.length){
+    var hx=xOf(acHoverIdx), hy=yOf(displayValues[acHoverIdx]);
+    ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(hx,margin.top); ctx.lineTo(hx,margin.top+ph); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(hx,hy,4,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='var(--color-primary)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(hx,hy,4,0,Math.PI*2); ctx.stroke();
+    var tipVal=displayValues[acHoverIdx];
+    var tipText=isPrivacy?(tipVal.toFixed(2)+'%'):fmtMoney(tipVal,{unit:false});
+    var d=new Date(samples[acHoverIdx].t);
+    var tipTime=(assetCurvePeriod=='7d')
+      ? (String(d.getMonth()+1)+'/'+String(d.getDate())+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'))
+      : String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+    ctx.font='11px sans-serif';
+    var tw=Math.max(ctx.measureText(tipText).width,ctx.measureText(tipTime).width)+16;
+    var th=34, tx=hx, ty=hy-th-10;
+    if(ty<margin.top) ty=hy+10;
+    if(tx+tw/2>W-margin.right) tx=W-margin.right-tw/2;
+    if(tx-tw/2<margin.left) tx=margin.left+tw/2;
+    ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=1;
+    var rx=tx-tw/2, ry=ty, rw=tw, rh=th, rr=6;
+    ctx.beginPath();
+    ctx.moveTo(rx+rr,ry); ctx.lineTo(rx+rw-rr,ry);
+    ctx.arcTo(rx+rw,ry,rx+rw,ry+rr,rr);
+    ctx.lineTo(rx+rw,ry+rh-rr);
+    ctx.arcTo(rx+rw,ry+rh,rx+rw-rr,ry+rh,rr);
+    ctx.lineTo(rx+rr,ry+rh);
+    ctx.arcTo(rx,ry+rh,rx,ry+rh-rr,rr);
+    ctx.lineTo(rx,ry+rr);
+    ctx.arcTo(rx,ry,rx+rr,ry,rr);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#fff';
+    ctx.textAlign='center'; ctx.fillText(tipText,tx,ty+14);
+    ctx.fillStyle='var(--text-tertiary)'; ctx.font='10px sans-serif';
+    ctx.fillText(tipTime,tx,ty+26);
+  }
+}
+
+function updateAssetCurveTitle(){
+  var titleEl=document.getElementById('history-stats-title');
+  if(!titleEl) return;
+  var sp=state.stats_period||{mode:'24h',timezone:'+8'};
+  var prefix;
+  if(sp.mode=='calendar_day') prefix='数据统计（自然日 UTC'+sp.timezone+'）';
+  else prefix='数据统计（近24小时）';
+  titleEl.textContent=prefix;
+}
+
 
 // ====== Settings ======
 function preloadSettings(){
@@ -2799,6 +3031,12 @@ function init(){
     origUpdateUI();
     render24hStats();
   };
+  // Init asset curve 1D button active
+  switchAssetCurve('1d');
+  // Redraw chart on resize
+  window.addEventListener('resize',function(){
+    if(assetCurveData) drawAssetCurve();
+  });
 }
 document.addEventListener('DOMContentLoaded',init);
 </script>

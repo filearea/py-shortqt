@@ -1017,6 +1017,101 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
                 self.log.error(f'[Web] 刷新历史持仓失败: {e}', exc_info=True)
             return web.json_response({'error': str(e)}, status=500)
 
+    async def _handle_asset_curve(self, request: web.Request) -> web.Response:
+        """资产曲线数据 — 用当前总资产 + 历史已平仓盈亏倒推"""
+        if not self._check_auth(request):
+            return web.json_response({'error': 'unauthorized'}, status=403)
+        try:
+            period = request.query.get('period', '1d')  # '1d' or '7d'
+
+            stats_cfg = {}
+            if self.trader.config_manager:
+                stats_cfg = self.trader.config_manager.get_config().get('stats_period', {})
+            mode = stats_cfg.get('mode', '24h')
+            tz_str = stats_cfg.get('timezone', '+8')
+
+            now = time.time()
+            if period == '7d':
+                if mode == 'calendar_day':
+                    # 7个自然日（含今天）
+                    offset_hours = float(tz_str)
+                    from datetime import timezone as _tz_dt, timedelta as _td_dt
+                    tz = _tz_dt(_td_dt(hours=offset_hours))
+                    now_dt = datetime.fromtimestamp(now, tz=tz)
+                    today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                    start_dt = today_start - timedelta(days=6)
+                    start_time = start_dt.timestamp()
+                else:
+                    start_time = now - 7 * 24 * 3600  # 168小时
+                sample_interval_hours = 4
+                period_hours = (now - start_time) / 3600
+            else:  # 1d
+                if mode == 'calendar_day':
+                    offset_hours = float(tz_str)
+                    from datetime import timezone as _tz_dt, timedelta as _td_dt
+                    tz = _tz_dt(_td_dt(hours=offset_hours))
+                    now_dt = datetime.fromtimestamp(now, tz=tz)
+                    start_dt = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                    start_time = start_dt.timestamp()
+                else:
+                    start_time = now - 24 * 3600
+                sample_interval_hours = 1
+                period_hours = (now - start_time) / 3600
+
+            # 当前总资产（可用余额 + 未实现盈亏）
+            current_assets = float(self.trader.available_balance or 0)
+            position = self.trader.position
+            last_price = self.trader.last_price
+            if position and last_price and position.get('size', 0) > 0:
+                size = float(position['size'])
+                entry = float(position['entry_price'])
+                price = float(last_price)
+                if position['side'] == 'LONG':
+                    unrealized = (price - entry) * size
+                else:
+                    unrealized = (entry - price) * size
+                current_assets += unrealized
+
+            # 收集已平仓持仓（在时间范围内的）
+            history = list(self.trader.position_history) if self.trader.position_history else []
+            closed_positions = []
+            for h in history:
+                ct = h.get('close_time')
+                if ct and isinstance(ct, datetime):
+                    ct_ts = ct.timestamp()
+                    if start_time <= ct_ts <= now:
+                        closed_positions.append({
+                            'close_ts': ct_ts,
+                            'net_pnl': float(h.get('net_pnl', h.get('pnl', 0)))
+                        })
+
+            # 按 close_time 降序排列
+            closed_positions.sort(key=lambda p: p['close_ts'], reverse=True)
+
+            # 从 now 倒退生成采样点
+            num_samples = max(2, int(period_hours / sample_interval_hours) + 1)
+            samples = []
+            pos_idx = 0
+            running_assets = current_assets
+
+            for i in range(num_samples):
+                sample_time = now - i * sample_interval_hours * 3600
+                # 减去在 sample_time 之后平仓的盈亏
+                while pos_idx < len(closed_positions) and closed_positions[pos_idx]['close_ts'] > sample_time:
+                    running_assets -= closed_positions[pos_idx]['net_pnl']
+                    pos_idx += 1
+                samples.append({
+                    't': round(sample_time * 1000),
+                    'v': round(running_assets, 8)
+                })
+
+            samples.reverse()  # 时间升序
+            return web.json_response({'period': period, 'samples': samples, 'current_assets': round(current_assets, 8)})
+        except Exception as e:
+            if self.log:
+                self.log.error(f'[Web] /api/history/asset-curve 异常: {e}', exc_info=True)
+            return web.json_response({'error': str(e)}, status=500)
+
     async def _handle_open(self, request: web.Request) -> web.Response:
         """开仓（做多/做空）"""
         if not self._check_auth(request):
@@ -1391,6 +1486,7 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
         self._app.router.add_get('/api/klines/history', self._handle_klines_history)
         self._app.router.add_get('/api/history', self._handle_history)
         self._app.router.add_post('/api/history/refresh', self._handle_history_refresh)
+        self._app.router.add_get('/api/history/asset-curve', self._handle_asset_curve)
         self._app.router.add_post('/api/open', self._handle_open)
         self._app.router.add_post('/api/close', self._handle_close)
         self._app.router.add_post('/api/close_percent', self._handle_close_percent)
