@@ -54,7 +54,9 @@ class LossProtectionManager:
 
         # 持仓超时止损单（独立于移动止损，平仓时统一清理）
         self._breakeven_stop_id: Optional[int] = None  # 场景2：保本止损单
+        self._breakeven_stop_price: Optional[Decimal] = None
         self._grid1_stop_id: Optional[int] = None  # 场景3：网格1止损单
+        self._grid1_stop_price: Optional[Decimal] = None
     
     def set_entry_info(self, entry_price: Decimal, side: str, 
                        tp_price: Optional[Decimal] = None, 
@@ -168,6 +170,9 @@ class LossProtectionManager:
                 self.trader.tp_order['orderId'] = order['orderId']
                 self.trader.tp_order['price'] = protection_price  # 同步更新价格
 
+            if hasattr(self.trader, '_rebuild_key_prices'):
+                self.trader._rebuild_key_prices()
+
             if self.trader.log_manager:
                 self.trader.log_manager.system.debug(
                     f"[持仓超时] 浮亏保本 → 止盈单下移至开仓价 {protection_price}"
@@ -250,6 +255,10 @@ class LossProtectionManager:
             order_id = order.get('orderId') or order.get('algoId')
             if order_id:
                 self._breakeven_stop_id = order_id
+                self._breakeven_stop_price = trigger_price
+
+            if hasattr(self.trader, '_rebuild_key_prices'):
+                self.trader._rebuild_key_prices()
 
             if self.trader.log_manager:
                 self.trader.log_manager.system.debug(
@@ -283,6 +292,10 @@ class LossProtectionManager:
             order_id = order.get('orderId') or order.get('algoId')
             if order_id:
                 self._grid1_stop_id = order_id
+                self._grid1_stop_price = grid1_price
+
+            if hasattr(self.trader, '_rebuild_key_prices'):
+                self.trader._rebuild_key_prices()
 
             if self.trader.log_manager:
                 self.trader.log_manager.system.debug(
@@ -315,7 +328,9 @@ class LossProtectionManager:
         self.protection_time = None
         self.last_check_time = None
         self._breakeven_stop_id = None
+        self._breakeven_stop_price = None
         self._grid1_stop_id = None
+        self._grid1_stop_price = None
 
         if self.trader.log_manager:
             self.trader.log_manager.system.debug("[持仓超时] 已平仓，撤销保本止损单")

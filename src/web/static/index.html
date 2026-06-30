@@ -1417,6 +1417,9 @@ function drawChartMarkers() {
     ecPrice = state.early_close_price;
   }
 
+  // v1.10.1: 浮亏保护（分批）激活时，隐藏每批止盈线（LP 已替换为均价止盈）
+  var isBatchLP = !!(state.batch_state && (state.batch_state.lp_limit_order_id || state.batch_state.lp_stop_algo_id));
+
   if (state.risk.sl_price > 0) { lines.push({ price: state.risk.sl_price, color: '#f6465d', title: '止损' + (posSize?' '+posSize:''), style: 1 }); }
   if (state.risk.sm_price > 0) { lines.push({ price: state.risk.sm_price, color: '#8b0000', title: '保底' + (posSize?' '+posSize:''), style: 1 }); }
   if (state.position && state.position.entry_weighted_avg > 0) {
@@ -1427,12 +1430,28 @@ function drawChartMarkers() {
     var ecLabel = '提前平' + (posSize?' '+posSize:'');
     lines.push({ price: ecPrice, color: '#f0b90b', title: ecLabel, style: 2 });
   }
-  // 止盈线（提前平仓中不绘制，因为止盈已撤销）
-  if (!isEarlyClose && state.tp_orders && state.tp_orders.length) {
+  // 止盈线（提前平仓/浮亏保护中不绘制，因为止盈已撤销/替换）
+  if (!isEarlyClose && !isBatchLP && state.tp_orders && state.tp_orders.length) {
     var tps = state.tp_orders.slice(0, 20);
     tps.forEach(function(tp, i) {
       lines.push({ price: tp.tp_price, color: '#0ecb81', title: '止盈#' + tp.index + ' ' + tp.size.toFixed(3), style: 2 });
     });
+  }
+  // v1.10.1: 浮亏保护均价限价单（分批 — 替换每批止盈）
+  if (isBatchLP && state.batch_state.lp_limit_price > 0) {
+    lines.push({ price: state.batch_state.lp_limit_price, color: '#f0b90b', title: '浮亏保本' + (posSize?' '+posSize:''), style: 2 });
+  }
+  // v1.10.1: 浮亏保护条件止损单（分批）
+  if (isBatchLP && state.batch_state.lp_stop_price > 0) {
+    lines.push({ price: state.batch_state.lp_stop_price, color: '#f6465d', title: '浮亏止损' + (posSize?' '+posSize:''), style: 2 });
+  }
+  // v1.10.1: 浮亏保护止损单（非分批 — 保本止损）
+  if (state.lp_orders && state.lp_orders.breakeven_stop_price > 0) {
+    lines.push({ price: state.lp_orders.breakeven_stop_price, color: '#f6465d', title: '保本止损' + (posSize?' '+posSize:''), style: 2 });
+  }
+  // v1.10.1: 浮亏保护网格1止损单（非分批）
+  if (state.lp_orders && state.lp_orders.grid1_stop_price > 0) {
+    lines.push({ price: state.lp_orders.grid1_stop_price, color: '#8b0000', title: '网格1止损' + (posSize?' '+posSize:''), style: 2 });
   }
   // 开仓挂单
   if (state.pending_orders && state.pending_orders.length) {

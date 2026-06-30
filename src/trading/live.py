@@ -2046,6 +2046,26 @@ class LiveTrader:
                         'order_id': bs['early_close_order_id'],
                         'order_category': 'LIMIT',
                     })
+            # 浮亏保护：均价限价平仓单
+            if bs.get('lp_limit_order_id'):
+                lp_limit_price = Decimal(str(bs.get('lp_limit_price', 0)))
+                if lp_limit_price > 0:
+                    self._key_prices.append({
+                        'type': 'BATCH_LP_LIMIT',
+                        'price': lp_limit_price,
+                        'order_id': bs['lp_limit_order_id'],
+                        'order_category': 'LIMIT',
+                    })
+            # 浮亏保护：均价 STOP 条件止损
+            if bs.get('lp_stop_algo_id'):
+                lp_stop_price = Decimal(str(bs.get('lp_stop_price', 0)))
+                if lp_stop_price > 0:
+                    self._key_prices.append({
+                        'type': 'BATCH_LP_STOP',
+                        'price': lp_stop_price,
+                        'order_id': bs['lp_stop_algo_id'],
+                        'order_category': 'ALGO',
+                    })
             return
 
         if not self.position:
@@ -2112,22 +2132,20 @@ class LiveTrader:
         # 浮亏保护 STOP 订单
         if self.loss_protection_manager:
             lp = self.loss_protection_manager
-            if hasattr(lp, '_breakeven_stop_id') and lp._breakeven_stop_id:
+            if hasattr(lp, '_breakeven_stop_id') and lp._breakeven_stop_id and getattr(lp, '_breakeven_stop_price', None) is not None:
                 self._key_prices.append({
                     'type': 'LOSS_PROTECTION',
-                    'price': self.position['entry_price'],  # 保护价 = 开仓价
+                    'price': Decimal(str(lp._breakeven_stop_price)),
                     'order_id': lp._breakeven_stop_id,
                     'order_category': 'ALGO',
                 })
-            if hasattr(lp, '_grid1_stop_id') and lp._grid1_stop_id and self.trailing_stop_manager:
-                grid1_price = self.trailing_stop_manager.grid_prices[0] if self.trailing_stop_manager.grid_prices else None
-                if grid1_price:
-                    self._key_prices.append({
-                        'type': 'LOSS_PROTECTION',
-                        'price': grid1_price,
-                        'order_id': lp._grid1_stop_id,
-                        'order_category': 'ALGO',
-                    })
+            if hasattr(lp, '_grid1_stop_id') and lp._grid1_stop_id and getattr(lp, '_grid1_stop_price', None) is not None:
+                self._key_prices.append({
+                    'type': 'LOSS_PROTECTION',
+                    'price': Decimal(str(lp._grid1_stop_price)),
+                    'order_id': lp._grid1_stop_id,
+                    'order_category': 'ALGO',
+                })
 
     async def _check_key_prices(self):
         """每帧调用：订单簿 vs 关键价格比对，穿透时 REST 确认平仓（v1.9.0：含分批模式）"""
@@ -2155,17 +2173,17 @@ class LiveTrader:
 
             # 根据持仓方向和订单类型判断是否穿透
             if side == 'LONG':
-                if kp_type in ('TP', 'EARLY_CLOSE', 'BATCH_TP', 'BATCH_EARLY_CLOSE', 'BATCH_OPEN'):
+                if kp_type in ('TP', 'EARLY_CLOSE', 'BATCH_TP', 'BATCH_EARLY_CLOSE', 'BATCH_OPEN', 'BATCH_LP_LIMIT'):
                     if best_bid >= price:
                         triggered = True
-                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION', 'BATCH_SL', 'BATCH_SM'):
+                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION', 'BATCH_SL', 'BATCH_SM', 'BATCH_LP_STOP'):
                     if best_bid <= price:
                         triggered = True
             else:  # SHORT
-                if kp_type in ('TP', 'EARLY_CLOSE', 'BATCH_TP', 'BATCH_EARLY_CLOSE', 'BATCH_OPEN'):
+                if kp_type in ('TP', 'EARLY_CLOSE', 'BATCH_TP', 'BATCH_EARLY_CLOSE', 'BATCH_OPEN', 'BATCH_LP_LIMIT'):
                     if best_ask <= price:
                         triggered = True
-                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION', 'BATCH_SL', 'BATCH_SM'):
+                elif kp_type in ('SL', 'STOP_MARKET', 'TRAILING_STOP', 'LOSS_PROTECTION', 'BATCH_SL', 'BATCH_SM', 'BATCH_LP_STOP'):
                     if best_ask >= price:
                         triggered = True
 
@@ -2283,6 +2301,8 @@ class LiveTrader:
             'BATCH_SM': '保底止损成交',
             'BATCH_EARLY_CLOSE': '提前平仓成交',
             'BATCH_OPEN': '平仓成交',
+            'BATCH_LP_LIMIT': '浮亏保护平仓成交',
+            'BATCH_LP_STOP': '浮亏保护止损成交',
         }.get(trigger_type, '平仓成交')
 
         self._add_action(action_name,
@@ -3251,6 +3271,10 @@ class LiveTrader:
             'tp_backup': [],
             'early_close_order_id': None,
             'early_close_price': 0.0,
+            'lp_limit_order_id': None,
+            'lp_limit_price': 0.0,
+            'lp_stop_algo_id': None,
+            'lp_stop_price': 0.0,
             'cancelled_batch_indices': [],
             'last_sl_update_ts': 0.0,
             'round_closed': False,
@@ -3430,6 +3454,8 @@ class LiveTrader:
             self._add_action("分批开仓失败", f"所有 {total} 笔订单被拒: {'; '.join(error_details)}")
             await self._cleanup_batch_state(reason="开仓失败")
 
+        if success > 0:
+            self._rebuild_key_prices()
         return {'success': success, 'failed': failed, 'errors': error_details}
 
     # --- 成交处理 ---
@@ -3836,6 +3862,7 @@ class LiveTrader:
                             bs['cancelled_batch_indices'].append(b['index'])
                         except Exception:
                             pass
+        self._rebuild_key_prices()
 
     async def _cancel_all_pending_batches(self):
         """撤销所有未成交批次"""
@@ -3865,6 +3892,7 @@ class LiveTrader:
             if b.get('order_id') == order_id and b['status'] == 'pending':
                 b['status'] = 'failed'
                 self._add_action("订单过期", f"批次 {b['index']+1} @ {b['price']}（原因码 {gtd}）")
+                self._rebuild_key_prices()
                 return
 
     # --- 早期平仓 ---
@@ -3898,6 +3926,26 @@ class LiveTrader:
                 except Exception:
                     pass
                 b['status'] = 'filled'
+
+        # 撤销浮亏保护限价平仓单
+        if bs.get('lp_limit_order_id'):
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_order, self.symbol, order_id=bs['lp_limit_order_id']
+                )
+            except Exception:
+                pass
+            bs['lp_limit_order_id'] = None
+
+        # 撤销浮亏保护条件止损单
+        if bs.get('lp_stop_algo_id'):
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_algo_order, self.symbol, bs['lp_stop_algo_id']
+                )
+            except Exception:
+                pass
+            bs['lp_stop_algo_id'] = None
 
         # 挂提前平仓单（QUEUE，对齐非分批 close_position_early）
         try:
@@ -4082,6 +4130,24 @@ class LiveTrader:
             except Exception:
                 pass
 
+        # 撤销浮亏保护限价平仓单
+        if bs.get('lp_limit_order_id'):
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_order, self.symbol, order_id=bs['lp_limit_order_id']
+                )
+            except Exception:
+                pass
+
+        # 撤销浮亏保护条件止损单
+        if bs.get('lp_stop_algo_id'):
+            try:
+                await asyncio.to_thread(
+                    self.api.cancel_algo_order, self.symbol, bs['lp_stop_algo_id']
+                )
+            except Exception:
+                pass
+
         # 清理映射表
         self._batch_order_map.clear()
         self._batch_tp_map.clear()
@@ -4165,7 +4231,11 @@ class LiveTrader:
                 positionSide=self.batch_state['side'],
             )
             if result.get('algoId'):
+                bs = self.batch_state
+                bs['lp_stop_algo_id'] = result['algoId']
+                bs['lp_stop_price'] = float(price)
                 self._add_action("浮亏保护", f"STOP 止损已挂 @ {price}")
+                self._rebuild_key_prices()
         except Exception as e:
             self._add_action("浮亏保护失败", str(e))
 
@@ -4183,7 +4253,11 @@ class LiveTrader:
                 positionSide=self.batch_state['side'],
             )
             if result.get('orderId'):
+                bs = self.batch_state
+                bs['lp_limit_order_id'] = result['orderId']
+                bs['lp_limit_price'] = float(price)
                 self._add_action("浮亏保护", f"限价平仓单已挂 @ {price}")
+                self._rebuild_key_prices()
         except Exception as e:
             self._add_action("浮亏保护失败", str(e))
 

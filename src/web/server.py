@@ -568,6 +568,11 @@ class WebServer:
             # v1.10.0: 下单按钮状态所需 + 提前平仓价格（K线标记用）
             'early_close_order': t.early_close_order is not None,
             'early_close_price': float(t.early_close_order.get('price', 0)) if t.early_close_order else 0,
+            # 浮亏保护订单（非分批模式 — K线标记用）
+            'lp_orders': {
+                'breakeven_stop_price': float(getattr(lp, '_breakeven_stop_price', 0) or 0) if lp else 0,
+                'grid1_stop_price': float(getattr(lp, '_grid1_stop_price', 0) or 0) if lp else 0,
+            } if t.loss_protection_manager else None,
             'batch_state': {
                 'enabled': t.batch_state.get('enabled', False) if t.batch_state else False,
                 'state': t.batch_state.get('state', 'idle') if t.batch_state else 'idle',
@@ -578,6 +583,11 @@ class WebServer:
                 'total_filled_size': float(t.batch_state.get('total_filled_size', 0)) if t.batch_state else 0,
                 'total_count': t.batch_state.get('total_count', 0) if t.batch_state else 0,
                 'side': t.batch_state.get('side', '') if t.batch_state else '',
+                # v1.10.1: 浮亏保护订单（K线标记用）
+                'lp_limit_price': float(t.batch_state.get('lp_limit_price', 0)) if t.batch_state else 0,
+                'lp_limit_order_id': t.batch_state.get('lp_limit_order_id') if t.batch_state else None,
+                'lp_stop_price': float(t.batch_state.get('lp_stop_price', 0)) if t.batch_state else 0,
+                'lp_stop_algo_id': t.batch_state.get('lp_stop_algo_id') if t.batch_state else None,
             } if t.batch_state else None,
         }
 
