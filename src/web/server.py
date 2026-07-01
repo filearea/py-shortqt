@@ -1320,8 +1320,8 @@ display:flex;align-items:center;justify-content:center;height:100vh;overflow:hid
             lp_mgr = getattr(self.trader, 'loss_protection_manager', None)
             if lp_mgr:
                 lp_mgr.refresh_config(cfg.get_loss_protection_config())
-            # 如果修改了 API 杠杆，同步到币安交易所
-            if any(k.startswith('leverage.') for k in body):
+            # 如果修改了杠杆，同步到交易所并更新 trader 内存值
+            if 'leverage' in body:
                 api_lev, actual_lev = cfg.get_leverage_config()
                 self.trader.leverage_limit = api_lev
                 self.trader.actual_leverage = actual_lev
