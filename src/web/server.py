@@ -526,6 +526,7 @@ class WebServer:
             diag['seen_event_types'] = list(getattr(listener, '_seen_event_types', set()))
             diag['agg_trade_count'] = getattr(listener, '_agg_trade_count', 0)
 
+        lp = t.loss_protection_manager
         return {
             'type': 'state',
             'ts': int(time.time() * 1000),
@@ -572,7 +573,7 @@ class WebServer:
             'lp_orders': {
                 'breakeven_stop_price': float(getattr(lp, '_breakeven_stop_price', 0) or 0) if lp else 0,
                 'grid1_stop_price': float(getattr(lp, '_grid1_stop_price', 0) or 0) if lp else 0,
-            } if t.loss_protection_manager else None,
+            } if lp else None,
             'batch_state': {
                 'enabled': t.batch_state.get('enabled', False) if t.batch_state else False,
                 'state': t.batch_state.get('state', 'idle') if t.batch_state else 'idle',
